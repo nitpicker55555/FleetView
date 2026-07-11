@@ -9,6 +9,7 @@ final class AppState: ObservableObject {
     @Published var terminals: [TerminalSession] = []
     @Published var clusters: [Cluster] = []
     @Published var selectedProjectId: UUID? = nil   // nil == All Projects
+    @Published var sidebarWidth: Double = 236
 
     private var controllers: [UUID: TerminalWindowController] = [:]
     private var cascadePoint = NSPoint(x: 60, y: 60)
@@ -21,6 +22,7 @@ final class AppState: ObservableObject {
         var terminals: [TerminalSession]
         var clusters: [Cluster]
         var selectedProjectId: UUID?
+        var sidebarWidth: Double?
     }
 
     func load() {
@@ -37,6 +39,7 @@ final class AppState: ObservableObject {
         }
         clusters = p.clusters
         selectedProjectId = p.selectedProjectId
+        if let w = p.sidebarWidth { sidebarWidth = min(520, max(180, w)) }
     }
 
     func save() {
@@ -47,7 +50,8 @@ final class AppState: ObservableObject {
             return c
         }
         let p = Persisted(projects: projects, terminals: snapshot,
-                          clusters: clusters, selectedProjectId: selectedProjectId)
+                          clusters: clusters, selectedProjectId: selectedProjectId,
+                          sidebarWidth: sidebarWidth)
         if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile) }
     }
 
@@ -174,6 +178,33 @@ final class AppState: ObservableObject {
         terminals.filter { $0.projectId == projectId && $0.clusterId == nil }
     }
 
+    // MARK: - Tasks (sidebar) — standalone terminals + clusters
+
+    var tasks: [TaskItem] {
+        var result: [TaskItem] = []
+        for p in projects {
+            for c in clustersInProject(p.id) { result.append(.cluster(c.id)) }
+            for t in standaloneTerminals(inProject: p.id) { result.append(.terminal(t.id)) }
+        }
+        return result
+    }
+
+    /// Worst-case status across a cluster's members (needs-you > running > returned > shell > gone).
+    func clusterAggregateStatus(_ id: UUID) -> TermStatus {
+        let m = members(ofCluster: id)
+        if m.contains(where: { $0.status == .needsYou }) { return .needsYou }
+        if m.contains(where: { $0.status == .working })  { return .working }
+        if m.contains(where: { $0.status == .idle })     { return .idle }
+        if m.contains(where: { $0.status == .shell })    { return .shell }
+        if m.contains(where: { $0.status == .exited })   { return .exited }
+        return .closed
+    }
+
+    func clusterDone(_ id: UUID) -> Bool {
+        let m = members(ofCluster: id)
+        return !m.isEmpty && m.allSatisfy { $0.subtaskDone }
+    }
+
     // MARK: - Finder
 
     func openInFinder(_ projectId: UUID) {
@@ -218,23 +249,56 @@ final class AppState: ObservableObject {
         nameSheet = nil
     }
 
-    // MARK: - Drag-to-act
+    // MARK: - Drag-to-act (self-managed gesture + manual hit-testing)
 
-    @Published var draggingTerminalId: UUID?
-    private var dragGeneration = 0
-
-    func beginDrag(_ id: UUID) {
-        draggingTerminalId = id
-        dragGeneration += 1
-        let g = dragGeneration
-        // Safety net: if the drag is released outside any drop target, hide the dock.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
-            guard let self, self.dragGeneration == g else { return }
-            self.draggingTerminalId = nil
-        }
+    enum DragZone: String, CaseIterable, Identifiable {
+        case done, duplicate, rename, leaveCluster, remove
+        var id: String { rawValue }
     }
 
-    func endDrag() { draggingTerminalId = nil; dragGeneration += 1 }
+    @Published var draggingTerminalId: UUID?
+    @Published var dragLocation: CGPoint = .zero      // in the "fleet" coordinate space
+    @Published var hoveredZone: DragZone?
+    var zoneFrames: [DragZone: CGRect] = [:]          // reported by the dock, not published
+
+    func availableZones(for id: UUID) -> [DragZone] {
+        var zones: [DragZone] = [.done, .duplicate, .rename]
+        if terminals.first(where: { $0.id == id })?.clusterId != nil { zones.append(.leaveCluster) }
+        zones.append(.remove)
+        return zones
+    }
+
+    func setZoneFrames(_ frames: [DragZone: CGRect]) { zoneFrames = frames }
+
+    func dragChanged(_ id: UUID, to point: CGPoint) {
+        if draggingTerminalId != id { draggingTerminalId = id }
+        dragLocation = point
+        hoveredZone = zoneAt(point)
+    }
+
+    func dragEnded(at point: CGPoint) {
+        let zone = zoneAt(point)
+        let id = draggingTerminalId
+        draggingTerminalId = nil
+        hoveredZone = nil
+        if let id, let zone { perform(zone, on: id) }
+    }
+
+    func cancelDrag() { draggingTerminalId = nil; hoveredZone = nil }
+
+    private func zoneAt(_ p: CGPoint) -> DragZone? {
+        zoneFrames.first(where: { $0.value.contains(p) })?.key
+    }
+
+    private func perform(_ zone: DragZone, on id: UUID) {
+        switch zone {
+        case .done:         toggleSubtaskDone(id)
+        case .duplicate:    duplicateTerminal(id)
+        case .rename:       requestRename(id)
+        case .leaveCluster: removeFromCluster(id)
+        case .remove:       removeTerminal(id)
+        }
+    }
 
     func setStatus(_ id: UUID, _ s: TermStatus) {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }

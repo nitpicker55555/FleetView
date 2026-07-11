@@ -24,6 +24,18 @@ enum TermStatus: String, Codable {
 
     /// A Claude agent session is (or was) active in this terminal.
     var isAgent: Bool { self == .idle || self == .working || self == .needsYou }
+
+    /// Task-oriented label for the sidebar: is the agent running, or has it returned a result?
+    var taskLabel: String {
+        switch self {
+        case .working:  return "running"
+        case .idle:     return "returned"
+        case .needsYou: return "needs you"
+        case .shell:    return "shell"
+        case .exited:   return "exited"
+        case .closed:   return "closed"
+        }
+    }
 }
 
 struct Project: Identifiable, Codable, Hashable {
@@ -52,4 +64,18 @@ struct TerminalSession: Identifiable, Codable, Hashable {
 struct Cluster: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
+}
+
+/// A unit of work shown in the sidebar: either a standalone terminal or a whole cluster.
+/// Holds ids only — the row looks up live state so renames/status reflect immediately.
+enum TaskItem: Identifiable {
+    case terminal(UUID)
+    case cluster(UUID)
+
+    var id: String {
+        switch self {
+        case .terminal(let u): return "t-\(u.uuidString)"
+        case .cluster(let u):  return "c-\(u.uuidString)"
+        }
+    }
 }

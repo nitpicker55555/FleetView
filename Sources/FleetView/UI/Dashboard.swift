@@ -1,14 +1,13 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 
 struct DashboardView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
         HStack(spacing: 0) {
-            Sidebar().frame(width: 236)
-            Divider().overlay(Theme.stroke)
+            Sidebar().frame(width: state.sidebarWidth)
+            SidebarDivider()
             VStack(spacing: 0) {
                 TopBar()
                 Divider().overlay(Theme.stroke)
@@ -17,22 +16,27 @@ struct DashboardView: View {
         }
         .background(Theme.bg)
         .frame(minWidth: 960, minHeight: 580)
+        .overlay { dragOverlay }
+        .coordinateSpace(name: "fleet")
         .sheet(item: $state.nameSheet) { req in
             NameSheet(request: req).environmentObject(state)
         }
-        .overlay {
-            // Scoped to the overlay only, so drag state changes never animate the cards themselves.
-            ZStack(alignment: .bottom) {
-                if let dragId = state.draggingTerminalId {
-                    Color.black.opacity(0.18).ignoresSafeArea()
-                        .onDrop(of: [.text], isTargeted: nil) { _ in state.endDrag(); return true }  // drop elsewhere = cancel
-                    ActionDock(terminalId: dragId).environmentObject(state)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    @ViewBuilder private var dragOverlay: some View {
+        ZStack {
+            if let dragId = state.draggingTerminalId {
+                Color.black.opacity(0.16).ignoresSafeArea()
+                VStack { Spacer(); ActionDock(terminalId: dragId).environmentObject(state) }
+                if let t = state.terminals.first(where: { $0.id == dragId }) {
+                    DragPreviewChip(name: t.name, status: t.status)
+                        .position(x: state.dragLocation.x, y: state.dragLocation.y - 16)
                 }
             }
-            .animation(.easeOut(duration: 0.18), value: state.draggingTerminalId)
-            .allowsHitTesting(state.draggingTerminalId != nil)
         }
+        .allowsHitTesting(false)   // purely visual; the drag is driven by the card gesture
+        .animation(.easeOut(duration: 0.16), value: state.draggingTerminalId)
+        .onPreferenceChange(ZoneFrameKey.self) { state.setZoneFrames($0) }
     }
 
     static func pickFolder(into state: AppState) {
@@ -60,18 +64,23 @@ struct Sidebar: View {
             .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 16)
 
             HStack {
-                Text("PROJECTS").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.subtext)
+                Text("TASKS").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.subtext)
                 Spacer()
-                Text("\(state.projects.count)").font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.7))
+                Text("\(state.tasks.count)").font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.7))
             }
             .padding(.horizontal, 16).padding(.bottom, 6)
 
-            ScrollView {
-                VStack(spacing: 2) {
-                    ProjectRow(project: nil)   // "All Terminals" (scrolls to top)
-                    ForEach(state.projects) { p in ProjectRow(project: p) }
+            if state.tasks.isEmpty {
+                Text("No terminals yet")
+                    .font(.system(size: 12)).foregroundColor(Theme.subtext.opacity(0.55))
+                    .padding(.horizontal, 16).padding(.top, 6)
+            } else {
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(state.tasks) { task in TaskRow(task: task) }
+                    }
+                    .padding(.horizontal, 8)
                 }
-                .padding(.horizontal, 8)
             }
 
             Spacer(minLength: 0)
@@ -100,42 +109,109 @@ struct Sidebar: View {
     }
 }
 
-struct ProjectRow: View {
+/// Draggable divider that resizes the sidebar (so long task titles can be revealed).
+struct SidebarDivider: View {
     @EnvironmentObject var state: AppState
-    let project: Project?           // nil == "All Terminals"
-    @State private var hover = false
-
-    private var isAll: Bool { project == nil }
-    private var terms: [TerminalSession] { isAll ? state.terminals : state.terminals(inProject: project!.id) }
-    private var workingCount: Int { terms.filter { $0.status == .working }.count }
-    private var selected: Bool { state.selectedProjectId == project?.id }
+    @State private var startWidth: Double?
+    @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: isAll ? "square.grid.2x2" : "folder.fill")
-                .font(.system(size: 11))
-                .foregroundColor(selected ? Theme.accent : Theme.subtext)
-                .frame(width: 15)
-            Text(isAll ? "All Terminals" : project!.name)
-                .font(.system(size: 13, weight: .medium)).foregroundColor(Theme.text).lineLimit(1)
-            Spacer(minLength: 4)
-            if hover && !isAll {
-                Button { state.selectedProjectId = project!.id; state.requestNewTerminal(projectId: project!.id) } label: {
-                    Image(systemName: "plus").font(.system(size: 11, weight: .bold)).foregroundColor(Theme.subtext)
+        Rectangle()
+            .fill(hovering ? Theme.accent.opacity(0.6) : Theme.stroke)
+            .frame(width: hovering ? 2 : 1)
+            .overlay(
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: 10)
+                    .contentShape(Rectangle())
+                    .onHover { h in
+                        hovering = h
+                        if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { v in
+                                if startWidth == nil { startWidth = state.sidebarWidth }
+                                let base = startWidth ?? state.sidebarWidth
+                                state.sidebarWidth = min(520, max(180, base + v.translation.width))
+                            }
+                            .onEnded { _ in startWidth = nil; state.save() }
+                    )
+            )
+    }
+}
+
+struct TaskRow: View {
+    @EnvironmentObject var state: AppState
+    let task: TaskItem
+    @State private var hover = false
+
+    private var terminal: TerminalSession? {
+        if case .terminal(let id) = task { return state.terminals.first { $0.id == id } }
+        return nil
+    }
+    private var cluster: Cluster? {
+        if case .cluster(let id) = task { return state.clusters.first { $0.id == id } }
+        return nil
+    }
+    private var isCluster: Bool { if case .cluster = task { return true }; return false }
+
+    private var name: String { terminal?.name ?? cluster?.name ?? "" }
+    private var status: TermStatus {
+        if let t = terminal { return t.status }
+        if let c = cluster { return state.clusterAggregateStatus(c.id) }
+        return .closed
+    }
+    private var done: Bool {
+        if let t = terminal { return t.subtaskDone }
+        if let c = cluster { return state.clusterDone(c.id) }
+        return false
+    }
+    private var subtitle: String {
+        if let t = terminal { return state.project(t.projectId)?.name ?? "" }
+        if let c = cluster {
+            let ms = state.members(ofCluster: c.id)
+            let proj = ms.first.flatMap { state.project($0.projectId)?.name } ?? ""
+            return "\(proj) · \(ms.count) terminal\(ms.count == 1 ? "" : "s")"
+        }
+        return ""
+    }
+
+    var body: some View {
+        HStack(spacing: 9) {
+            StatusDot(status: status)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    if isCluster {
+                        Image(systemName: "circle.hexagongrid.fill").font(.system(size: 9)).foregroundColor(Theme.accent)
+                    }
+                    Text(name).font(.system(size: 13, weight: .medium)).foregroundColor(Theme.text).lineLimit(1)
+                    if done {
+                        Image(systemName: "checkmark.seal.fill").font(.system(size: 10)).foregroundColor(Theme.green)
+                    }
                 }
-                .buttonStyle(.plain).help("New terminal in this project")
+                Text(subtitle).font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.7)).lineLimit(1)
             }
-            if workingCount > 0 { Circle().fill(Theme.green).frame(width: 6, height: 6) }
-            Text("\(terms.count)")
-                .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.85))
-                .frame(minWidth: 14, alignment: .trailing)
+            Spacer(minLength: 4)
+            Text(status.taskLabel).font(.system(size: 10, weight: .medium)).foregroundColor(Theme.statusColor(status))
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
-        .background(selected ? Theme.accent.opacity(0.15) : (hover ? Theme.card : Color.clear))
+        .background(hover ? Theme.card : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
-        .onTapGesture { state.selectedProjectId = project?.id }
+        .onTapGesture { activate() }
+        .help(name)
+    }
+
+    private func activate() {
+        if let t = terminal {
+            state.selectedProjectId = t.projectId
+            state.raiseTerminal(t.id)
+        } else if let c = cluster, let m = state.members(ofCluster: c.id).first {
+            state.selectedProjectId = m.projectId
+            state.raiseTerminal(m.id)
+        }
     }
 }
 

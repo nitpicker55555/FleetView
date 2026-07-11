@@ -25,19 +25,23 @@ struct TerminalCardView: View {
         .onHover { hovering = $0 }
         .contentShape(Rectangle())
         .onTapGesture { if !renaming { state.raiseTerminal(terminal.id) } }
-        .onDrag {
-            state.beginDrag(terminal.id)
-            return NSItemProvider(object: terminal.id.uuidString as NSString)
-        } preview: {
-            // A small floating chip is dragged, so the real card stays put and snaps back instantly.
-            HStack(spacing: 7) {
-                StatusDot(status: terminal.status)
-                Text(terminal.name).font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
-            }
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(Theme.card).clipShape(Capsule())
-            .overlay(Capsule().stroke(Theme.accent.opacity(0.5), lineWidth: 1))
-        }
+        .gesture(
+            // Press briefly, then drag — disambiguates from scrolling, and the real card never moves.
+            LongPressGesture(minimumDuration: 0.18)
+                .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("fleet")))
+                .onChanged { value in
+                    if case .second(true, let drag?) = value {
+                        state.dragChanged(terminal.id, to: drag.location)
+                    }
+                }
+                .onEnded { value in
+                    if case .second(true, let drag?) = value {
+                        state.dragEnded(at: drag.location)
+                    } else {
+                        state.cancelDrag()
+                    }
+                }
+        )
         .animation(.easeOut(duration: 0.15), value: hovering)
         .animation(.easeOut(duration: 0.2), value: terminal.status)
         .animation(.easeOut(duration: 0.2), value: done)
