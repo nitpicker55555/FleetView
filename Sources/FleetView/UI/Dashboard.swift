@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct DashboardView: View {
     @EnvironmentObject var state: AppState
@@ -16,6 +17,22 @@ struct DashboardView: View {
         }
         .background(Theme.bg)
         .frame(minWidth: 960, minHeight: 580)
+        .sheet(item: $state.nameSheet) { req in
+            NameSheet(request: req).environmentObject(state)
+        }
+        .overlay {
+            // Scoped to the overlay only, so drag state changes never animate the cards themselves.
+            ZStack(alignment: .bottom) {
+                if let dragId = state.draggingTerminalId {
+                    Color.black.opacity(0.18).ignoresSafeArea()
+                        .onDrop(of: [.text], isTargeted: nil) { _ in state.endDrag(); return true }  // drop elsewhere = cancel
+                    ActionDock(terminalId: dragId).environmentObject(state)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: state.draggingTerminalId)
+            .allowsHitTesting(state.draggingTerminalId != nil)
+        }
     }
 
     static func pickFolder(into state: AppState) {
@@ -103,7 +120,7 @@ struct ProjectRow: View {
                 .font(.system(size: 13, weight: .medium)).foregroundColor(Theme.text).lineLimit(1)
             Spacer(minLength: 4)
             if hover && !isAll {
-                Button { state.newTerminal(projectId: project!.id); state.selectedProjectId = project!.id } label: {
+                Button { state.selectedProjectId = project!.id; state.requestNewTerminal(projectId: project!.id) } label: {
                     Image(systemName: "plus").font(.system(size: 11, weight: .bold)).foregroundColor(Theme.subtext)
                 }
                 .buttonStyle(.plain).help("New terminal in this project")
@@ -219,7 +236,11 @@ struct ProjectSection: View {
             Text(project.path).font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.6))
                 .lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 10)
-            Button { state.newTerminal(projectId: project.id) } label: {
+            Button { state.openInFinder(project.id) } label: {
+                Image(systemName: "folder").font(.system(size: 12)).foregroundColor(Theme.subtext).padding(5)
+            }
+            .buttonStyle(.plain).help("Reveal project in Finder")
+            Button { state.requestNewTerminal(projectId: project.id) } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "plus").font(.system(size: 10, weight: .bold))
                     Text("Terminal").font(.system(size: 12, weight: .medium))
@@ -238,7 +259,7 @@ struct ProjectSection: View {
     }
 
     private var emptyRow: some View {
-        Button { state.newTerminal(projectId: project.id) } label: {
+        Button { state.requestNewTerminal(projectId: project.id) } label: {
             HStack(spacing: 7) {
                 Image(systemName: "plus.rectangle.on.rectangle").font(.system(size: 12))
                 Text("New terminal").font(.system(size: 12, weight: .medium))

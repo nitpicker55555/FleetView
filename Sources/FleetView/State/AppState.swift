@@ -174,6 +174,68 @@ final class AppState: ObservableObject {
         terminals.filter { $0.projectId == projectId && $0.clusterId == nil }
     }
 
+    // MARK: - Finder
+
+    func openInFinder(_ projectId: UUID) {
+        guard let p = project(projectId) else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: p.path))
+    }
+
+    // MARK: - Name sheet (create / rename)
+
+    enum NameSheetKind: Equatable { case newTerminal(UUID); case rename(UUID) }
+    struct NameSheetRequest: Identifiable {
+        let id = UUID()
+        let kind: NameSheetKind
+        let initialName: String
+        let title: String
+        let confirmLabel: String
+    }
+    @Published var nameSheet: NameSheetRequest?
+
+    func requestNewTerminal(projectId: UUID) {
+        guard let proj = project(projectId) else { return }
+        nameSheet = NameSheetRequest(kind: .newTerminal(projectId),
+                                     initialName: defaultTerminalName(for: proj),
+                                     title: "New Terminal", confirmLabel: "Open")
+    }
+
+    func requestRename(_ termId: UUID) {
+        guard let t = terminals.first(where: { $0.id == termId }) else { return }
+        nameSheet = NameSheetRequest(kind: .rename(termId), initialName: t.name,
+                                     title: "Rename Terminal", confirmLabel: "Rename")
+    }
+
+    func confirmName(_ name: String) {
+        guard let req = nameSheet else { return }
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !n.isEmpty {
+            switch req.kind {
+            case .newTerminal(let pid): _ = newTerminal(projectId: pid, name: n)
+            case .rename(let id):       renameTerminal(id, to: n)
+            }
+        }
+        nameSheet = nil
+    }
+
+    // MARK: - Drag-to-act
+
+    @Published var draggingTerminalId: UUID?
+    private var dragGeneration = 0
+
+    func beginDrag(_ id: UUID) {
+        draggingTerminalId = id
+        dragGeneration += 1
+        let g = dragGeneration
+        // Safety net: if the drag is released outside any drop target, hide the dock.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard let self, self.dragGeneration == g else { return }
+            self.draggingTerminalId = nil
+        }
+    }
+
+    func endDrag() { draggingTerminalId = nil; dragGeneration += 1 }
+
     func setStatus(_ id: UUID, _ s: TermStatus) {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
         terminals[idx].status = s

@@ -25,6 +25,19 @@ struct TerminalCardView: View {
         .onHover { hovering = $0 }
         .contentShape(Rectangle())
         .onTapGesture { if !renaming { state.raiseTerminal(terminal.id) } }
+        .onDrag {
+            state.beginDrag(terminal.id)
+            return NSItemProvider(object: terminal.id.uuidString as NSString)
+        } preview: {
+            // A small floating chip is dragged, so the real card stays put and snaps back instantly.
+            HStack(spacing: 7) {
+                StatusDot(status: terminal.status)
+                Text(terminal.name).font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Theme.card).clipShape(Capsule())
+            .overlay(Capsule().stroke(Theme.accent.opacity(0.5), lineWidth: 1))
+        }
         .animation(.easeOut(duration: 0.15), value: hovering)
         .animation(.easeOut(duration: 0.2), value: terminal.status)
         .animation(.easeOut(duration: 0.2), value: done)
@@ -101,7 +114,7 @@ struct TerminalCardView: View {
             }
             iconButton("plus.square.on.square", help: "Duplicate (cluster)") { state.duplicateTerminal(terminal.id) }
             Menu {
-                Button("Rename…") { renaming = true }
+                Button("Rename…") { state.requestRename(terminal.id) }
                 if terminal.clusterId != nil {
                     Button("Remove from Cluster") { state.removeFromCluster(terminal.id) }
                 }
