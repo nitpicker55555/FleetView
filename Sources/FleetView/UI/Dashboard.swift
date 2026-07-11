@@ -155,6 +155,11 @@ struct TaskRow: View {
         return nil
     }
     private var isCluster: Bool { if case .cluster = task { return true }; return false }
+    private var isSelected: Bool {
+        if let t = terminal { return state.highlightedTerminalId == t.id }
+        if let c = cluster  { return state.highlightedClusterId == c.id }
+        return false
+    }
 
     private var name: String { terminal?.name ?? cluster?.name ?? "" }
     private var status: TermStatus {
@@ -196,22 +201,12 @@ struct TaskRow: View {
             Text(status.taskLabel).font(.system(size: 10, weight: .medium)).foregroundColor(Theme.statusColor(status))
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
-        .background(hover ? Theme.card : Color.clear)
+        .background(isSelected ? Theme.accent.opacity(0.16) : (hover ? Theme.card : Color.clear))
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
-        .onTapGesture { activate() }
+        .onTapGesture { state.focusTask(task) }   // highlight + scroll, do not raise the window
         .help(name)
-    }
-
-    private func activate() {
-        if let t = terminal {
-            state.selectedProjectId = t.projectId
-            state.raiseTerminal(t.id)
-        } else if let c = cluster, let m = state.members(ofCluster: c.id).first {
-            state.selectedProjectId = m.projectId
-            state.raiseTerminal(m.id)
-        }
     }
 }
 
@@ -269,8 +264,8 @@ struct MainArea: View {
                     .padding(20)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .onChange(of: state.selectedProjectId) { _, id in
-                    if let id { withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .top) } }
+                .onChange(of: state.scrollToId) { _, id in
+                    if let id { withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(id, anchor: .center) } }
                 }
             }
         }
@@ -291,11 +286,11 @@ struct ProjectSection: View {
             if total == 0 {
                 emptyRow
             } else {
-                ForEach(clusters) { c in ClusterContainer(cluster: c) }
+                ForEach(clusters) { c in ClusterContainer(clusterId: c.id).id(c.id) }
                 if !standalone.isEmpty {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 14)],
                               alignment: .leading, spacing: 14) {
-                        ForEach(standalone) { t in TerminalCardView(terminal: t) }
+                        ForEach(standalone) { t in TerminalCardView(terminal: t).id(t.id) }
                     }
                 }
             }
@@ -357,10 +352,11 @@ struct ProjectSection: View {
 
 struct ClusterContainer: View {
     @EnvironmentObject var state: AppState
-    let cluster: Cluster
-    @State private var editingName = false
+    let clusterId: UUID
 
-    private var members: [TerminalSession] { state.members(ofCluster: cluster.id) }
+    private var name: String { state.cluster(clusterId)?.name ?? "" }
+    private var members: [TerminalSession] { state.members(ofCluster: clusterId) }
+    private var highlighted: Bool { state.highlightedClusterId == clusterId }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -369,19 +365,18 @@ struct ClusterContainer: View {
                 Text("CLUSTER").font(.system(size: 9, weight: .bold)).foregroundColor(Theme.accent.opacity(0.85))
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Theme.accent.opacity(0.14)).clipShape(Capsule())
-                EditableText(text: cluster.name,
-                             font: .system(size: 14, weight: .semibold),
-                             color: Theme.text,
-                             onCommit: { state.renameCluster(cluster.id, to: $0) },
-                             editing: $editingName)
-                Button { editingName = true } label: {
+                Text(name)
+                    .font(.system(size: 14, weight: .semibold)).foregroundColor(Theme.text).lineLimit(1)
+                    .onTapGesture(count: 2) { state.requestRenameCluster(clusterId) }
+                    .help(name)
+                Button { state.requestRenameCluster(clusterId) } label: {
                     Image(systemName: "pencil").font(.system(size: 10)).foregroundColor(Theme.subtext)
                 }
-                .buttonStyle(.plain).help("Rename task")
+                .buttonStyle(.plain).help("Rename cluster task")
                 Text("· \(members.count) terminal\(members.count == 1 ? "" : "s")")
                     .font(.system(size: 11)).foregroundColor(Theme.subtext)
                 Spacer()
-                Button { state.addToCluster(cluster.id) } label: {
+                Button { state.addToCluster(clusterId) } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "plus").font(.system(size: 10, weight: .bold))
                         Text("Agent").font(.system(size: 11, weight: .medium))
@@ -401,7 +396,10 @@ struct ClusterContainer: View {
         .padding(14)
         .background(Theme.accent.opacity(0.055))
         .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.accent.opacity(0.28), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 14)
+            .stroke(highlighted ? Theme.accent : Theme.accent.opacity(0.28), lineWidth: highlighted ? 2 : 1))
+        .shadow(color: highlighted ? Theme.accent.opacity(0.35) : .clear, radius: highlighted ? 10 : 0)
+        .animation(.easeOut(duration: 0.2), value: highlighted)
     }
 }
 

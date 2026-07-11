@@ -11,6 +11,11 @@ final class AppState: ObservableObject {
     @Published var selectedProjectId: UUID? = nil   // nil == All Projects
     @Published var sidebarWidth: Double = 236
 
+    // Sidebar → dashboard focus: highlight (not raise) the matching card/cluster.
+    @Published var highlightedTerminalId: UUID?
+    @Published var highlightedClusterId: UUID?
+    @Published var scrollToId: UUID?
+
     private var controllers: [UUID: TerminalWindowController] = [:]
     private var cascadePoint = NSPoint(x: 60, y: 60)
     var hookPort: Int? = nil
@@ -205,6 +210,20 @@ final class AppState: ObservableObject {
         return !m.isEmpty && m.allSatisfy { $0.subtaskDone }
     }
 
+    /// Highlight and scroll to a task's card(s) in the dashboard — does NOT raise the window.
+    func focusTask(_ task: TaskItem) {
+        switch task {
+        case .terminal(let id):
+            highlightedTerminalId = id
+            highlightedClusterId = nil
+            scrollToId = id
+        case .cluster(let id):
+            highlightedClusterId = id
+            highlightedTerminalId = nil
+            scrollToId = id
+        }
+    }
+
     // MARK: - Finder
 
     func openInFinder(_ projectId: UUID) {
@@ -214,7 +233,7 @@ final class AppState: ObservableObject {
 
     // MARK: - Name sheet (create / rename)
 
-    enum NameSheetKind: Equatable { case newTerminal(UUID); case rename(UUID) }
+    enum NameSheetKind: Equatable { case newTerminal(UUID); case rename(UUID); case renameCluster(UUID) }
     struct NameSheetRequest: Identifiable {
         let id = UUID()
         let kind: NameSheetKind
@@ -237,13 +256,20 @@ final class AppState: ObservableObject {
                                      title: "Rename Terminal", confirmLabel: "Rename")
     }
 
+    func requestRenameCluster(_ clusterId: UUID) {
+        guard let c = cluster(clusterId) else { return }
+        nameSheet = NameSheetRequest(kind: .renameCluster(clusterId), initialName: c.name,
+                                     title: "Rename Cluster", confirmLabel: "Rename")
+    }
+
     func confirmName(_ name: String) {
         guard let req = nameSheet else { return }
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !n.isEmpty {
             switch req.kind {
-            case .newTerminal(let pid): _ = newTerminal(projectId: pid, name: n)
-            case .rename(let id):       renameTerminal(id, to: n)
+            case .newTerminal(let pid):  _ = newTerminal(projectId: pid, name: n)
+            case .rename(let id):        renameTerminal(id, to: n)
+            case .renameCluster(let id): renameCluster(id, to: n)
             }
         }
         nameSheet = nil

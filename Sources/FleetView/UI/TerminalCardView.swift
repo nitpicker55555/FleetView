@@ -9,6 +9,7 @@ struct TerminalCardView: View {
 
     private var cluster: Cluster? { state.cluster(terminal.clusterId) }
     private var done: Bool { terminal.subtaskDone }
+    private var highlighted: Bool { state.highlightedTerminalId == terminal.id }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
@@ -22,6 +23,9 @@ struct TerminalCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12)
             .stroke(done ? Theme.doneStroke.opacity(0.55) : Theme.stroke, lineWidth: done ? 1.5 : 1))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .stroke(highlighted ? Theme.accent : Color.clear, lineWidth: 2))
+        .shadow(color: highlighted ? Theme.accent.opacity(0.45) : .clear, radius: highlighted ? 9 : 0)
         .onHover { hovering = $0 }
         .contentShape(Rectangle())
         .onTapGesture { if !renaming { state.raiseTerminal(terminal.id) } }
@@ -45,6 +49,7 @@ struct TerminalCardView: View {
         .animation(.easeOut(duration: 0.15), value: hovering)
         .animation(.easeOut(duration: 0.2), value: terminal.status)
         .animation(.easeOut(duration: 0.2), value: done)
+        .animation(.easeOut(duration: 0.2), value: highlighted)
         .contextMenu {
             Button("Rename…") { renaming = true }
             Button("Duplicate (cluster)") { state.duplicateTerminal(terminal.id) }
