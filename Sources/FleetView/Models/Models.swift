@@ -2,14 +2,16 @@ import Foundation
 
 enum TermStatus: String, Codable {
     case closed    // no live window/process
-    case idle      // window open, agent waiting for input
-    case working   // agent actively working
-    case needsYou  // agent needs attention (permission / notification)
+    case shell     // window open, plain shell — no Claude session detected (non-agent work)
+    case idle      // Claude session active, waiting for input
+    case working   // Claude actively working
+    case needsYou  // Claude needs attention (permission / notification)
     case exited    // process ended
 
     var label: String {
         switch self {
         case .closed:   return "closed"
+        case .shell:    return "shell"
         case .idle:     return "idle"
         case .working:  return "working"
         case .needsYou: return "needs you"
@@ -17,7 +19,11 @@ enum TermStatus: String, Codable {
         }
     }
 
-    var isLive: Bool { self == .idle || self == .working || self == .needsYou }
+    /// Window/process is open (used to choose raise vs reopen).
+    var isOpen: Bool { self == .shell || self == .idle || self == .working || self == .needsYou }
+
+    /// A Claude agent session is (or was) active in this terminal.
+    var isAgent: Bool { self == .idle || self == .working || self == .needsYou }
 }
 
 struct Project: Identifiable, Codable, Hashable {

@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Live status via Claude Code hooks (reversible; no-ops for terminals FleetView didn't launch).
         HookInstaller.install()
+        ShellIntegration.install()   // zsh command capture for FleetView-launched terminals
         let w = EventWatcher()
         w.onEvent = { [weak self] ev in
             Task { @MainActor in self?.state.handleHookEvent(ev) }

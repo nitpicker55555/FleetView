@@ -84,7 +84,7 @@ final class AppState: ObservableObject {
         var t = TerminalSession(projectId: projectId,
                                 name: name ?? defaultTerminalName(for: proj),
                                 clusterId: clusterId, cwd: proj.path, autoRunClaude: autoRunClaude)
-        t.status = .idle
+        t.status = .shell
         terminals.append(t)
         openWindow(for: t)
         save()
@@ -94,7 +94,7 @@ final class AppState: ObservableObject {
     func reopenTerminal(_ id: UUID) {
         if controllers[id] != nil { raiseTerminal(id); return }
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
-        terminals[idx].status = .idle
+        terminals[idx].status = .shell
         openWindow(for: terminals[idx])
         save()
     }
@@ -199,11 +199,35 @@ final class AppState: ObservableObject {
         case "Notification":
             terminals[idx].status = .needsYou
         case "SessionStart":
-            if !terminals[idx].status.isLive { terminals[idx].status = .idle }
+            // A Claude session is now active → leave "shell", show as an agent terminal.
+            if terminals[idx].status != .working && terminals[idx].status != .needsYou {
+                terminals[idx].status = .idle
+            }
+            if ev.source == "startup" {
+                terminals[idx].lastPrompt = ""                    // brand-new session, no prompt yet
+            } else if let tp = ev.transcriptPath {
+                loadLatestPrompt(termId: uid, path: tp)           // resume/compact/clear → recover latest prompt
+            }
+        case "ShellCommand":
+            // A plain (non-claude) command ran at the zsh prompt → back to "shell", show the command.
+            terminals[idx].status = .shell
+            if let c = ev.command, !c.isEmpty { terminals[idx].lastPrompt = c }
         default:
             break
         }
         save()
+    }
+
+    /// Read a resumed session's transcript off the main thread and show its latest user prompt.
+    private func loadLatestPrompt(termId: UUID, path: String) {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let prompt = Transcript.latestUserPrompt(path: path), !prompt.isEmpty else { return }
+            Task { @MainActor in
+                guard let self, let i = self.terminals.firstIndex(where: { $0.id == termId }) else { return }
+                self.terminals[i].lastPrompt = prompt
+                self.save()
+            }
+        }
     }
 
     // MARK: - Window plumbing

@@ -12,6 +12,8 @@ final class EventWatcher {
         let cwd: String?
         let prompt: String?
         let message: String?
+        let source: String?     // SessionStart: "startup" | "resume" | "compact" | "clear"
+        let command: String?    // ShellCommand: the shell command line
     }
 
     private let dir: URL
@@ -59,7 +61,9 @@ final class EventWatcher {
                            transcriptPath: p["transcript_path"] as? String,
                            cwd: p["cwd"] as? String,
                            prompt: p["prompt"] as? String,
-                           message: p["message"] as? String)
+                           message: p["message"] as? String,
+                           source: p["source"] as? String,
+                           command: p["command"] as? String)
             onEvent?(ev)
         }
     }

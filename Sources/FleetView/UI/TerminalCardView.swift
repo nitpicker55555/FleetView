@@ -60,8 +60,10 @@ struct TerminalCardView: View {
 
     private var promptLine: some View {
         HStack(alignment: .top, spacing: 6) {
-            Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold))
-                .foregroundColor(Theme.subtext.opacity(0.7)).padding(.top, 2)
+            Text(terminal.status == .shell ? "$" : "›")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundColor(terminal.status == .shell ? Theme.statusColor(.shell) : Theme.subtext.opacity(0.7))
+                .padding(.top, 1)
             Text(terminal.lastPrompt.isEmpty ? "—" : terminal.lastPrompt)
                 .font(.system(size: 12))
                 .foregroundColor(terminal.lastPrompt.isEmpty ? Theme.subtext.opacity(0.5) : Theme.subtext)
@@ -92,7 +94,7 @@ struct TerminalCardView: View {
                        active: done, help: done ? "Mark not done" : "Mark subtask done") {
                 state.toggleSubtaskDone(terminal.id)
             }
-            if terminal.status.isLive {
+            if terminal.status.isOpen {
                 iconButton("arrow.up.left.square", help: "Raise to front") { state.raiseTerminal(terminal.id) }
             } else {
                 iconButton("play.circle", help: "Reopen terminal") { state.reopenTerminal(terminal.id) }

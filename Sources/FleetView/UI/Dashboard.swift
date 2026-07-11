@@ -90,7 +90,7 @@ struct ProjectRow: View {
 
     private var isAll: Bool { project == nil }
     private var terms: [TerminalSession] { isAll ? state.terminals : state.terminals(inProject: project!.id) }
-    private var liveCount: Int { terms.filter { $0.status.isLive }.count }
+    private var workingCount: Int { terms.filter { $0.status == .working }.count }
     private var selected: Bool { state.selectedProjectId == project?.id }
 
     var body: some View {
@@ -108,7 +108,7 @@ struct ProjectRow: View {
                 }
                 .buttonStyle(.plain).help("New terminal in this project")
             }
-            if liveCount > 0 { Circle().fill(Theme.green).frame(width: 6, height: 6) }
+            if workingCount > 0 { Circle().fill(Theme.green).frame(width: 6, height: 6) }
             Text("\(terms.count)")
                 .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.85))
                 .frame(minWidth: 14, alignment: .trailing)
@@ -127,7 +127,7 @@ struct ProjectRow: View {
 struct TopBar: View {
     @EnvironmentObject var state: AppState
 
-    private var live: Int { state.terminals.filter { $0.status.isLive }.count }
+    private var working: Int { state.terminals.filter { $0.status == .working }.count }
     private var needs: Int { state.terminals.filter { $0.status == .needsYou }.count }
 
     var body: some View {
@@ -137,7 +137,7 @@ struct TopBar: View {
             Text("·").foregroundColor(Theme.subtext.opacity(0.6))
             Text("\(state.terminals.count) terminal\(state.terminals.count == 1 ? "" : "s")")
                 .font(.system(size: 13)).foregroundColor(Theme.subtext)
-            if live > 0 { pill("\(live) live", .working) }
+            if working > 0 { pill("\(working) working", .working) }
             if needs > 0 { pill("\(needs) needs you", .needsYou) }
             Spacer()
         }

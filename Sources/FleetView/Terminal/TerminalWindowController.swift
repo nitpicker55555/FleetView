@@ -24,6 +24,7 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
         var env = Terminal.getEnvironmentVariables(termName: "xterm-256color", trueColor: true)
         env.append("FLEETVIEW_TERM_ID=\(termId.uuidString)")
         if let port { env.append("FLEETVIEW_PORT=\(port)") }
+        env.append(contentsOf: ShellIntegration.env())   // zsh: capture shell commands via preexec
 
         let shell = FV.userShell
         let shellLeaf = (shell as NSString).lastPathComponent

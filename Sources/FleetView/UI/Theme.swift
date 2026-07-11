@@ -18,10 +18,11 @@ enum Theme {
 
     static func statusColor(_ s: TermStatus) -> Color {
         switch s {
-        case .working:  return Color(red: 0.36, green: 0.82, blue: 0.55)
-        case .idle:     return Color(red: 0.55, green: 0.58, blue: 0.64)
-        case .needsYou: return Color(red: 0.98, green: 0.72, blue: 0.32)
-        case .exited:   return Color(red: 0.85, green: 0.42, blue: 0.45)
+        case .working:  return Color(red: 0.36, green: 0.82, blue: 0.55)   // green
+        case .shell:    return Color(red: 0.30, green: 0.68, blue: 0.76)   // teal — plain shell
+        case .idle:     return Color(red: 0.55, green: 0.58, blue: 0.64)   // gray — agent idle
+        case .needsYou: return Color(red: 0.98, green: 0.72, blue: 0.32)   // amber
+        case .exited:   return Color(red: 0.85, green: 0.42, blue: 0.45)   // red
         case .closed:   return Color.white.opacity(0.22)
         }
     }
