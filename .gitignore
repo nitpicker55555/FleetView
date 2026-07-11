@@ -9,3 +9,6 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# Packaged app bundle
+FleetView.app/
