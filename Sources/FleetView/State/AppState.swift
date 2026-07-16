@@ -16,6 +16,11 @@ final class AppState: ObservableObject {
     @Published var tasksCollapsed: Bool = false
     @Published var notesCollapsed: Bool = false
 
+    // Per-terminal cumulative new-token curve, rebuilt from transcripts (not persisted — recomputed).
+    @Published var tokenSeries: [UUID: [TokenSample]] = [:]
+    private var lastParsedTranscriptSize: [UUID: Int] = [:]
+    private var lastTokenRefreshAt: [UUID: Date] = [:]
+
     // Sidebar → dashboard focus: highlight (not raise) the matching card/cluster.
     @Published var highlightedTerminalId: UUID?
     @Published var highlightedClusterId: UUID?
@@ -47,8 +52,7 @@ final class AppState: ObservableObject {
             var t = row
             t.status = .closed        // live processes are gone after a relaunch
             t.sessionId = nil
-            t.transcriptPath = nil
-            return t
+            return t                   // keep transcriptPath so we can rebuild the token curve
         }
         clusters = p.clusters
         selectedProjectId = p.selectedProjectId
@@ -56,6 +60,8 @@ final class AppState: ObservableObject {
         notes = p.notes ?? []
         tasksCollapsed = p.tasksCollapsed ?? false
         notesCollapsed = p.notesCollapsed ?? false
+        // Rebuild each terminal's token curve from its transcript (background; badge shows meanwhile).
+        for t in terminals { if let tp = t.transcriptPath { refreshTokens(t.id, path: tp) } }
     }
 
     func save() {
@@ -142,6 +148,9 @@ final class AppState: ObservableObject {
         controllers[id]?.closeWindow()
         controllers[id] = nil
         terminals.removeAll { $0.id == id }
+        tokenSeries[id] = nil
+        lastParsedTranscriptSize[id] = nil
+        lastTokenRefreshAt[id] = nil
         pruneClusters()
         save()
     }
@@ -426,6 +435,11 @@ final class AppState: ObservableObject {
         default:
             break
         }
+        // Refresh the token curve from the transcript as the turn progresses (skipped if unchanged).
+        if let tp = terminals[idx].transcriptPath,
+           ["Stop", "PostToolUse", "PreToolUse", "SessionStart"].contains(ev.event) {
+            refreshTokens(uid, path: tp, force: ev.event == "Stop")
+        }
         save()
     }
 
@@ -439,6 +453,52 @@ final class AppState: ObservableObject {
                 self.save()
             }
         }
+    }
+
+    // MARK: - Token usage
+
+    /// Re-read a terminal's transcript off the main thread and update its new-token curve + total.
+    /// Cheap: debounced to ~1s (force-through on turn end), and skips the parse when the file is unchanged.
+    func refreshTokens(_ termId: UUID, path: String, force: Bool = false) {
+        let now = Date()
+        if !force, let last = lastTokenRefreshAt[termId], now.timeIntervalSince(last) < 1.0 { return }
+        lastTokenRefreshAt[termId] = now
+        let prev = lastParsedTranscriptSize[termId]
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int
+            if let size, let prev, size == prev { return }
+            let series = TokenUsage.series(path: path).map { TokenSample(t: $0.t, newTokens: $0.cumulativeNew) }
+            let total = series.last?.newTokens ?? 0
+            Task { @MainActor in
+                guard let self else { return }
+                if let size { self.lastParsedTranscriptSize[termId] = size }
+                self.tokenSeries[termId] = series
+                if let i = self.terminals.firstIndex(where: { $0.id == termId }), self.terminals[i].newTokens != total {
+                    self.terminals[i].newTokens = total   // persisted on the next save()
+                }
+            }
+        }
+    }
+
+    /// Total new tokens used across a project's terminals.
+    func projectNewTokens(_ projectId: UUID) -> Int {
+        terminals.filter { $0.projectId == projectId }.reduce(0) { $0 + $1.newTokens }
+    }
+
+    /// Merge every member terminal's cumulative curve into one project curve over time (sum of
+    /// sessions): diff each session to per-interval deltas, merge by time, re-accumulate.
+    func projectTokenCurve(_ projectId: UUID) -> [TokenSample] {
+        let ids = terminals.filter { $0.projectId == projectId }.map { $0.id }
+        var deltas: [(Date, Int)] = []
+        for id in ids {
+            guard let s = tokenSeries[id], !s.isEmpty else { continue }
+            var prev = 0
+            for pt in s { deltas.append((pt.t, pt.newTokens - prev)); prev = pt.newTokens }
+        }
+        guard !deltas.isEmpty else { return [] }
+        deltas.sort { $0.0 < $1.0 }
+        var cum = 0
+        return deltas.map { entry in cum += entry.1; return TokenSample(t: entry.0, newTokens: cum) }
     }
 
     // MARK: - Window plumbing

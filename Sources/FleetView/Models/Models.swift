@@ -59,6 +59,10 @@ struct TerminalSession: Identifiable, Codable, Hashable {
     var lastPrompt: String = ""
     var sessionId: String?
     var transcriptPath: String?
+
+    /// Cumulative "new" tokens for this session (input + cache-writes + output, excluding cache reads).
+    /// Persisted for an instant badge on launch; the transcript on disk is the real source of truth.
+    var newTokens: Int = 0
 }
 
 struct Cluster: Identifiable, Codable, Hashable {
@@ -70,6 +74,12 @@ struct Cluster: Identifiable, Codable, Hashable {
 struct Note: Identifiable, Codable, Hashable {
     var id = UUID()
     var text: String
+}
+
+/// One point on a project's "new tokens over time" curve (cumulative, monotonic).
+struct TokenSample: Hashable {
+    var t: Date
+    var newTokens: Int
 }
 
 /// A unit of work shown in the sidebar: either a standalone terminal or a whole cluster.

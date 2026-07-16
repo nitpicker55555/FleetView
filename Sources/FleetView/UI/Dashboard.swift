@@ -322,10 +322,16 @@ struct ProjectSection: View {
     private var clusters: [Cluster] { state.clustersInProject(project.id) }
     private var standalone: [TerminalSession] { state.standaloneTerminals(inProject: project.id) }
     private var total: Int { state.terminals(inProject: project.id).count }
+    private var newTokens: Int { state.projectNewTokens(project.id) }
+    private var curve: [TokenSample] { state.projectTokenCurve(project.id) }
+    @State private var showChart = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             header
+            if showChart && curve.count > 1 {
+                ProjectTokenChart(samples: curve)
+            }
             if total == 0 {
                 emptyRow
             } else {
@@ -347,9 +353,26 @@ struct ProjectSection: View {
             Text("\(total)").font(.system(size: 11, weight: .medium))
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Theme.card).foregroundColor(Theme.subtext).clipShape(Capsule())
+            if newTokens > 0 {
+                HStack(spacing: 3) {
+                    Image(systemName: "sum").font(.system(size: 9, weight: .bold))
+                    Text(TokenUsage.short(newTokens)).font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(Theme.accent)
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(Theme.accent.opacity(0.12)).clipShape(Capsule())
+                .help("\(newTokens) new tokens used (input + output, excluding cache reads)")
+            }
             Text(project.path).font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.6))
                 .lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 10)
+            if curve.count > 1 {
+                Button { withAnimation(.easeOut(duration: 0.18)) { showChart.toggle() } } label: {
+                    Image(systemName: "chart.xyaxis.line").font(.system(size: 12))
+                        .foregroundColor(showChart ? Theme.accent : Theme.subtext).padding(5)
+                }
+                .buttonStyle(.plain).help(showChart ? "Hide token chart" : "Show token chart")
+            }
             Button { state.openInFinder(project.id) } label: {
                 Image(systemName: "folder").font(.system(size: 12)).foregroundColor(Theme.subtext).padding(5)
             }
