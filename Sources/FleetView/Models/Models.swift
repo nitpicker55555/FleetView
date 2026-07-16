@@ -38,6 +38,12 @@ enum TermStatus: String, Codable {
     }
 }
 
+/// Which agent CLI a terminal is running — drives a subtle colour cue on the card.
+enum AgentKind: String, Codable {
+    case unknown, claude, codex
+    var label: String { self == .unknown ? "" : rawValue }
+}
+
 struct Project: Identifiable, Codable, Hashable {
     var id = UUID()
     var name: String
@@ -56,6 +62,7 @@ struct TerminalSession: Identifiable, Codable, Hashable {
 
     // Live-ish fields (persisted as last-known; reset on load).
     var status: TermStatus = .closed
+    var agentKind: AgentKind = .unknown
     var lastPrompt: String = ""
     var sessionId: String?
     var transcriptPath: String?

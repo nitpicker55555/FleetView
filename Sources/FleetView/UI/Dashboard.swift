@@ -325,6 +325,7 @@ struct ProjectSection: View {
     private var newTokens: Int { state.projectNewTokens(project.id) }
     private var curve: [TokenSample] { state.projectTokenCurve(project.id) }
     @State private var showChart = true
+    @State private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -350,6 +351,8 @@ struct ProjectSection: View {
         HStack(spacing: 9) {
             Image(systemName: "folder.fill").font(.system(size: 12)).foregroundColor(Theme.accent.opacity(0.9))
             Text(project.name).font(.system(size: 15, weight: .semibold)).foregroundColor(Theme.text)
+                .onTapGesture { copyToClipboard(project.name) }
+                .help("Click to copy project name")
             Text("\(total)").font(.system(size: 11, weight: .medium))
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Theme.card).foregroundColor(Theme.subtext).clipShape(Capsule())
@@ -363,8 +366,28 @@ struct ProjectSection: View {
                 .background(Theme.accent.opacity(0.12)).clipShape(Capsule())
                 .help("\(newTokens) new tokens used (input + output, excluding cache reads)")
             }
+            if newTokens > 0 {
+                TimelineView(.periodic(from: .now, by: 5)) { context in
+                    let recent = state.projectTokensRecent(project.id, now: context.date)
+                    HStack(spacing: 3) {
+                        Image(systemName: "bolt.fill").font(.system(size: 8))
+                        Text("+\(TokenUsage.short(recent))/min").font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(recent > 0 ? Theme.green : Theme.subtext)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background((recent > 0 ? Theme.green : Theme.subtext).opacity(0.14)).clipShape(Capsule())
+                    .help("New tokens added in the last minute")
+                }
+            }
             Text(project.path).font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.6))
                 .lineLimit(1).truncationMode(.middle)
+                .onTapGesture { copyToClipboard(project.path) }
+                .help("Click to copy path")
+            if copied {
+                Text("Copied").font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.white).padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Theme.green).clipShape(Capsule()).transition(.opacity)
+            }
             Spacer(minLength: 10)
             if curve.count > 1 {
                 Button { withAnimation(.easeOut(duration: 0.18)) { showChart.toggle() } } label: {
@@ -392,6 +415,15 @@ struct ProjectSection: View {
                 Image(systemName: "xmark").font(.system(size: 10)).foregroundColor(Theme.subtext).padding(5)
             }
             .buttonStyle(.plain).help("Remove project from FleetView")
+        }
+    }
+
+    private func copyToClipboard(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        withAnimation(.easeOut(duration: 0.15)) { copied = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            withAnimation(.easeOut(duration: 0.25)) { copied = false }
         }
     }
 

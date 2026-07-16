@@ -10,43 +10,38 @@ struct TerminalCardView: View {
     private var cluster: Cluster? { state.cluster(terminal.clusterId) }
     private var done: Bool { terminal.subtaskDone }
     private var highlighted: Bool { state.highlightedTerminalId == terminal.id }
+    private var cardStroke: Color {
+        if done { return Theme.doneStroke.opacity(0.55) }
+        if terminal.agentKind != .unknown { return Theme.agentColor(terminal.agentKind).opacity(0.5) }
+        return Theme.stroke
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            header
-            promptLine
+            header.allowsHitTesting(renaming)     // display-only unless renaming → drags pass through the name/status
+            promptLine.allowsHitTesting(false)    // never let the prompt text intercept a drag
             Divider().overlay(done ? Theme.doneStroke.opacity(0.25) : Theme.stroke)
-            footer
+            footer                                 // keeps its buttons clickable; drag still works over it
         }
         .padding(14)
         .background(done ? Theme.doneCard : (hovering ? Theme.cardHover : Theme.card))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12)
-            .stroke(done ? Theme.doneStroke.opacity(0.55) : Theme.stroke, lineWidth: done ? 1.5 : 1))
+            .stroke(cardStroke, lineWidth: done ? 1.5 : 1))
         .overlay(RoundedRectangle(cornerRadius: 12)
             .stroke(highlighted ? Theme.accent : Color.clear, lineWidth: 2))
         .shadow(color: highlighted ? Theme.accent.opacity(0.45) : .clear, radius: highlighted ? 9 : 0)
         .onHover { hovering = $0 }
         .contentShape(Rectangle())
         .onTapGesture { if !renaming { state.raiseTerminal(terminal.id) } }
-        // simultaneousGesture (not .gesture) so the drag starts from ANYWHERE on the card — even
-        // over the buttons, name, and prompt text — while quick taps still hit those controls.
+        // Plain drag, NO long-press: on macOS a click-drag never scrolls a ScrollView, so the drag can
+        // begin the instant the pointer moves a few px. Requiring a press-and-hold first is what made
+        // dragging feel broken ("often invalid"). A pure click (no movement) still falls through to the
+        // tap above (raise), and simultaneousGesture lets the drag start even over the action buttons.
         .simultaneousGesture(
-            // Press briefly, then drag — disambiguates from scrolling, and the real card never moves.
-            LongPressGesture(minimumDuration: 0.18)
-                .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("fleet")))
-                .onChanged { value in
-                    if case .second(true, let drag?) = value {
-                        state.dragChanged(terminal.id, to: drag.location)
-                    }
-                }
-                .onEnded { value in
-                    if case .second(true, let drag?) = value {
-                        state.dragEnded(at: drag.location)
-                    } else {
-                        state.cancelDrag()
-                    }
-                }
+            DragGesture(minimumDistance: 6, coordinateSpace: .named("fleet"))
+                .onChanged { value in state.dragChanged(terminal.id, to: value.location) }
+                .onEnded { value in state.dragEnded(at: value.location) }
         )
         .animation(.easeOut(duration: 0.15), value: hovering)
         .animation(.easeOut(duration: 0.2), value: terminal.status)
@@ -73,6 +68,14 @@ struct TerminalCardView: View {
                          onCommit: { state.renameTerminal(terminal.id, to: $0) },
                          editing: $renaming)
             Spacer(minLength: 6)
+            if terminal.agentKind != .unknown {
+                Text(terminal.agentKind.label)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(Theme.agentColor(terminal.agentKind))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Theme.agentColor(terminal.agentKind).opacity(0.16))
+                    .clipShape(Capsule())
+            }
             if done {
                 Image(systemName: "checkmark.seal.fill").font(.system(size: 12)).foregroundColor(Theme.green)
             }

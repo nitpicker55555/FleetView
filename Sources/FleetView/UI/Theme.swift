@@ -16,6 +16,18 @@ enum Theme {
     static let doneStroke = Color(red: 0.36, green: 0.82, blue: 0.55)
     static let green      = Color(red: 0.36, green: 0.82, blue: 0.55)
 
+    // Agent cues — a warm tone for Claude, a cool teal for Codex, so the two are easy to tell apart.
+    static let claudeTint = Color(red: 0.90, green: 0.58, blue: 0.35)
+    static let codexTint  = Color(red: 0.40, green: 0.80, blue: 0.85)
+
+    static func agentColor(_ k: AgentKind) -> Color {
+        switch k {
+        case .claude:  return claudeTint
+        case .codex:   return codexTint
+        case .unknown: return subtext
+        }
+    }
+
     static func statusColor(_ s: TermStatus) -> Color {
         switch s {
         case .working:  return Color(red: 0.36, green: 0.82, blue: 0.55)   // green

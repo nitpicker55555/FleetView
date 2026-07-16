@@ -384,13 +384,26 @@ final class AppState: ObservableObject {
         terminals[idx].status = s
     }
 
+    /// The user pressed Escape (Claude's interrupt) — if the agent was working, the turn just ended,
+    /// so clear the stuck "working" immediately (no Stop hook fires on an interrupt).
+    func handleInterrupt(_ id: UUID) {
+        guard let idx = terminals.firstIndex(where: { $0.id == id }), terminals[idx].status == .working else { return }
+        terminals[idx].status = .idle
+        save()
+    }
+
     /// Apply a Claude Code hook event (delivered by EventWatcher) to the matching terminal.
     func handleHookEvent(_ ev: EventWatcher.Event) {
         guard let uid = UUID(uuidString: ev.term),
               let idx = terminals.firstIndex(where: { $0.id == uid }) else { return }
         FV.log("evt=\(ev.event) term=\(terminals[idx].name) src=\(ev.source ?? "-") msg=\(ev.message ?? "-")")
         if let sid = ev.sessionId { terminals[idx].sessionId = sid }
-        if let tp = ev.transcriptPath { terminals[idx].transcriptPath = tp }
+        if let tp = ev.transcriptPath {
+            terminals[idx].transcriptPath = tp
+            // Tell Claude vs Codex apart by where the transcript lives (drives the card's colour cue).
+            if tp.contains("/.codex/") { terminals[idx].agentKind = .codex }
+            else if tp.contains("/.claude/") { terminals[idx].agentKind = .claude }
+        }
 
         switch ev.event {
         case "UserPromptSubmit":
@@ -415,6 +428,8 @@ final class AppState: ObservableObject {
             let msg = (ev.message ?? "").lowercased()
             if msg.contains("permission") || msg.contains("approve") || msg.contains("approval") || msg.contains("confirm") {
                 terminals[idx].status = .needsYou
+            } else if msg.contains("waiting") || msg.contains("finished") || msg.contains("idle") {
+                terminals[idx].status = .idle   // explicit idle signal clears a stuck "working" (e.g. after an interrupt)
             } else if terminals[idx].status != .working {
                 terminals[idx].status = .idle
             }
@@ -431,7 +446,10 @@ final class AppState: ObservableObject {
         case "ShellCommand":
             // A plain (non-claude) command ran at the zsh prompt → back to "shell", show the command.
             terminals[idx].status = .shell
-            if let c = ev.command, !c.isEmpty { terminals[idx].lastPrompt = c }
+            if let c = ev.command, !c.isEmpty {
+                terminals[idx].lastPrompt = c
+                if c.hasPrefix("codex") { terminals[idx].agentKind = .codex }
+            }
         default:
             break
         }
@@ -501,6 +519,18 @@ final class AppState: ObservableObject {
         return deltas.map { entry in cum += entry.1; return TokenSample(t: entry.0, newTokens: cum) }
     }
 
+    /// New tokens a project accrued in the last `seconds` (default 60) — a live "tokens/min" rate.
+    func projectTokensRecent(_ projectId: UUID, now: Date, seconds: TimeInterval = 60) -> Int {
+        let cutoff = now.addingTimeInterval(-seconds)
+        var sum = 0
+        for t in terminals where t.projectId == projectId {
+            guard let s = tokenSeries[t.id], let last = s.last else { continue }
+            let base = s.last(where: { $0.t <= cutoff })?.newTokens ?? 0
+            sum += max(0, last.newTokens - base)
+        }
+        return sum
+    }
+
     // MARK: - Window plumbing
 
     private func openWindow(for t: TerminalSession) {
@@ -511,6 +541,9 @@ final class AppState: ObservableObject {
         }
         ctrl.onClose = { [weak self] id in
             Task { @MainActor in self?.handleWindowClosed(id) }
+        }
+        ctrl.onInterrupt = { [weak self] id in
+            Task { @MainActor in self?.handleInterrupt(id) }
         }
         controllers[t.id] = ctrl
         ctrl.show(cascadeFrom: &cascadePoint)

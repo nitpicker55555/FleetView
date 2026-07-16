@@ -8,9 +8,11 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     let termId: UUID
     private(set) var window: NSWindow!
     private let termView: LocalProcessTerminalView
+    private var keyMonitor: Any?
 
     var onExit: ((UUID, Int32?) -> Void)?
     var onClose: ((UUID) -> Void)?
+    var onInterrupt: ((UUID) -> Void)?   // user pressed Escape (Claude's interrupt key)
 
     init(termId: UUID, title: String, cwd: String, autoRunClaude: Bool, port: Int?) {
         self.termId = termId
@@ -44,6 +46,17 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
         win.isReleasedWhenClosed = false
         win.minSize = NSSize(width: 480, height: 300)
         self.window = win
+
+        // Report Escape (Claude's interrupt) so a stuck "working" card clears immediately. A local
+        // monitor is used because SwiftTerm's keyDown isn't overridable; the key still reaches the shell.
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 {   // 53 = Escape
+                MainActor.assumeIsolated {
+                    if let self, event.window === self.window { self.onInterrupt?(self.termId) }
+                }
+            }
+            return event
+        }
 
         if autoRunClaude {
             // Type `claude` into the ready interactive shell — same as the user does by hand.
@@ -83,5 +96,8 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     func processTerminated(source: TerminalView, exitCode: Int32?) { onExit?(termId, exitCode) }
 
     // MARK: NSWindowDelegate
-    func windowWillClose(_ notification: Notification) { onClose?(termId) }
+    func windowWillClose(_ notification: Notification) {
+        if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        onClose?(termId)
+    }
 }
