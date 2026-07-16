@@ -14,6 +14,20 @@ enum FV {
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
     }
 
+    /// Append a line to ~/.fleetview/fleetview.log (for tuning status heuristics).
+    static func log(_ message: String) {
+        ensureSupportDir()
+        guard let data = (message + "\n").data(using: .utf8) else { return }
+        if FileManager.default.fileExists(atPath: logFile.path),
+           let fh = try? FileHandle(forWritingTo: logFile) {
+            defer { try? fh.close() }
+            _ = try? fh.seekToEnd()
+            try? fh.write(contentsOf: data)
+        } else {
+            try? data.write(to: logFile)
+        }
+    }
+
     static var claudeProjectsDir: URL { home.appendingPathComponent(".claude/projects", isDirectory: true) }
 
     /// Claude Code's slug rule for a cwd: replace "/" and "_" with "-".

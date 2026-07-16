@@ -29,7 +29,9 @@ struct TerminalCardView: View {
         .onHover { hovering = $0 }
         .contentShape(Rectangle())
         .onTapGesture { if !renaming { state.raiseTerminal(terminal.id) } }
-        .gesture(
+        // simultaneousGesture (not .gesture) so the drag starts from ANYWHERE on the card — even
+        // over the buttons, name, and prompt text — while quick taps still hit those controls.
+        .simultaneousGesture(
             // Press briefly, then drag — disambiguates from scrolling, and the real card never moves.
             LongPressGesture(minimumDuration: 0.18)
                 .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("fleet")))
@@ -80,18 +82,29 @@ struct TerminalCardView: View {
         }
     }
 
+    // Collapse whitespace and hard-cap length so a very long prompt can't overflow the card.
+    private var displayPrompt: String {
+        guard !terminal.lastPrompt.isEmpty else { return "—" }
+        let collapsed = terminal.lastPrompt
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return collapsed.count > 220 ? String(collapsed.prefix(220)) + "…" : collapsed
+    }
+
     private var promptLine: some View {
         HStack(alignment: .top, spacing: 6) {
             Text(terminal.status == .shell ? "$" : "›")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundColor(terminal.status == .shell ? Theme.statusColor(.shell) : Theme.subtext.opacity(0.7))
                 .padding(.top, 1)
-            Text(terminal.lastPrompt.isEmpty ? "—" : terminal.lastPrompt)
+            Text(displayPrompt)
                 .font(.system(size: 12))
                 .foregroundColor(terminal.lastPrompt.isEmpty ? Theme.subtext.opacity(0.5) : Theme.subtext)
                 .lineLimit(2)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
+                .help(terminal.lastPrompt)      // full prompt on hover (selection removed so drag works here)
         }
         .frame(minHeight: 34, alignment: .top)
     }

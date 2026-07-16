@@ -3,7 +3,9 @@ import Foundation
 /// Installs (and cleanly removes) FleetView's Claude Code status hooks in ~/.claude/settings.json.
 /// The hook script no-ops unless FLEETVIEW_TERM_ID is set, so it never affects normal `claude` use.
 enum HookInstaller {
-    static let events = ["SessionStart", "UserPromptSubmit", "Stop", "Notification"]
+    // PreToolUse lets us clear "needs you" the instant the user approves a permission prompt
+    // (Claude fires it as work resumes; without it the card stayed stuck on "needs you").
+    static let events = ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "Notification"]
     static var settingsURL: URL { FV.home.appendingPathComponent(".claude/settings.json") }
     static var backupURL: URL { FV.supportDir.appendingPathComponent("settings.backup.json") }
 

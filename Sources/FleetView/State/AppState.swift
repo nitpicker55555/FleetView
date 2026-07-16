@@ -11,6 +11,11 @@ final class AppState: ObservableObject {
     @Published var selectedProjectId: UUID? = nil   // nil == All Projects
     @Published var sidebarWidth: Double = 236
 
+    // Sidebar sections
+    @Published var notes: [Note] = []
+    @Published var tasksCollapsed: Bool = false
+    @Published var notesCollapsed: Bool = false
+
     // Sidebar → dashboard focus: highlight (not raise) the matching card/cluster.
     @Published var highlightedTerminalId: UUID?
     @Published var highlightedClusterId: UUID?
@@ -28,6 +33,9 @@ final class AppState: ObservableObject {
         var clusters: [Cluster]
         var selectedProjectId: UUID?
         var sidebarWidth: Double?
+        var notes: [Note]?
+        var tasksCollapsed: Bool?
+        var notesCollapsed: Bool?
     }
 
     func load() {
@@ -45,6 +53,9 @@ final class AppState: ObservableObject {
         clusters = p.clusters
         selectedProjectId = p.selectedProjectId
         if let w = p.sidebarWidth { sidebarWidth = min(520, max(180, w)) }
+        notes = p.notes ?? []
+        tasksCollapsed = p.tasksCollapsed ?? false
+        notesCollapsed = p.notesCollapsed ?? false
     }
 
     func save() {
@@ -56,7 +67,8 @@ final class AppState: ObservableObject {
         }
         let p = Persisted(projects: projects, terminals: snapshot,
                           clusters: clusters, selectedProjectId: selectedProjectId,
-                          sidebarWidth: sidebarWidth)
+                          sidebarWidth: sidebarWidth, notes: notes,
+                          tasksCollapsed: tasksCollapsed, notesCollapsed: notesCollapsed)
         if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile) }
     }
 
@@ -194,6 +206,16 @@ final class AppState: ObservableObject {
         return result
     }
 
+    /// Tasks grouped by project (only projects that have at least one task).
+    var taskGroups: [TaskGroup] {
+        projects.compactMap { p in
+            var items: [TaskItem] = []
+            for c in clustersInProject(p.id) { items.append(.cluster(c.id)) }
+            for t in standaloneTerminals(inProject: p.id) { items.append(.terminal(t.id)) }
+            return items.isEmpty ? nil : TaskGroup(project: p, tasks: items)
+        }
+    }
+
     /// Worst-case status across a cluster's members (needs-you > running > returned > shell > gone).
     func clusterAggregateStatus(_ id: UUID) -> TermStatus {
         let m = members(ofCluster: id)
@@ -222,6 +244,28 @@ final class AppState: ObservableObject {
             highlightedTerminalId = nil
             scrollToId = id
         }
+    }
+
+    // MARK: - Notes
+
+    func addNote(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        notes.append(Note(text: t))
+        save()
+    }
+
+    /// Commit an edit. Committing empty text deletes the note (a simple, discoverable delete path).
+    func updateNote(_ id: UUID, text: String) {
+        guard let i = notes.firstIndex(where: { $0.id == id }) else { return }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { notes.remove(at: i) } else { notes[i].text = t }
+        save()
+    }
+
+    func removeNote(_ id: UUID) {
+        notes.removeAll { $0.id == id }
+        save()
     }
 
     // MARK: - Finder
@@ -335,6 +379,7 @@ final class AppState: ObservableObject {
     func handleHookEvent(_ ev: EventWatcher.Event) {
         guard let uid = UUID(uuidString: ev.term),
               let idx = terminals.firstIndex(where: { $0.id == uid }) else { return }
+        FV.log("evt=\(ev.event) term=\(terminals[idx].name) src=\(ev.source ?? "-") msg=\(ev.message ?? "-")")
         if let sid = ev.sessionId { terminals[idx].sessionId = sid }
         if let tp = ev.transcriptPath { terminals[idx].transcriptPath = tp }
 
@@ -346,10 +391,24 @@ final class AppState: ObservableObject {
                               .trimmingCharacters(in: .whitespacesAndNewlines)
                 if !oneLine.isEmpty { terminals[idx].lastPrompt = oneLine }
             }
+        case "PreToolUse", "PostToolUse":
+            // A tool is starting/finishing → the agent is actively working. Crucially this clears a
+            // prior "needs you" the moment the user approves a permission prompt (Claude & Codex).
+            if terminals[idx].status != .working { terminals[idx].status = .working }
+        case "PermissionRequest":
+            // Codex fires this before an approval prompt (Claude uses "Notification", handled below).
+            terminals[idx].status = .needsYou
         case "Stop":
             terminals[idx].status = .idle
         case "Notification":
-            terminals[idx].status = .needsYou
+            // The Notification hook fires for BOTH permission requests and idle "waiting for input".
+            // Only a permission/approval request is a genuine "needs you"; idle just means returned.
+            let msg = (ev.message ?? "").lowercased()
+            if msg.contains("permission") || msg.contains("approve") || msg.contains("approval") || msg.contains("confirm") {
+                terminals[idx].status = .needsYou
+            } else if terminals[idx].status != .working {
+                terminals[idx].status = .idle
+            }
         case "SessionStart":
             // A Claude session is now active → leave "shell", show as an agent terminal.
             if terminals[idx].status != .working && terminals[idx].status != .needsYou {

@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Live status via Claude Code hooks (reversible; no-ops for terminals FleetView didn't launch).
         HookInstaller.install()
+        CodexHookInstaller.install() // same pipeline for Codex CLI (only if ~/.codex already exists)
         ShellIntegration.install()   // zsh command capture for FleetView-launched terminals
         let w = EventWatcher()
         w.onEvent = { [weak self] ev in
@@ -55,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide FleetView", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
-        let uninstall = NSMenuItem(title: "Uninstall Claude Status Hooks", action: #selector(uninstallHooks), keyEquivalent: "")
+        let uninstall = NSMenuItem(title: "Uninstall Status Hooks (Claude + Codex)", action: #selector(uninstallHooks), keyEquivalent: "")
         uninstall.target = self
         appMenu.addItem(uninstall)
         let reveal = NSMenuItem(title: "Reveal Support Folder (~/.fleetview)", action: #selector(revealSupport), keyEquivalent: "")
@@ -78,9 +79,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func uninstallHooks() {
         HookInstaller.uninstall()
+        CodexHookInstaller.uninstall()
         let a = NSAlert()
-        a.messageText = "Claude status hooks removed"
-        a.informativeText = "FleetView's hooks were removed from ~/.claude/settings.json. Live status will stop updating until you relaunch FleetView."
+        a.messageText = "Status hooks removed"
+        a.informativeText = "FleetView's hooks were removed from ~/.claude/settings.json and ~/.codex/config.toml. Live status will stop updating until you relaunch FleetView."
         a.runModal()
     }
 

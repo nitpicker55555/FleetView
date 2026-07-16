@@ -61,29 +61,30 @@ struct Sidebar: View {
                 Image(systemName: "rectangle.3.group").foregroundColor(Theme.accent)
                 Text("FleetView").font(.system(size: 15, weight: .semibold)).foregroundColor(Theme.text)
             }
-            .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 16)
+            .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 14)
 
-            HStack {
-                Text("TASKS").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.subtext)
-                Spacer()
-                Text("\(state.tasks.count)").font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.7))
+            // TASKS (collapsible)
+            sectionHeader(title: "TASKS", count: state.tasks.count, collapsed: state.tasksCollapsed) {
+                withAnimation(.easeOut(duration: 0.18)) { state.tasksCollapsed.toggle() }
+                state.save()
             }
-            .padding(.horizontal, 16).padding(.bottom, 6)
-
-            if state.tasks.isEmpty {
-                Text("No terminals yet")
-                    .font(.system(size: 12)).foregroundColor(Theme.subtext.opacity(0.55))
-                    .padding(.horizontal, 16).padding(.top, 6)
-            } else {
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(state.tasks) { task in TaskRow(task: task) }
-                    }
-                    .padding(.horizontal, 8)
+            if !state.tasksCollapsed {
+                if state.taskGroups.isEmpty {
+                    Text("No terminals yet")
+                        .font(.system(size: 12)).foregroundColor(Theme.subtext.opacity(0.55))
+                        .padding(.horizontal, 16).padding(.top, 6)
+                    Spacer(minLength: 0)
+                } else {
+                    taskList
                 }
             }
 
-            Spacer(minLength: 0)
+            Divider().overlay(Theme.stroke)
+
+            // NOTES (collapsible) — sits above the footer; grows to fill when Tasks is collapsed.
+            NotesSection(fill: state.tasksCollapsed)
+            if state.tasksCollapsed && state.notesCollapsed { Spacer(minLength: 0) }
+
             Divider().overlay(Theme.stroke)
             HStack(spacing: 0) {
                 footerButton("Open Folder", "folder.badge.plus") { DashboardView.pickFolder(into: state) }
@@ -93,6 +94,47 @@ struct Sidebar: View {
         }
         .background(Theme.panel)
         .sheet(isPresented: $showingClone) { CloneSheet().environmentObject(state) }
+    }
+
+    private var taskList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(state.taskGroups.enumerated()), id: \.element.id) { idx, group in
+                    if idx > 0 {
+                        DashedLine().padding(.horizontal, 12).padding(.vertical, 7)
+                    }
+                    HStack(spacing: 5) {
+                        Image(systemName: "folder.fill").font(.system(size: 8))
+                            .foregroundColor(Theme.subtext.opacity(0.55))
+                        Text(group.project.name.uppercased())
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(Theme.subtext.opacity(0.6)).lineLimit(1)
+                    }
+                    .padding(.horizontal, 12).padding(.bottom, 3)
+                    ForEach(group.tasks) { task in TaskRow(task: task) }
+                }
+            }
+            .padding(.horizontal, 8).padding(.top, 2)
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    /// A collapsible section header (chevron + title + count). Used for TASKS.
+    private func sectionHeader(title: String, count: Int, collapsed: Bool,
+                               toggle: @escaping () -> Void) -> some View {
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold)).foregroundColor(Theme.subtext)
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                Text(title).font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.subtext)
+                Spacer()
+                Text("\(count)").font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.7))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16).padding(.vertical, 9)
     }
 
     private func footerButton(_ title: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
@@ -173,11 +215,10 @@ struct TaskRow: View {
         return false
     }
     private var subtitle: String {
-        if let t = terminal { return state.project(t.projectId)?.name ?? "" }
+        if terminal != nil { return "" }        // project is shown in the group header
         if let c = cluster {
-            let ms = state.members(ofCluster: c.id)
-            let proj = ms.first.flatMap { state.project($0.projectId)?.name } ?? ""
-            return "\(proj) · \(ms.count) terminal\(ms.count == 1 ? "" : "s")"
+            let n = state.members(ofCluster: c.id).count
+            return "\(n) terminal\(n == 1 ? "" : "s")"
         }
         return ""
     }
@@ -195,7 +236,9 @@ struct TaskRow: View {
                         Image(systemName: "checkmark.seal.fill").font(.system(size: 10)).foregroundColor(Theme.green)
                     }
                 }
-                Text(subtitle).font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.7)).lineLimit(1)
+                if !subtitle.isEmpty {
+                    Text(subtitle).font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.7)).lineLimit(1)
+                }
             }
             Spacer(minLength: 4)
             Text(status.taskLabel).font(.system(size: 10, weight: .medium)).foregroundColor(Theme.statusColor(status))

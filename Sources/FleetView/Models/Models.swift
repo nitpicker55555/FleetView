@@ -66,6 +66,12 @@ struct Cluster: Identifiable, Codable, Hashable {
     var name: String
 }
 
+/// A free-form text note kept in the sidebar's "NOTES" section.
+struct Note: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var text: String
+}
+
 /// A unit of work shown in the sidebar: either a standalone terminal or a whole cluster.
 /// Holds ids only — the row looks up live state so renames/status reflect immediately.
 enum TaskItem: Identifiable {
@@ -78,4 +84,11 @@ enum TaskItem: Identifiable {
         case .cluster(let u):  return "c-\(u.uuidString)"
         }
     }
+}
+
+/// Tasks grouped under their project (for the sidebar's per-project separation).
+struct TaskGroup: Identifiable {
+    let project: Project
+    let tasks: [TaskItem]
+    var id: UUID { project.id }
 }

@@ -1,5 +1,24 @@
 import SwiftUI
 
+/// A thin horizontal dashed rule (used to separate projects in the sidebar).
+struct DashedLine: View {
+    var body: some View {
+        DashShape()
+            .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            .foregroundColor(Theme.stroke)
+            .frame(height: 1)
+    }
+}
+
+private struct DashShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: 0, y: rect.midY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        return p
+    }
+}
+
 /// Inline-editable text. Double-click to edit, or drive `editing` externally (e.g. from a
 /// menu / pencil button). Commits on Return, cancels on Esc.
 struct EditableText: View {
