@@ -1,18 +1,20 @@
 import SwiftUI
 import Charts
 
-/// A compact "new tokens over time" line/area chart for one project. The x-axis always includes the
-/// latest sample's time (rightmost tick), and a caption spells out when the data last updated.
+/// A compact per-turn "new tokens" *increment* bar chart for one project (each bar = tokens added in
+/// that turn/bucket, not a running total). The x-axis includes the latest bar and a caption spells out
+/// when the data last updated.
 struct ProjectTokenChart: View {
-    let samples: [TokenSample]
+    let samples: [TokenSample]        // increments (bar heights)
+    var lastUpdated: Date? = nil
+    var window: TimeInterval = 3600   // x-axis spans exactly this (the last 1h)
 
-    private var firstDate: Date? { samples.first?.t }
     private var lastDate: Date? { samples.last?.t }
 
-    // Force ticks at the start, middle, and — crucially — the latest sample.
-    private var xTicks: [Date] {
-        guard let f = firstDate, let l = lastDate, f < l else { return samples.map { $0.t } }
-        return [f, f.addingTimeInterval(l.timeIntervalSince(f) / 2), l]
+    // Pin the x-axis to [now - window, now] so the axis literally shows the last 10 hours.
+    private var domain: ClosedRange<Date> {
+        let now = Date()
+        return now.addingTimeInterval(-window)...now
     }
 
     private static let updatedFmt: DateFormatter = {
@@ -21,7 +23,7 @@ struct ProjectTokenChart: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            if let l = lastDate {
+            if let l = lastUpdated ?? lastDate {
                 HStack(spacing: 4) {
                     Image(systemName: "clock.arrow.circlepath").font(.system(size: 8))
                     Text("updated \(Self.updatedFmt.string(from: l))").font(.system(size: 9, weight: .medium))
@@ -37,18 +39,15 @@ struct ProjectTokenChart: View {
     }
 
     private var chart: some View {
-        Chart(Array(samples.enumerated()), id: \.offset) { _, s in
-            AreaMark(x: .value("Time", s.t), y: .value("New tokens", s.newTokens))
-                .interpolationMethod(.monotone)
-                .foregroundStyle(.linearGradient(colors: [Theme.accent.opacity(0.30), Theme.accent.opacity(0.02)],
+        Chart(samples, id: \.t) { s in
+            BarMark(x: .value("Time", s.t), y: .value("New tokens", s.newTokens), width: .fixed(5))
+                .foregroundStyle(.linearGradient(colors: [Theme.accent, Theme.accent.opacity(0.55)],
                                                  startPoint: .top, endPoint: .bottom))
-            LineMark(x: .value("Time", s.t), y: .value("New tokens", s.newTokens))
-                .interpolationMethod(.monotone)
-                .lineStyle(StrokeStyle(lineWidth: 1.6))
-                .foregroundStyle(Theme.accent)
+                .cornerRadius(1.5)
         }
+        .chartXScale(domain: domain)
         .chartXAxis {
-            AxisMarks(values: xTicks) { _ in
+            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
                 AxisGridLine().foregroundStyle(Theme.stroke)
                 AxisValueLabel(format: .dateTime.hour().minute())
                     .foregroundStyle(Theme.subtext)

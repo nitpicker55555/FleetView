@@ -531,6 +531,34 @@ final class AppState: ObservableObject {
         return sum
     }
 
+    /// Per-turn token *increments* aggregated into FIXED absolute-time buckets over the last `window`
+    /// (default 1h). Fixed buckets (not data-relative) keep every bar in a stable x position — new data
+    /// only grows the rightmost bar instead of reshuffling the whole chart. Each sample's `newTokens`
+    /// is the increment, not a running total.
+    func projectTokenDeltas(_ projectId: UUID, window: TimeInterval = 3600, bars: Int = 40) -> [TokenSample] {
+        let cutoff = Date().addingTimeInterval(-window)
+        let width = max(1, window / Double(bars))
+        var sums: [Double: Int] = [:]   // bucket-start (ref-date seconds) → tokens
+        for t in terminals where t.projectId == projectId {
+            guard let s = tokenSeries[t.id], !s.isEmpty else { continue }
+            var prev = 0
+            for pt in s {
+                let d = pt.newTokens - prev; prev = pt.newTokens
+                guard d > 0, pt.t >= cutoff else { continue }
+                let slot = (pt.t.timeIntervalSinceReferenceDate / width).rounded(.down) * width
+                sums[slot, default: 0] += d
+            }
+        }
+        return sums.keys.sorted().map {
+            TokenSample(t: Date(timeIntervalSinceReferenceDate: $0 + width / 2), newTokens: sums[$0]!)
+        }
+    }
+
+    /// Most recent token-event time across a project (for the chart's "updated" caption).
+    func projectLastTokenTime(_ projectId: UUID) -> Date? {
+        terminals.filter { $0.projectId == projectId }.compactMap { tokenSeries[$0.id]?.last?.t }.max()
+    }
+
     // MARK: - Window plumbing
 
     private func openWindow(for t: TerminalSession) {

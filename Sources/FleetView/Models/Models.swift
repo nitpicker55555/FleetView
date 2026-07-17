@@ -13,7 +13,7 @@ enum TermStatus: String, Codable {
         case .closed:   return "closed"
         case .shell:    return "shell"
         case .idle:     return "idle"
-        case .working:  return "working"
+        case .working:  return "running"
         case .needsYou: return "needs you"
         case .exited:   return "exited"
         }

@@ -323,15 +323,16 @@ struct ProjectSection: View {
     private var standalone: [TerminalSession] { state.standaloneTerminals(inProject: project.id) }
     private var total: Int { state.terminals(inProject: project.id).count }
     private var newTokens: Int { state.projectNewTokens(project.id) }
-    private var curve: [TokenSample] { state.projectTokenCurve(project.id) }
+    private var deltas: [TokenSample] { state.projectTokenDeltas(project.id) }
+    private var lastTokenTime: Date? { state.projectLastTokenTime(project.id) }
     @State private var showChart = true
     @State private var copied = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             header
-            if showChart && curve.count > 1 {
-                ProjectTokenChart(samples: curve)
+            if showChart && deltas.count > 1 {
+                ProjectTokenChart(samples: deltas, lastUpdated: lastTokenTime)
             }
             if total == 0 {
                 emptyRow
@@ -351,8 +352,9 @@ struct ProjectSection: View {
         HStack(spacing: 9) {
             Image(systemName: "folder.fill").font(.system(size: 12)).foregroundColor(Theme.accent.opacity(0.9))
             Text(project.name).font(.system(size: 15, weight: .semibold)).foregroundColor(Theme.text)
+                .onTapGesture(count: 2) { state.openInFinder(project.id) }
                 .onTapGesture { copyToClipboard(project.name) }
-                .help("Click to copy project name")
+                .help("Click to copy · double-click to open in Finder")
             Text("\(total)").font(.system(size: 11, weight: .medium))
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Theme.card).foregroundColor(Theme.subtext).clipShape(Capsule())
@@ -381,17 +383,18 @@ struct ProjectSection: View {
             }
             Text(project.path).font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.6))
                 .lineLimit(1).truncationMode(.middle)
+                .onTapGesture(count: 2) { state.openInFinder(project.id) }
                 .onTapGesture { copyToClipboard(project.path) }
-                .help("Click to copy path")
+                .help("Click to copy · double-click to open in Finder")
             if copied {
                 Text("Copied").font(.system(size: 9, weight: .semibold))
                     .foregroundColor(.white).padding(.horizontal, 6).padding(.vertical, 1)
                     .background(Theme.green).clipShape(Capsule()).transition(.opacity)
             }
             Spacer(minLength: 10)
-            if curve.count > 1 {
+            if deltas.count > 1 {
                 Button { withAnimation(.easeOut(duration: 0.18)) { showChart.toggle() } } label: {
-                    Image(systemName: "chart.xyaxis.line").font(.system(size: 12))
+                    Image(systemName: "chart.bar.xaxis").font(.system(size: 12))
                         .foregroundColor(showChart ? Theme.accent : Theme.subtext).padding(5)
                 }
                 .buttonStyle(.plain).help(showChart ? "Hide token chart" : "Show token chart")

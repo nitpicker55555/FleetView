@@ -9,54 +9,59 @@ import Foundation
 enum TokenUsage {
     struct Sample { let t: Date; let cumulativeNew: Int }
 
-    /// Read `path` and return its cumulative new-token curve (non-decreasing, sorted by time).
+    /// Read `path` (plus Claude subagent transcripts) → cumulative new-token curve, sorted by time.
     static func series(path: String) -> [Sample] {
-        guard let data = FileManager.default.contents(atPath: path),
-              let text = String(data: data, encoding: .utf8) else { return [] }
-
-        var points: [Sample] = []
-        var claudeRunning = 0
-        var seen = Set<String>()   // de-dup Claude assistant messages by id
-
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard let ld = line.data(using: .utf8),
-                  let o = try? JSONSerialization.jsonObject(with: ld) as? [String: Any] else { continue }
-
-            // --- Codex: event_msg / payload.type == token_count → cumulative total_token_usage ---
-            // Newer Codex nests it under payload.info; older builds had it directly on payload.
-            if let p = o["payload"] as? [String: Any], (p["type"] as? String) == "token_count" {
-                let container = (p["info"] as? [String: Any]) ?? p
-                if let tu = container["total_token_usage"] as? [String: Any] {
-                    let input  = int(tu["input_tokens"])
-                    let cached = int(tu["cached_input_tokens"])
-                    let output = int(tu["output_tokens"])      // already includes reasoning tokens
-                    let newCum = max(0, input - cached) + output
-                    if let t = date(o["timestamp"]) { points.append(Sample(t: t, cumulativeNew: newCum)) }
-                }
-                continue
-            }
-
-            // --- Claude: assistant message with message.usage → per-message new, accumulated ---
-            if (o["type"] as? String) == "assistant",
-               let m = o["message"] as? [String: Any],
-               let u = m["usage"] as? [String: Any] {
-                let id = (m["id"] as? String) ?? (o["requestId"] as? String) ?? ""
-                if !id.isEmpty {
-                    if seen.contains(id) { continue }
-                    seen.insert(id)
-                }
-                claudeRunning += int(u["input_tokens"]) + int(u["cache_creation_input_tokens"]) + int(u["output_tokens"])
-                if let t = date(o["timestamp"]) { points.append(Sample(t: t, cumulativeNew: claudeRunning)) }
-                continue
+        // Claude writes each subagent's turns to a sibling dir: <transcript w/o .jsonl>/subagents/agent-*.jsonl
+        // Those tokens are real usage but live outside the main transcript, so include them.
+        var files = [path]
+        if path.hasSuffix(".jsonl") {
+            let subDir = String(path.dropLast(6)) + "/subagents"
+            if let subs = try? FileManager.default.contentsOfDirectory(atPath: subDir) {
+                for f in subs where f.hasPrefix("agent-") && f.hasSuffix(".jsonl") { files.append(subDir + "/" + f) }
             }
         }
 
-        // Enforce a non-decreasing cumulative (Codex may interleave counters from sub-threads).
-        var peak = 0
-        return points.sorted { $0.t < $1.t }.map { s in
-            peak = max(peak, s.cumulativeNew)
-            return Sample(t: s.t, cumulativeNew: peak)
+        var claudeIncrements: [(Date, Int)] = []   // Claude: per-message new tokens (main + subagents)
+        var codexCumulative: [(Date, Int)] = []    // Codex: cumulative total_token_usage snapshots
+        var seen = Set<String>()                   // de-dup Claude assistant messages by id
+
+        for file in files {
+            guard let data = FileManager.default.contents(atPath: file),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+                guard let ld = line.data(using: .utf8),
+                      let o = try? JSONSerialization.jsonObject(with: ld) as? [String: Any] else { continue }
+
+                // Codex: token_count → cumulative total_token_usage (payload.info in newer builds).
+                if let p = o["payload"] as? [String: Any], (p["type"] as? String) == "token_count" {
+                    let container = (p["info"] as? [String: Any]) ?? p
+                    if let tu = container["total_token_usage"] as? [String: Any] {
+                        let newCum = max(0, int(tu["input_tokens"]) - int(tu["cached_input_tokens"])) + int(tu["output_tokens"])
+                        if let t = date(o["timestamp"]) { codexCumulative.append((t, newCum)) }
+                    }
+                    continue
+                }
+
+                // Claude: assistant usage → new = input + cache-writes + output (excl. cache reads).
+                if (o["type"] as? String) == "assistant",
+                   let m = o["message"] as? [String: Any],
+                   let u = m["usage"] as? [String: Any] {
+                    let id = (m["id"] as? String) ?? (o["requestId"] as? String) ?? ""
+                    if !id.isEmpty { if seen.contains(id) { continue }; seen.insert(id) }
+                    let inc = int(u["input_tokens"]) + int(u["cache_creation_input_tokens"]) + int(u["output_tokens"])
+                    if let t = date(o["timestamp"]) { claudeIncrements.append((t, inc)) }
+                }
+            }
         }
+
+        // Codex: cumulative snapshots, clamped non-decreasing (it can interleave sub-thread counters).
+        if !codexCumulative.isEmpty {
+            var peak = 0
+            return codexCumulative.sorted { $0.0 < $1.0 }.map { peak = max(peak, $0.1); return Sample(t: $0.0, cumulativeNew: peak) }
+        }
+        // Claude: accumulate per-message increments in time order (main + subagents interleaved).
+        var cum = 0
+        return claudeIncrements.sorted { $0.0 < $1.0 }.map { cum += $0.1; return Sample(t: $0.0, cumulativeNew: cum) }
     }
 
     /// Compact token count for labels: 512 · 4.2k · 58.8k · 1.2M.
