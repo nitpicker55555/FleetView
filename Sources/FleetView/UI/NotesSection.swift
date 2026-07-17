@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 /// The sidebar's collapsible "NOTES" section: quick free-form text items.
-/// Swipe a note LEFT to copy it, RIGHT to edit it (also via double-click / right-click).
+/// Single-click a note to copy it, double-click to edit (also via right-click).
 struct NotesSection: View {
     @EnvironmentObject var state: AppState
     /// When the Tasks section is collapsed, let the notes list grow to fill the sidebar.
@@ -16,7 +16,7 @@ struct NotesSection: View {
             header
             if !state.notesCollapsed {
                 if state.notes.isEmpty {
-                    Text("Swipe left to copy · right to edit")
+                    Text("Click to copy · double-click to edit")
                         .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.5))
                         .padding(.horizontal, 16).padding(.vertical, 6)
                 } else {
@@ -75,66 +75,44 @@ struct NotesSection: View {
     }
 }
 
-/// A single note row. Drag horizontally to reveal an action: left ⇒ copy, right ⇒ edit.
+/// A single note row. Single-click copies it, double-click edits it (also via right-click).
 struct NoteRow: View {
     @EnvironmentObject var state: AppState
     let note: Note
 
-    @State private var offset: CGFloat = 0
     @State private var editing = false
     @State private var draft = ""
     @State private var copied = false
     @State private var hover = false
     @FocusState private var focused: Bool
 
-    private let threshold: CGFloat = 48    // pull past this to trigger the action
-    private let maxPull: CGFloat = 76      // clamp so the row never slides off
-
     var body: some View {
         if editing { editor } else { row }
     }
 
-    // MARK: - Display (swipeable)
+    // MARK: - Display
 
     private var row: some View {
-        ZStack {
-            backdrops
-            content
-        }
-    }
-
-    private var backdrops: some View {
-        HStack(spacing: 0) {
-            swipeLabel(icon: "pencil", text: "Edit", tint: Theme.accent, engaged: offset >= threshold)
-                .opacity(revealOpacity(offset))
-            Spacer(minLength: 0)
-            swipeLabel(icon: "doc.on.doc", text: "Copy", tint: Theme.green, engaged: offset <= -threshold)
-                .opacity(revealOpacity(-offset))
-        }
-        .padding(.horizontal, 14)
-    }
-
-    private var content: some View {
         Text(note.text.isEmpty ? "empty note" : note.text)
             .font(.system(size: 12.5))
             .foregroundColor(note.text.isEmpty ? Theme.subtext.opacity(0.5) : Theme.text)
             .lineLimit(3)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(hover ? Theme.cardHover : Theme.card)   // opaque: hides the backdrops until swiped
+            .background(hover ? Theme.cardHover : Theme.card)
             .clipShape(RoundedRectangle(cornerRadius: 7))
             .overlay(alignment: .trailing) { if copied { copiedChip } }
-            .offset(x: offset)
+            .contentShape(Rectangle())
             .onHover { hover = $0 }
-            .gesture(swipe)
-            .onTapGesture(count: 2) { beginEdit() }
+            .onTapGesture(count: 2) { beginEdit() }   // double-click → edit
+            .onTapGesture { copy() }                  // single-click → copy
             .contextMenu {
-                Button("Edit") { beginEdit() }
                 Button("Copy") { copy() }
+                Button("Edit") { beginEdit() }
                 Divider()
                 Button("Delete", role: .destructive) { withAnimation { state.removeNote(note.id) } }
             }
-            .help(note.text)
+            .help("Click to copy · double-click to edit")
     }
 
     private var copiedChip: some View {
@@ -148,20 +126,6 @@ struct NoteRow: View {
         .padding(.trailing, 6)
         .transition(.scale(scale: 0.6).combined(with: .opacity))
     }
-
-    private func swipeLabel(icon: String, text: String, tint: Color, engaged: Bool) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: icon).font(.system(size: 12, weight: .semibold))
-            Text(text).font(.system(size: 11, weight: .semibold))
-        }
-        .foregroundColor(engaged ? .white : tint)
-        .padding(.horizontal, 9).padding(.vertical, 4)
-        .background(engaged ? tint : tint.opacity(0.16), in: Capsule())
-        .scaleEffect(engaged ? 1.06 : 1.0)
-        .animation(.spring(response: 0.2, dampingFraction: 0.7), value: engaged)
-    }
-
-    private func revealOpacity(_ v: CGFloat) -> Double { Double(max(0, min(1, v / threshold))) }
 
     // MARK: - Editor
 
@@ -185,31 +149,12 @@ struct NoteRow: View {
         .onChange(of: focused) { _, f in if !f && editing { commit() } }   // commit on click-away
     }
 
-    // MARK: - Gesture + actions
-
-    private var swipe: some Gesture {
-        DragGesture(minimumDistance: 10)
-            .onChanged { v in
-                guard abs(v.translation.width) > abs(v.translation.height) else { return }   // horizontal only
-                offset = max(-maxPull, min(maxPull, v.translation.width))
-            }
-            .onEnded { v in
-                let w = v.translation.width
-                if w <= -threshold { copy() }
-                else if w >= threshold { snapBack(); beginEdit(); return }
-                snapBack()
-            }
-    }
-
-    private func snapBack() {
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { offset = 0 }
-    }
+    // MARK: - Actions
 
     private func copy() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(note.text, forType: .string)
         withAnimation(.easeOut(duration: 0.15)) { copied = true }
-        snapBack()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
             withAnimation(.easeOut(duration: 0.25)) { copied = false }
         }
