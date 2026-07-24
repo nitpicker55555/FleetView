@@ -15,6 +15,7 @@ enum Theme {
     static let doneCard   = Color(red: 0.10, green: 0.17, blue: 0.13)
     static let doneStroke = Color(red: 0.36, green: 0.82, blue: 0.55)
     static let green      = Color(red: 0.36, green: 0.82, blue: 0.55)
+    static let amber      = Color(red: 0.98, green: 0.72, blue: 0.32)   // warnings / caution
 
     // Agent cues — a warm tone for Claude, a cool teal for Codex, so the two are easy to tell apart.
     static let claudeTint = Color(red: 0.90, green: 0.58, blue: 0.35)

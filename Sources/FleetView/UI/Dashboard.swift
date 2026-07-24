@@ -257,6 +257,8 @@ struct TaskRow: View {
 
 struct TopBar: View {
     @EnvironmentObject var state: AppState
+    @State private var showWeb = false
+    @State private var webQR: NSImage?
 
     private var working: Int { state.terminals.filter { $0.status == .working }.count }
     private var needs: Int { state.terminals.filter { $0.status == .needsYou }.count }
@@ -271,9 +273,71 @@ struct TopBar: View {
             if working > 0 { pill("\(working) working", .working) }
             if needs > 0 { pill("\(needs) needs you", .needsYou) }
             Spacer()
+            webButton
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
         .background(Theme.panel.opacity(0.55))
+    }
+
+    private var webButton: some View {
+        Button { showWeb.toggle() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "globe").font(.system(size: 11, weight: .semibold))
+                Text("Web").font(.system(size: 12, weight: .medium))
+            }
+            .foregroundColor(showWeb ? Theme.accent : Theme.text)
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.stroke, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Open this dashboard on another device")
+        .popover(isPresented: $showWeb, arrowEdge: .bottom) { webPopover }
+    }
+
+    private var webPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("FleetView on another device")
+                .font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
+            if let url = state.webDashboardURL {
+                if let qr = webQR {
+                    Image(nsImage: qr).interpolation(.none).resizable()
+                        .frame(width: 176, height: 176)
+                        .padding(8).background(Color.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+                Text("Scan on your phone, or open on any device on the same Wi-Fi. You'll see every terminal and can tap one to interact.")
+                    .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Text(url).font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                        .foregroundColor(Theme.text)
+                    Spacer(minLength: 4)
+                    Button("Copy") { copyToClipboard(url) }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(Theme.accent)
+                    Button("Open") { NSWorkspace.shared.open(URL(string: "http://localhost:\(state.web.port)/")!) }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(Theme.accent)
+                }
+                .padding(8).background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 6))
+                Label("LAN only — anyone on your network with this link can control your terminals.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10)).foregroundColor(Theme.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Not on a network, or the server didn't start. Connect to Wi-Fi and reopen this.")
+                    .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16).frame(width: 250)
+        .onAppear { webQR = state.webDashboardURL.flatMap { QRCode.image(for: $0) } }
+    }
+
+    private func copyToClipboard(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
     }
 
     private func pill(_ text: String, _ status: TermStatus) -> some View {

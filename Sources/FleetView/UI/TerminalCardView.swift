@@ -6,6 +6,9 @@ struct TerminalCardView: View {
 
     @State private var hovering = false
     @State private var renaming = false
+    @State private var showRemote = false
+    @State private var remoteEndpoint: RemoteServer.Endpoint?
+    @State private var remoteQR: NSImage?
 
     private var cluster: Cluster? { state.cluster(terminal.clusterId) }
     private var done: Bool { terminal.subtaskDone }
@@ -121,6 +124,14 @@ struct TerminalCardView: View {
                     .background(Theme.green.opacity(0.18)).foregroundColor(Theme.green)
                     .clipShape(Capsule())
             }
+            if terminal.lastActivity != nil {
+                TimelineView(.periodic(from: .now, by: 15)) { ctx in
+                    Text(RelativeTime.short(terminal.lastActivity, now: ctx.date) ?? "")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.subtext.opacity(0.7))
+                        .help("Last activity in this terminal")
+                }
+            }
             Spacer(minLength: 4)
             controls
         }
@@ -138,6 +149,10 @@ struct TerminalCardView: View {
                 iconButton("play.circle", help: "Reopen terminal") { state.reopenTerminal(terminal.id) }
             }
             iconButton("plus.square.on.square", help: "Duplicate (cluster)") { state.duplicateTerminal(terminal.id) }
+            iconButton("globe", active: showRemote, help: "Open on another device (web)") {
+                showRemote.toggle()
+            }
+            .popover(isPresented: $showRemote, arrowEdge: .bottom) { remotePopover }
             Menu {
                 Button("Rename…") { state.requestRename(terminal.id) }
                 if terminal.clusterId != nil {
@@ -150,6 +165,76 @@ struct TerminalCardView: View {
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         }
+    }
+
+    // MARK: - Remote (web) access popover
+
+    private var remotePopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Open on another device")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(Theme.text)
+
+            if !state.remote.available {
+                Text("Web access needs two command-line tools. Install them, then relaunch FleetView:")
+                    .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Text(state.remote.unavailableReason)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .foregroundColor(Theme.text)
+                    Button("Copy") { copyToClipboard(state.remote.unavailableReason) }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(Theme.accent)
+                }
+                .padding(8).background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 6))
+            } else if let ep = remoteEndpoint {
+                if let qr = remoteQR {
+                    Image(nsImage: qr)
+                        .interpolation(.none)
+                        .resizable().frame(width: 176, height: 176)
+                        .padding(8).background(Color.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+                Text("Scan with your phone, or open this link on any device on the same Wi-Fi:")
+                    .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Text(ep.url)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                        .foregroundColor(Theme.text)
+                    Spacer(minLength: 4)
+                    Button("Copy") { copyToClipboard(ep.url) }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(Theme.accent)
+                    Button("Open") { NSWorkspace.shared.open(URL(string: ep.url)!) }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(Theme.accent)
+                }
+                .padding(8).background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 6))
+                Label("LAN only — anyone on your network with this link can control this terminal.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10)).foregroundColor(Theme.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Couldn't start the web server. Make sure the terminal is open and you're on a network.")
+                    .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .frame(width: 250)
+        .onAppear {
+            guard state.remote.available else { return }
+            let ep = state.remoteEndpoint(for: terminal.id)
+            remoteEndpoint = ep
+            remoteQR = ep.map { QRCode.image(for: $0.url) } ?? nil
+        }
+    }
+
+    private func copyToClipboard(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
     }
 
     private func iconButton(_ name: String, active: Bool = false, help: String,

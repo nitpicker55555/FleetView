@@ -9,6 +9,8 @@ enum FV {
     static var portFile: URL { supportDir.appendingPathComponent("port") }
     static var hookScript: URL { supportDir.appendingPathComponent("hook.sh") }
     static var logFile: URL { supportDir.appendingPathComponent("fleetview.log") }
+    static var tmuxConf: URL { supportDir.appendingPathComponent("tmux.conf") }
+    static var remoteLog: URL { supportDir.appendingPathComponent("remote.log") }
 
     static func ensureSupportDir() {
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)

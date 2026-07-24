@@ -14,7 +14,7 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     var onClose: ((UUID) -> Void)?
     var onInterrupt: ((UUID) -> Void)?   // user pressed Escape (Claude's interrupt key)
 
-    init(termId: UUID, title: String, cwd: String, autoRunClaude: Bool, port: Int?) {
+    init(termId: UUID, title: String, cwd: String, autoRunClaude: Bool, port: Int?, tmux: TmuxSpec?) {
         self.termId = termId
         self.termView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 920, height: 560))
         super.init()
@@ -30,11 +30,28 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
 
         let shell = FV.userShell
         let shellLeaf = (shell as NSString).lastPathComponent
-        termView.startProcess(executable: shell,
-                              args: ["-i", "-l"],
-                              environment: env,
-                              execName: "-\(shellLeaf)",
-                              currentDirectory: cwd)
+
+        if let tmux {
+            // Run the shell *inside* a tmux session so the web view (ttyd) can attach to the same
+            // session and mirror it. This local window is just one attached client. The pane command
+            // is passed as separate argv (tmux exec's it directly, no shell re-splitting), and we
+            // wrap it in `env` so our identity vars reach the shell on any tmux version.
+            var args = ["-L", tmux.socket, "-f", tmux.confPath,
+                        "new-session", "-A", "-s", tmux.session, "-c", cwd, "-x", "200", "-y", "50",
+                        "/usr/bin/env"]
+            for e in env where !e.hasPrefix("TERM=") { args.append(e) }   // tmux owns TERM in the pane
+            args.append(contentsOf: [shell, "-i", "-l"])
+            termView.startProcess(executable: tmux.tmuxPath,
+                                  args: args,
+                                  environment: env,
+                                  currentDirectory: cwd)
+        } else {
+            termView.startProcess(executable: shell,
+                                  args: ["-i", "-l"],
+                                  environment: env,
+                                  execName: "-\(shellLeaf)",
+                                  currentDirectory: cwd)
+        }
 
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 560),
                            styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -60,7 +77,8 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
 
         if autoRunClaude {
             // Type `claude` into the ready interactive shell — same as the user does by hand.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+            // A touch longer under tmux, which needs a moment to spin up the session + pane.
+            DispatchQueue.main.asyncAfter(deadline: .now() + (tmux == nil ? 0.7 : 1.1)) { [weak self] in
                 self?.type("claude\r")
             }
         }

@@ -70,6 +70,11 @@ struct TerminalSession: Identifiable, Codable, Hashable {
     /// Cumulative "new" tokens for this session (input + cache-writes + output, excluding cache reads).
     /// Persisted for an instant badge on launch; the transcript on disk is the real source of truth.
     var newTokens: Int = 0
+
+    /// When this terminal last had *real* activity — a prompt, tool call, agent reply, shell command,
+    /// interrupt, or remote keystroke. NOT bumped by merely opening/raising the window. Persisted so
+    /// "3m ago" survives a relaunch. `nil` until the first interaction.
+    var lastActivity: Date? = nil
 }
 
 struct Cluster: Identifiable, Codable, Hashable {

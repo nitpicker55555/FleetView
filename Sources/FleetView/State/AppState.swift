@@ -30,6 +30,13 @@ final class AppState: ObservableObject {
     private var cascadePoint = NSPoint(x: 60, y: 60)
     var hookPort: Int? = nil
 
+    /// Serves terminals to other devices over the LAN (tmux + ttyd). Terminals run under tmux only
+    /// when this is available; otherwise they fall back to a plain shell and remote access is off.
+    let remote = RemoteServer()
+
+    /// Serves the web dashboard (a mirror of this window, viewable + interactive from any device).
+    let web = WebServer()
+
     // MARK: - Persistence
 
     private struct Persisted: Codable {
@@ -126,6 +133,28 @@ final class AppState: ObservableObject {
         save()
     }
 
+    /// On launch, silently reattach every terminal whose tmux session is still alive (FleetView was
+    /// closed/updated but the shells + agents kept running under tmux). Each gets its window back,
+    /// attached to the exact same session — no `claude` is re-typed (the session already exists).
+    /// Terminals whose shell had exited leave no session and are simply left `closed`.
+    func reconnectLiveTerminals() {
+        guard remote.available else { return }
+        let live = remote.liveSessions()
+        guard !live.isEmpty else { return }
+        var reattached = 0
+        for t in terminals where controllers[t.id] == nil
+              && live.contains(RemoteServer.sessionName(for: t.id)) {
+            openWindow(for: t)
+            if let i = terminals.firstIndex(where: { $0.id == t.id }) {
+                // A reconnected agent is most likely idle (waiting); a plain shell shows as shell.
+                // Live hook events refine this within a turn.
+                terminals[i].status = t.agentKind != .unknown ? .idle : .shell
+            }
+            reattached += 1
+        }
+        if reattached > 0 { FV.log("reconnected \(reattached) live terminal(s) on launch"); save() }
+    }
+
     func duplicateTerminal(_ id: UUID) {
         guard let src = terminals.first(where: { $0.id == id }) else { return }
         // Duplicate → both terminals belong to one cluster (they serve the same task).
@@ -147,6 +176,7 @@ final class AppState: ObservableObject {
     func removeTerminal(_ id: UUID) {
         controllers[id]?.closeWindow()
         controllers[id] = nil
+        remote.stop(id)                 // kill this terminal's web server + tmux session
         terminals.removeAll { $0.id == id }
         tokenSeries[id] = nil
         lastParsedTranscriptSize[id] = nil
@@ -387,7 +417,9 @@ final class AppState: ObservableObject {
     /// The user pressed Escape (Claude's interrupt) — if the agent was working, the turn just ended,
     /// so clear the stuck "working" immediately (no Stop hook fires on an interrupt).
     func handleInterrupt(_ id: UUID) {
-        guard let idx = terminals.firstIndex(where: { $0.id == id }), terminals[idx].status == .working else { return }
+        guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        terminals[idx].lastActivity = Date()   // pressing Esc is a real interaction
+        guard terminals[idx].status == .working else { return }
         terminals[idx].status = .idle
         save()
     }
@@ -397,6 +429,7 @@ final class AppState: ObservableObject {
         guard let uid = UUID(uuidString: ev.term),
               let idx = terminals.firstIndex(where: { $0.id == uid }) else { return }
         FV.log("evt=\(ev.event) term=\(terminals[idx].name) src=\(ev.source ?? "-") msg=\(ev.message ?? "-")")
+        terminals[idx].lastActivity = Date()   // a hook fired → real agent/shell activity in this terminal
         if let sid = ev.sessionId { terminals[idx].sessionId = sid }
         if let tp = ev.transcriptPath {
             terminals[idx].transcriptPath = tp
@@ -559,11 +592,128 @@ final class AppState: ObservableObject {
         terminals.filter { $0.projectId == projectId }.compactMap { tokenSeries[$0.id]?.last?.t }.max()
     }
 
+    // MARK: - Remote (web) access
+
+    /// Start (or reuse) the web server for a terminal and return its LAN URL for the card's popover.
+    func remoteEndpoint(for id: UUID) -> RemoteServer.Endpoint? {
+        guard let t = terminals.first(where: { $0.id == id }) else { return nil }
+        return remote.endpoint(for: id, name: t.name)
+    }
+
+    /// The web dashboard's LAN URL (for the top-bar popover / QR). nil until the server is up.
+    var webDashboardURL: String? {
+        guard web.port > 0, let ip = Tooling.lanIP() else { return nil }
+        return "http://\(ip):\(web.port)/"
+    }
+
+    /// Route a web request to (httpStatus, contentType, body). Called on the main actor by WebServer.
+    func webResponse(path: String, query: [String: String]) -> (String, String, Data) {
+        switch path {
+        case "/", "/index.html":
+            return ("200 OK", "text/html; charset=utf-8", Data(WebDashboardPage.html.utf8))
+        case "/state":
+            let data = (try? JSONEncoder().encode(webSnapshot())) ?? Data("{}".utf8)
+            return ("200 OK", "application/json", data)
+        case "/open":
+            guard let s = query["id"], let id = UUID(uuidString: s) else {
+                return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
+            }
+            if let url = webOpenTerminal(id),
+               let body = try? JSONEncoder().encode(["url": url]) {
+                return ("200 OK", "application/json", body)
+            }
+            return ("409 Conflict", "application/json", Data(#"{"error":"not open"}"#.utf8))
+        case "/new":
+            guard let s = query["projectId"], let pid = UUID(uuidString: s) else {
+                return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
+            }
+            let t = newTerminal(projectId: pid)
+            let body = try? JSONEncoder().encode(["id": t?.id.uuidString ?? ""])
+            return ("200 OK", "application/json", body ?? Data("{}".utf8))
+        case "/action":
+            guard let s = query["id"], let id = UUID(uuidString: s), let act = query["do"] else {
+                return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
+            }
+            webAction(id, act, name: query["name"])
+            return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/type":
+            guard let s = query["id"], let id = UUID(uuidString: s) else {
+                return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
+            }
+            remote.sendText(id, text: query["text"] ?? "", enter: query["enter"] == "1")
+            markActivity(id)
+            return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/key":
+            guard let s = query["id"], let id = UUID(uuidString: s), let k = query["k"] else {
+                return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
+            }
+            remote.sendKey(id, k)
+            markActivity(id)
+            return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        default:
+            return ("404 Not Found", "text/plain", Data("not found".utf8))
+        }
+    }
+
+    /// Typing/keys from the web are real interaction — record it (drives "3m ago").
+    private func markActivity(_ id: UUID) {
+        guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        terminals[idx].lastActivity = Date()
+    }
+
+    /// Perform a card action requested from the web (mirrors the desktop drag-to-act zones).
+    private func webAction(_ id: UUID, _ act: String, name: String?) {
+        switch act {
+        case "done":         toggleSubtaskDone(id)
+        case "duplicate":    duplicateTerminal(id)
+        case "remove":       removeTerminal(id)
+        case "leaveCluster": removeFromCluster(id)
+        case "rename":       if let n = name?.trimmingCharacters(in: .whitespacesAndNewlines), !n.isEmpty { renameTerminal(id, to: n) }
+        default:             break
+        }
+    }
+
+    /// Build the live snapshot the web page renders.
+    private func webSnapshot() -> WebSnapshot {
+        // One cached list-sessions so a "closed" terminal whose tmux session is still alive stays
+        // openable (reattach from the web) — not one has-session call per terminal.
+        let live = remote.available ? remote.liveSessions() : []
+        let terms = terminals.map { t in
+            WebSnapshot.Term(id: t.id.uuidString, name: t.name, projectId: t.projectId.uuidString,
+                             clusterId: t.clusterId?.uuidString, status: t.status.rawValue,
+                             statusLabel: t.status.label, agent: t.agentKind.label,
+                             prompt: t.lastPrompt, tokens: t.newTokens,
+                             canOpen: live.contains(RemoteServer.sessionName(for: t.id)),  // authoritative: only if THIS instance has the session
+                             done: t.subtaskDone,
+                             idle: t.lastActivity.map { max(0, Int(Date().timeIntervalSince($0))) } ?? -1)
+        }
+        return WebSnapshot(
+            projects: projects.map { .init(id: $0.id.uuidString, name: $0.name, path: $0.path) },
+            terminals: terms,
+            clusters: clusters.map { .init(id: $0.id.uuidString, name: $0.name) },
+            working: terminals.filter { $0.status == .working }.count,
+            needs: terminals.filter { $0.status == .needsYou }.count,
+            remoteOK: remote.available,
+            remoteHint: remote.unavailableReason)
+    }
+
+    /// Start (or reuse) a web terminal for an open session and return its URL (nil if not attachable).
+    private func webOpenTerminal(_ id: UUID) -> String? {
+        guard remote.available, let t = terminals.first(where: { $0.id == id }) else { return nil }
+        guard remote.sessionExists(id) else { return nil }
+        return remote.endpoint(for: id, name: t.name)?.url
+    }
+
     // MARK: - Window plumbing
 
     private func openWindow(for t: TerminalSession) {
+        // Run under tmux when remote access is available (so the web view can attach to the same
+        // session). Only auto-type `claude` when we're *creating* the session — re-attaching to a
+        // persisted one (reopen after the window was closed) would spawn a second claude.
+        let spec = remote.tmuxSpec(for: t.id)
+        let autoRun = t.autoRunClaude && !(spec != nil && remote.sessionExists(t.id))
         let ctrl = TerminalWindowController(termId: t.id, title: t.name, cwd: t.cwd,
-                                            autoRunClaude: t.autoRunClaude, port: hookPort)
+                                            autoRunClaude: autoRun, port: hookPort, tmux: spec)
         ctrl.onExit = { [weak self] id, _ in
             Task { @MainActor in self?.setStatus(id, .exited) }
         }

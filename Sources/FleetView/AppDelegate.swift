@@ -15,6 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HookInstaller.install()
         CodexHookInstaller.install() // same pipeline for Codex CLI (only if ~/.codex already exists)
         ShellIntegration.install()   // zsh command capture for FleetView-launched terminals
+        RemoteServer.installConfig() // tmux config for LAN web access (harmless if tmux is absent)
+        state.web.app = state
+        state.web.start()            // web dashboard (mirror of this window) on the LAN
         let w = EventWatcher()
         w.onEvent = { [weak self] ev in
             Task { @MainActor in self?.state.handleHookEvent(ev) }
@@ -32,13 +35,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.isReleasedWhenClosed = false
         win.setFrameAutosaveName("FleetViewMain")
         win.contentView = hosting
-        win.makeKeyAndOrderFront(nil)
         self.window = win
+        state.reconnectLiveTerminals()      // reattach terminals whose tmux sessions survived
+        win.makeKeyAndOrderFront(nil)        // keep the dashboard in front of the reattached windows
         NSApp.activate(ignoringOtherApps: true)
     }
 
     // Closing the dashboard while terminal windows remain keeps the app alive.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    // Tear down web servers and the FleetView tmux server so nothing is left listening after quit.
+    func applicationWillTerminate(_ notification: Notification) {
+        state.web.stop()
+        state.remote.stopAll()
+    }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { window?.makeKeyAndOrderFront(nil) }
