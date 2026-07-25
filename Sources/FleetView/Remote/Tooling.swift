@@ -55,6 +55,29 @@ enum Tooling {
         return candidates.sorted { $0.name < $1.name }.first?.ip
     }
 
+    /// The Mac's Tailscale IPv4, if the tailnet is up (address in the 100.64.0.0/10 CGNAT range,
+    /// usually on a utun interface). This is reachable from any device on the same tailnet.
+    static func tailscaleIP() -> String? {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let flags = Int32(ptr.pointee.ifa_flags)
+            guard (flags & IFF_UP) == IFF_UP, (flags & IFF_LOOPBACK) == 0 else { continue }
+            guard let addr = ptr.pointee.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host,
+                              socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let ip = String(cString: host)
+            let p = ip.split(separator: ".").compactMap { Int($0) }
+            if p.count == 4, p[0] == 100, (64...127).contains(p[1]) { return ip }   // 100.64.0.0/10
+        }
+        return nil
+    }
+
+    /// IP to show in the UI (QR / copy link): prefer Tailscale (works off-LAN too), else the LAN IP.
+    static func preferredIP() -> String? { tailscaleIP() ?? lanIP() }
+
     /// Can we bind this TCP port right now? Used to hand ttyd a free port.
     static func isPortFree(_ port: Int) -> Bool {
         let fd = socket(AF_INET, SOCK_STREAM, 0)

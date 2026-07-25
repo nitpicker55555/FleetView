@@ -602,7 +602,7 @@ final class AppState: ObservableObject {
 
     /// The web dashboard's LAN URL (for the top-bar popover / QR). nil until the server is up.
     var webDashboardURL: String? {
-        guard web.port > 0, let ip = Tooling.lanIP() else { return nil }
+        guard web.port > 0, let ip = Tooling.preferredIP() else { return nil }
         return "http://\(ip):\(web.port)/"
     }
 
@@ -618,9 +618,9 @@ final class AppState: ObservableObject {
             guard let s = query["id"], let id = UUID(uuidString: s) else {
                 return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
             }
-            if let url = webOpenTerminal(id),
-               let body = try? JSONEncoder().encode(["url": url]) {
-                return ("200 OK", "application/json", body)
+            if let ep = webOpenTerminal(id),
+               let body = try? JSONEncoder().encode(["url": ep.url, "port": String(ep.port)]) {
+                return ("200 OK", "application/json", body)   // client rebuilds URL from its own host (LAN / Tailscale)
             }
             return ("409 Conflict", "application/json", Data(#"{"error":"not open"}"#.utf8))
         case "/new":
@@ -649,6 +649,11 @@ final class AppState: ObservableObject {
             }
             remote.sendKey(id, k)
             markActivity(id)
+            return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/note":
+            // Manage the shared Notes list from the web (it drives the quick-command chips).
+            if let add = query["add"] { addNote(add) }
+            else if let d = query["del"], let nid = UUID(uuidString: d) { removeNote(nid) }
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         default:
             return ("404 Not Found", "text/plain", Data("not found".utf8))
@@ -691,6 +696,7 @@ final class AppState: ObservableObject {
             projects: projects.map { .init(id: $0.id.uuidString, name: $0.name, path: $0.path) },
             terminals: terms,
             clusters: clusters.map { .init(id: $0.id.uuidString, name: $0.name) },
+            notes: notes.map { .init(id: $0.id.uuidString, text: $0.text) },
             working: terminals.filter { $0.status == .working }.count,
             needs: terminals.filter { $0.status == .needsYou }.count,
             remoteOK: remote.available,
@@ -698,10 +704,10 @@ final class AppState: ObservableObject {
     }
 
     /// Start (or reuse) a web terminal for an open session and return its URL (nil if not attachable).
-    private func webOpenTerminal(_ id: UUID) -> String? {
+    private func webOpenTerminal(_ id: UUID) -> RemoteServer.Endpoint? {
         guard remote.available, let t = terminals.first(where: { $0.id == id }) else { return nil }
         guard remote.sessionExists(id) else { return nil }
-        return remote.endpoint(for: id, name: t.name)?.url
+        return remote.endpoint(for: id, name: t.name)
     }
 
     // MARK: - Window plumbing

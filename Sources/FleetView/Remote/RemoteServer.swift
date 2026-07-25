@@ -97,7 +97,7 @@ final class RemoteServer {
 
     /// Start (or reuse) a ttyd serving this terminal's session, and return its LAN URL.
     func endpoint(for id: UUID, name: String) -> Endpoint? {
-        guard let ttydPath, let tmuxPath, let ip = Tooling.lanIP() else { return nil }
+        guard let ttydPath, let tmuxPath, let ip = Tooling.preferredIP() else { return nil }
         let session = RemoteServer.sessionName(for: id)
 
         if let inst = instances[id], inst.proc.isRunning {

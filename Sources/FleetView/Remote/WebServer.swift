@@ -19,10 +19,12 @@ struct WebSnapshot: Codable {
     }
     struct Proj: Codable { let id: String; let name: String; let path: String }
     struct Clust: Codable { let id: String; let name: String }
+    struct NoteJ: Codable { let id: String; let text: String }   // doubles as the web quick-command list
 
     let projects: [Proj]
     let terminals: [Term]
     let clusters: [Clust]
+    let notes: [NoteJ]
     let working: Int
     let needs: Int
     let remoteOK: Bool            // tmux + ttyd present → terminals are interactive

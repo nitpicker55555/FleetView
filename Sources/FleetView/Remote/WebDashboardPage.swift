@@ -86,6 +86,12 @@ enum WebDashboardPage {
   #termbar .tname{font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #termframe{flex:1;border:0;width:100%;background:#000}
   #inputbar{background:var(--panel);border-top:1px solid var(--stroke);padding:8px;padding-bottom:max(8px,env(safe-area-inset-bottom))}
+  #presets{display:flex;gap:6px;overflow-x:auto;margin-bottom:8px}
+  #presets button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:7px;
+    padding:6px 10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;cursor:pointer}
+  #presets button:active{background:var(--accent);color:#0b1020}
+  #presets button.meta{color:var(--accent);font-family:inherit;font-weight:600}
+  #presets button.del{color:var(--red);border-color:rgba(217,107,115,.4);font-family:inherit}
   #keys{display:flex;gap:6px;overflow-x:auto;margin-bottom:8px}
   #keys button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:7px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer}
   #keys button:active{background:var(--accent);color:#0b1020}
@@ -117,6 +123,7 @@ enum WebDashboardPage {
   </div>
   <iframe id="termframe" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
   <div id="inputbar">
+    <div id="presets"></div>
     <div id="keys">
       <button onclick="key('Escape')">Esc</button>
       <button onclick="key('Enter')">⏎</button>
@@ -149,16 +156,43 @@ async function openTerm(id,name){
   try{
     const r=await fetch('/open?id='+encodeURIComponent(id));
     const j=await r.json();
-    if(!j.url){alert('This terminal is not open on the Mac right now.');return;}
-    curUrl=j.url;curId=id;
+    if(!j.port){alert('This terminal is not open on the Mac right now.');return;}
+    // Build the ttyd URL from THIS page's host so it works over LAN and Tailscale alike
+    // (the Mac's ttyd ports listen on all interfaces).
+    curUrl=location.protocol+'//'+location.hostname+':'+j.port+'/';curId=id;
     document.getElementById('termname').textContent=name;
-    document.getElementById('termframe').src=j.url;
+    document.getElementById('termframe').src=curUrl;
     document.getElementById('term').classList.add('show');
+    renderPresets();   // show the latest Notes as quick-commands
   }catch(e){alert('Could not open terminal: '+e);}
 }
 function closeTerm(){document.getElementById('term').classList.remove('show');document.getElementById('termframe').src='about:blank';curId='';}
 function popTerm(){if(curUrl)window.open(curUrl,'_blank');}
 async function key(k){if(!curId)return;try{await fetch('/key?id='+curId+'&k='+encodeURIComponent(k));}catch(e){}}
+
+// ---------- quick-command list — synced from the desktop Notes ----------
+let presetEdit=false;
+async function refreshState(){try{const r=await fetch('/state',{cache:'no-store'});state=await r.json();}catch(e){}}
+function renderPresets(){
+  const notes=(state&&state.notes)||[];
+  let html=notes.map((n,i)=>presetEdit
+    ?`<button class="del" onclick="delNote('${n.id}')">✕ ${esc(n.text)}</button>`
+    :`<button onclick="usePreset(${i})" title="${esc(n.text)}">${esc(n.text)}</button>`).join('');
+  if(!notes.length) html+='<span style="color:var(--sub);font-size:12px;align-self:center;white-space:nowrap">No commands — tap ＋, or add Notes on the Mac</span>';
+  html+=`<button class="meta" onclick="addNote()">＋</button>`
+      +`<button class="meta" onclick="toggleEditPresets()">${presetEdit?'Done':'✎'}</button>`;
+  document.getElementById('presets').innerHTML=html;
+}
+function usePreset(i){
+  const notes=(state&&state.notes)||[];if(!notes[i])return;
+  const ta=document.getElementById('inputtext');ta.value=notes[i].text;
+  ta.style.height='auto';ta.style.height=Math.min(120,ta.scrollHeight)+'px';ta.focus();
+}
+async function addNote(){const c=prompt('Add a quick command (saved to Notes on the Mac)');
+  if(c&&c.trim()){await fetch('/note?add='+encodeURIComponent(c.trim()));await refreshState();renderPresets();}}
+async function delNote(id){await fetch('/note?del='+encodeURIComponent(id));await refreshState();renderPresets();}
+function toggleEditPresets(){presetEdit=!presetEdit;renderPresets();}
+renderPresets();
 async function sendText(){
   if(!curId)return;
   const ta=document.getElementById('inputtext');const t=ta.value;
