@@ -650,14 +650,48 @@ final class AppState: ObservableObject {
             remote.sendKey(id, k)
             markActivity(id)
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/scroll":
+            guard let s = query["id"], let id = UUID(uuidString: s) else {
+                return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
+            }
+            remote.scroll(id, up: query["dir"] != "down")
+            return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         case "/note":
             // Manage the shared Notes list from the web (it drives the quick-command chips).
             if let add = query["add"] { addNote(add) }
             else if let d = query["del"], let nid = UUID(uuidString: d) { removeNote(nid) }
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/capture":
+            // Recent screen + scrollback of a terminal (for `fleetctl` conversation view / error scan).
+            guard let s = query["id"], let id = UUID(uuidString: s) else {
+                return ("400 Bad Request", "text/plain", Data("bad id".utf8))
+            }
+            let n = Int(query["lines"] ?? "") ?? 200
+            return ("200 OK", "text/plain; charset=utf-8", Data((remote.capture(id, lines: n) ?? "").utf8))
         default:
             return ("404 Not Found", "text/plain", Data("not found".utf8))
         }
+    }
+
+    /// Resolve what `/ask` needs for a terminal: the agent session id (from its transcript), cwd, and
+    /// agent kind. nil if no agent session has been captured yet (nothing to fork a query from).
+    func askSpec(_ id: UUID) -> AskSpec? {
+        guard let t = terminals.first(where: { $0.id == id }) else { return nil }
+        var sid = t.transcriptPath.map { ((($0 as NSString).lastPathComponent) as NSString).deletingPathExtension } ?? ""
+        if sid.isEmpty {
+            // No hook has reported the transcript yet — fall back to the newest Claude session for this cwd.
+            let dir = FV.transcriptDir(forCwd: t.cwd)
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            let newest = files.filter { $0.pathExtension == "jsonl" }.max { a, b in
+                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return da < db
+            }
+            sid = newest.map { ($0.lastPathComponent as NSString).deletingPathExtension } ?? ""
+        }
+        guard !sid.isEmpty else { return nil }
+        return AskSpec(sessionId: sid, cwd: t.cwd, agent: t.agentKind.rawValue)
     }
 
     /// Typing/keys from the web are real interaction — record it (drives "3m ago").
@@ -690,7 +724,9 @@ final class AppState: ObservableObject {
                              prompt: t.lastPrompt, tokens: t.newTokens,
                              canOpen: live.contains(RemoteServer.sessionName(for: t.id)),  // authoritative: only if THIS instance has the session
                              done: t.subtaskDone,
-                             idle: t.lastActivity.map { max(0, Int(Date().timeIntervalSince($0))) } ?? -1)
+                             idle: t.lastActivity.map { max(0, Int(Date().timeIntervalSince($0))) } ?? -1,
+                             cwd: t.cwd,
+                             transcript: t.transcriptPath)
         }
         return WebSnapshot(
             projects: projects.map { .init(id: $0.id.uuidString, name: $0.name, path: $0.path) },

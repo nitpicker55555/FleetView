@@ -11,6 +11,7 @@ enum FV {
     static var logFile: URL { supportDir.appendingPathComponent("fleetview.log") }
     static var tmuxConf: URL { supportDir.appendingPathComponent("tmux.conf") }
     static var remoteLog: URL { supportDir.appendingPathComponent("remote.log") }
+    static var webPortFile: URL { supportDir.appendingPathComponent("web-port") }   // fleetctl discovers the server here
 
     static func ensureSupportDir() {
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)

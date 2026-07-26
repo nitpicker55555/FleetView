@@ -125,6 +125,8 @@ enum WebDashboardPage {
   <div id="inputbar">
     <div id="presets"></div>
     <div id="keys">
+      <button onclick="scrollTerm('up')">⇞ scroll</button>
+      <button onclick="scrollTerm('down')">⇟ scroll</button>
       <button onclick="key('Escape')">Esc</button>
       <button onclick="key('Enter')">⏎</button>
       <button onclick="key('Up')">↑</button>
@@ -169,6 +171,7 @@ async function openTerm(id,name){
 function closeTerm(){document.getElementById('term').classList.remove('show');document.getElementById('termframe').src='about:blank';curId='';}
 function popTerm(){if(curUrl)window.open(curUrl,'_blank');}
 async function key(k){if(!curId)return;try{await fetch('/key?id='+curId+'&k='+encodeURIComponent(k));}catch(e){}}
+async function scrollTerm(dir){if(!curId)return;try{await fetch('/scroll?id='+curId+'&dir='+dir);}catch(e){}}
 
 // ---------- quick-command list — synced from the desktop Notes ----------
 let presetEdit=false;

@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""project-manager — a CLI for a running FleetView instance.
+
+Talks to FleetView's embedded HTTP API (the same one the web dashboard uses), so it works both
+locally and over the network (e.g. Tailscale). Point it elsewhere with FLEETVIEW_URL, otherwise it
+auto-discovers the local server via ~/.fleetview/web-port.
+
+  project-manager ls                       list every terminal + live status
+  project-manager watch [-n SEC]           live-refreshing list
+  project-manager show <sel> [-l N]        one terminal: status + recent output (conversation)
+  project-manager tail <sel> [-l N]        recent output only
+  project-manager send <sel> <text...>     inject a prompt (adds Enter; -N to not submit)
+  project-manager key  <sel> <key>         send a key: esc enter up down left right tab bspace c-c ...
+  project-manager choose <sel> <n>         answer a menu: send digit <n> then Enter
+  project-manager check [<sel>]            flag conversations that look error-terminated / stuck
+  project-manager ask <sel> <question…>    "BTW" side-query: ask the agent using its context WITHOUT
+                                           interrupting its live session (forked, throwaway answer)
+  project-manager log <sel> [-f|-c|-p]     locate the agent's conversation-history file (Claude/Codex)
+  project-manager new <project-sel>        open a new terminal in a project
+  project-manager rm <sel>                 remove a terminal
+
+<sel> matches a terminal by name substring (case-insensitive) or id prefix.
+"""
+import argparse, json, os, re, sys, time, urllib.parse, urllib.request
+
+HOME = os.path.expanduser("~")
+
+def base_url():
+    env = os.environ.get("FLEETVIEW_URL")
+    if env:
+        return env.rstrip("/")
+    try:
+        with open(os.path.join(HOME, ".fleetview", "web-port")) as f:
+            return "http://127.0.0.1:%s" % f.read().strip()
+    except OSError:
+        return "http://127.0.0.1:8080"
+
+BASE = base_url()
+
+def _get(path):
+    with urllib.request.urlopen(BASE + path, timeout=10) as r:
+        return r.read().decode("utf-8", "replace")
+
+def api_json(path):
+    try:
+        return json.loads(_get(path))
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach FleetView at %s (%s). Is it running? Set FLEETVIEW_URL to override." % (BASE, e))
+
+def api_text(path):
+    try:
+        return _get(path)
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach FleetView at %s (%s)." % (BASE, e))
+
+# ---- colors ----
+TTY = sys.stdout.isatty()
+def c(code, s):
+    return "\033[%sm%s\033[0m" % (code, s) if TTY else s
+STATUS_COLOR = {"working": "32", "needsYou": "33", "idle": "90", "shell": "36", "exited": "31", "closed": "90"}
+def dot(status):
+    return c(STATUS_COLOR.get(status, "0"), "●")
+
+def short_tokens(n):
+    if n < 1000: return str(n)
+    if n < 1_000_000: return "%.1fk" % (n / 1000)
+    return "%.1fM" % (n / 1_000_000)
+
+def short_bytes(n):
+    for u in ("B", "K", "M", "G"):
+        if n < 1024: return "%d%s" % (n, u)
+        n //= 1024
+    return "%dT" % n
+
+def ago(sec):
+    if sec is None or sec < 0: return "-"
+    if sec < 60: return "%ds" % sec
+    if sec < 3600: return "%dm" % (sec // 60)
+    if sec < 86400: return "%dh" % (sec // 3600)
+    return "%dd" % (sec // 86400)
+
+def state():
+    return api_json("/state")
+
+def proj_name(st, pid):
+    for p in st["projects"]:
+        if p["id"] == pid: return p["name"]
+    return "?"
+
+def cluster_name(st, cid):
+    if not cid: return ""
+    for cl in st.get("clusters", []):
+        if cl["id"] == cid: return cl["name"]
+    return "?"
+
+def resolve(st, sel):
+    """Find one terminal by id-prefix or name substring; exit with matches if ambiguous."""
+    sl = sel.lower()
+    exact = [t for t in st["terminals"] if t["id"].lower() == sl or t["name"].lower() == sl]
+    if len(exact) == 1: return exact[0]
+    hits = [t for t in st["terminals"] if t["id"].lower().startswith(sl) or sl in t["name"].lower()]
+    if len(hits) == 1: return hits[0]
+    if not hits:
+        sys.exit("no terminal matches %r" % sel)
+    print("ambiguous %r — matches:" % sel, file=sys.stderr)
+    for t in hits:
+        print("  %s  %s" % (t["id"][:8], t["name"]), file=sys.stderr)
+    sys.exit(2)
+
+# ---- commands ----
+def cmd_ls(a):
+    st = state()
+    rows = st["terminals"]
+    if not rows:
+        print("no terminals"); return
+    w = min(26, max((len(t["name"]) for t in rows), default=4))
+    print("%-8s   %-*s %-12s %-12s %-5s %5s %7s  %s" % (
+        "ID", w, "NAME", "CLUSTER", "PROJECT", "AGENT", "IDLE", "TOKENS", "STATUS/PROMPT"))
+    for t in rows:
+        prompt = (t.get("prompt") or "").replace("\n", " ")[:50]
+        print("%-8s %s %-*s %-12s %-12s %-5s %5s %7s  %s" % (
+            t["id"][:8].lower(), dot(t["status"]), w, t["name"][:w],
+            (cluster_name(st, t.get("clusterId")) or "-")[:12], proj_name(st, t["projectId"])[:12],
+            (t.get("agent") or "-")[:5], ago(t.get("idle")), short_tokens(t.get("tokens", 0)),
+            c(STATUS_COLOR.get(t["status"], "0"), t["statusLabel"]) + "  " + prompt))
+
+def cmd_watch(a):
+    try:
+        while True:
+            sys.stdout.write("\033[2J\033[H" if TTY else "\n")
+            print("FleetView @ %s   %s" % (BASE, time.strftime("%H:%M:%S")))
+            cmd_ls(a)
+            time.sleep(a.n)
+    except KeyboardInterrupt:
+        pass
+
+def cmd_tail(a):
+    t = resolve(state(), a.sel)
+    sys.stdout.write(api_text("/capture?id=%s&lines=%d" % (t["id"], a.lines)))
+
+def cmd_show(a):
+    st = state(); t = resolve(st, a.sel)
+    print("%s %s   [%s]  agent=%s  tokens=%s  last activity=%s ago" % (
+        dot(t["status"]), c("1", t["name"]), c(STATUS_COLOR.get(t["status"], "0"), t["statusLabel"]),
+        t.get("agent") or "-", short_tokens(t.get("tokens", 0)), ago(t.get("idle"))))
+    cl = cluster_name(st, t.get("clusterId"))
+    print("project: %s%s   id: %s" % (proj_name(st, t["projectId"]), ("   cluster: " + cl) if cl else "", t["id"]))
+    print("cwd: %s" % t.get("cwd", "?"))
+    tp = t.get("transcript")
+    print("transcript: %s" % (tp if tp else c("90", "(none yet — interact once to capture)")))
+    print(c("90", "-" * 60))
+    sys.stdout.write(api_text("/capture?id=%s&lines=%d" % (t["id"], a.lines)))
+
+def cmd_send(a):
+    t = resolve(state(), a.sel)
+    text = " ".join(a.text)
+    # quote_via=quote so spaces become %20 (not "+", which the server won't turn back into a space)
+    q = urllib.parse.urlencode({"id": t["id"], "text": text, "enter": "0" if a.no_enter else "1"},
+                               quote_via=urllib.parse.quote)
+    api_json("/type?" + q)
+    print("sent to %s%s" % (t["name"], " (no enter)" if a.no_enter else ""))
+
+def cmd_key(a):
+    t = resolve(state(), a.sel)
+    aliases = {"esc": "Escape", "enter": "Enter", "up": "Up", "down": "Down", "left": "Left",
+               "right": "Right", "tab": "Tab", "space": "Space", "bs": "BSpace", "bspace": "BSpace",
+               "c-c": "C-c", "^c": "C-c", "c-d": "C-d", "c-l": "C-l"}
+    k = aliases.get(a.key.lower(), a.key)
+    api_json("/key?" + urllib.parse.urlencode({"id": t["id"], "k": k}))
+    print("key %s -> %s" % (k, t["name"]))
+
+def cmd_choose(a):
+    t = resolve(state(), a.sel)
+    api_json("/type?" + urllib.parse.urlencode({"id": t["id"], "text": str(a.n), "enter": "1"}))
+    print("chose option %s in %s" % (a.n, t["name"]))
+
+ERR_PATTERNS = [
+    r"API Error", r"overloaded", r"rate limit", r"quota", r"\b429\b", r"\b529\b",
+    r"Internal Server Error", r"\b5\d\d\b error", r"ECONNRESET", r"ETIMEDOUT",
+    r"Traceback \(most recent", r"^panic:", r"fatal error", r"Killed: 9", r"signal: killed",
+    r"Invalid API key", r"Please run /login", r"session limit", r"usage limit", r"context left until",
+    r"Execution error", r"Request timed out", r"connection error",
+]  # deliberately NOT "Killed"/"keyboard interrupt" — a Ctrl-C is user-initiated, not an error
+ERR_RE = re.compile("|".join(ERR_PATTERNS), re.IGNORECASE | re.MULTILINE)
+
+def check_one(st, t):
+    verdict, evidence = "ok", ""
+    if t["status"] == "exited":
+        verdict, evidence = "exited", "process ended"
+    text = api_text("/capture?id=%s&lines=%d" % (t["id"], 120))
+    for line in reversed(text.splitlines()):
+        if ERR_RE.search(line):
+            verdict = "exited" if verdict == "exited" else "error"
+            evidence = line.strip()[:100]
+            break
+    return verdict, evidence
+
+def cmd_check(a):
+    st = state()
+    targets = [resolve(st, a.sel)] if a.sel else st["terminals"]
+    flagged = 0
+    for t in targets:
+        if not t.get("canOpen") and t["status"] != "exited":
+            continue  # no live session to inspect
+        verdict, evidence = check_one(st, t)
+        if verdict == "ok":
+            if a.sel: print("%s %s: ok" % (dot(t["status"]), t["name"]))
+            continue
+        flagged += 1
+        col = "31" if verdict in ("error", "exited") else "33"
+        print("%s %-24s %s  %s" % (dot(t["status"]), t["name"][:24], c(col, verdict.upper()), c("90", evidence)))
+    if not a.sel:
+        print(c("90", "\n%d flagged / %d terminals" % (flagged, len(targets))))
+
+def cmd_ask(a):
+    t = resolve(state(), a.sel)
+    q = " ".join(a.text)
+    url = BASE + "/ask?" + urllib.parse.urlencode({"id": t["id"], "q": q}, quote_via=urllib.parse.quote)
+    print(c("90", "asking %s (forked side-query, live session untouched)…" % t["name"]))
+    try:
+        with urllib.request.urlopen(url, timeout=240) as r:   # a query can take ~10-40s
+            print(r.read().decode("utf-8", "replace"))
+    except urllib.error.URLError as e:
+        sys.exit("ask failed: %s" % e)
+
+def cmd_log(a):
+    st = state(); t = resolve(st, a.sel)
+    tp = t.get("transcript")
+    if not tp:
+        slug = t.get("cwd", "").replace("/", "-").replace("_", "-")
+        guess = os.path.join(HOME, ".claude", "projects", slug)
+        print(c("33", "no transcript captured yet") + " for %s (agent=%s)." % (t["name"], t.get("agent") or "-"))
+        print("send a prompt / interact once so a hook records the exact file, then retry.")
+        print("likely Claude dir: %s" % guess)
+        return
+    if a.path_only:
+        print(tp); return
+    exists = os.path.exists(tp)
+    meta = ""
+    if exists:
+        stt = os.stat(tp)
+        meta = "  %s  %s" % (short_bytes(stt.st_size), time.strftime("%Y-%m-%d %H:%M", time.localtime(stt.st_mtime)))
+    print("%s  [%s]%s" % (tp, "exists" if exists else c("31", "missing"), meta))
+    if a.cat and exists:
+        with open(tp, errors="replace") as f:
+            sys.stdout.write(f.read())
+    elif a.follow and exists:
+        os.execvp("tail", ["tail", "-f", tp])
+
+def cmd_new(a):
+    st = state()
+    matches = [p for p in st["projects"] if a.sel.lower() in p["name"].lower() or p["id"].startswith(a.sel)]
+    if len(matches) != 1:
+        sys.exit("specify one project (matched %d)" % len(matches))
+    r = api_json("/new?projectId=" + matches[0]["id"])
+    print("opened terminal %s in %s" % (r.get("id", "?")[:8], matches[0]["name"]))
+
+def cmd_rm(a):
+    t = resolve(state(), a.sel)
+    api_json("/action?" + urllib.parse.urlencode({"id": t["id"], "do": "remove"}))
+    print("removed %s" % t["name"])
+
+def main():
+    p = argparse.ArgumentParser(prog="project-manager", description="Control a running FleetView instance.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("ls", help="list terminals").set_defaults(fn=cmd_ls)
+    w = sub.add_parser("watch", help="live list"); w.add_argument("-n", type=float, default=2.0); w.set_defaults(fn=cmd_watch)
+    for name, fn in (("show", cmd_show), ("tail", cmd_tail)):
+        s = sub.add_parser(name); s.add_argument("sel"); s.add_argument("-l", "--lines", type=int, default=200); s.set_defaults(fn=fn)
+    s = sub.add_parser("send", help="inject a prompt"); s.add_argument("sel"); s.add_argument("-N", "--no-enter", action="store_true"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_send)
+    s = sub.add_parser("key", help="send a key"); s.add_argument("sel"); s.add_argument("key"); s.set_defaults(fn=cmd_key)
+    s = sub.add_parser("choose", help="answer a numbered menu"); s.add_argument("sel"); s.add_argument("n"); s.set_defaults(fn=cmd_choose)
+    s = sub.add_parser("check", help="find error-terminated sessions"); s.add_argument("sel", nargs="?"); s.set_defaults(fn=cmd_check)
+    s = sub.add_parser("ask", help="BTW side-query (forked; does not touch the live session)"); s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_ask)
+    s = sub.add_parser("log", help="locate the agent transcript file"); s.add_argument("sel")
+    s.add_argument("-f", "--follow", action="store_true"); s.add_argument("-c", "--cat", action="store_true")
+    s.add_argument("-p", "--path", dest="path_only", action="store_true", help="print only the path"); s.set_defaults(fn=cmd_log)
+    s = sub.add_parser("new"); s.add_argument("sel", help="project"); s.set_defaults(fn=cmd_new)
+    s = sub.add_parser("rm"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
+    a = p.parse_args()
+    a.fn(a)
+
+if __name__ == "__main__":
+    main()

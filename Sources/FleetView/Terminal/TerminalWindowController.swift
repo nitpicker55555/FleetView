@@ -36,7 +36,7 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
             // session and mirror it. This local window is just one attached client. The pane command
             // is passed as separate argv (tmux exec's it directly, no shell re-splitting), and we
             // wrap it in `env` so our identity vars reach the shell on any tmux version.
-            var args = ["-L", tmux.socket, "-f", tmux.confPath,
+            var args = ["-L", tmux.socket, "-f", tmux.confPath, "-u",   // -u: force UTF-8 output (CJK)
                         "new-session", "-A", "-s", tmux.session, "-c", cwd, "-x", "200", "-y", "50",
                         "/usr/bin/env"]
             for e in env where !e.hasPrefix("TERM=") { args.append(e) }   // tmux owns TERM in the pane

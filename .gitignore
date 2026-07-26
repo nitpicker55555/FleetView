@@ -10,5 +10,9 @@ DerivedData/
 # macOS
 .DS_Store
 
+# Python
+__pycache__/
+*.pyc
+
 # Packaged app bundle
 FleetView.app/

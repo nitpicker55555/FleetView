@@ -16,6 +16,8 @@ struct WebSnapshot: Codable {
         let canOpen: Bool         // is a live session attachable over the web right now?
         let done: Bool            // subtask marked done
         let idle: Int             // seconds since last real interaction, -1 if never
+        let cwd: String
+        let transcript: String?   // agent conversation-history file (Claude/Codex), if a hook reported it
     }
     struct Proj: Codable { let id: String; let name: String; let path: String }
     struct Clust: Codable { let id: String; let name: String }
@@ -55,6 +57,7 @@ final class WebServer {
         l.start(queue: queue)
         listener = l
         port = p
+        try? "\(p)".write(to: FV.webPortFile, atomically: true, encoding: .utf8)   // let fleetctl find us
     }
 
     func stop() { listener?.cancel(); listener = nil }
@@ -82,6 +85,8 @@ final class WebServer {
         let rawPath = fields.count >= 2 ? String(fields[1]) : "/"
         let (path, params) = Self.parsePath(rawPath)
 
+        if path == "/ask" { handleAsk(conn, params); return }   // long-running; handled off the main thread
+
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
                 self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data())
@@ -90,6 +95,29 @@ final class WebServer {
             MainActor.assumeIsolated {
                 let (status, type, body) = app.webResponse(path: path, query: params)
                 self.queue.async { self.send(conn, status: status, type: type, body: body) }
+            }
+        }
+    }
+
+    /// GET /ask?id=&q= — a "BTW" side query: ask the agent using its context without touching the live
+    /// session. The spec lookup is quick (main actor); the agent subprocess (~10-30s) runs on a global
+    /// queue so it never blocks the UI or other requests.
+    private func handleAsk(_ conn: NWConnection, _ query: [String: String]) {
+        guard let s = query["id"], let id = UUID(uuidString: s), let q = query["q"], !q.isEmpty else {
+            send(conn, status: "400 Bad Request", type: "text/plain", body: Data("bad request".utf8)); return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
+            }
+            let spec = MainActor.assumeIsolated { app.askSpec(id) }
+            guard let spec else {
+                self.send(conn, status: "409 Conflict", type: "text/plain",
+                          body: Data("no agent session for this terminal yet".utf8)); return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let answer = RemoteServer.ask(spec, question: q)
+                self.send(conn, type: "text/plain; charset=utf-8", body: Data(answer.utf8))
             }
         }
     }
@@ -110,10 +138,15 @@ final class WebServer {
         var dict: [String: String] = [:]
         for pair in raw[raw.index(after: q)...].split(separator: "&") {
             let kv = pair.split(separator: "=", maxSplits: 1)
-            let k = String(kv[0]).removingPercentEncoding ?? String(kv[0])
-            let v = kv.count > 1 ? (String(kv[1]).removingPercentEncoding ?? String(kv[1])) : ""
+            let k = decodeQuery(String(kv[0]))
+            let v = kv.count > 1 ? decodeQuery(String(kv[1])) : ""
             dict[k] = v
         }
         return (path, dict)
+    }
+
+    /// Decode one form-urlencoded query token: "+" is a space, then percent-decode the rest.
+    private static func decodeQuery(_ s: String) -> String {
+        (s.replacingOccurrences(of: "+", with: " ").removingPercentEncoding) ?? s
     }
 }

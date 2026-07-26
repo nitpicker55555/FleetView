@@ -9,6 +9,7 @@ struct TerminalCardView: View {
     @State private var showRemote = false
     @State private var remoteEndpoint: RemoteServer.Endpoint?
     @State private var remoteQR: NSImage?
+    @State private var copiedId = false
 
     private var cluster: Cluster? { state.cluster(terminal.clusterId) }
     private var done: Bool { terminal.subtaskDone }
@@ -117,6 +118,7 @@ struct TerminalCardView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
+            idChip
             if done {
                 Text("done")
                     .font(.system(size: 10, weight: .semibold))
@@ -235,6 +237,24 @@ struct TerminalCardView: View {
     private func copyToClipboard(_ s: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(s, forType: .string)
+    }
+
+    /// The terminal's id, shown short and click-to-copy (full UUID) — use it to target `fleetctl`.
+    private var idChip: some View {
+        let short = String(terminal.id.uuidString.prefix(8)).lowercased()
+        return Button {
+            copyToClipboard(terminal.id.uuidString.lowercased())
+            withAnimation(.easeOut(duration: 0.12)) { copiedId = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                withAnimation(.easeOut(duration: 0.25)) { copiedId = false }
+            }
+        } label: {
+            Text(copiedId ? "copied" : short)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(copiedId ? Theme.green : Theme.subtext.opacity(0.55))
+        }
+        .buttonStyle(.plain)
+        .help("Click to copy this terminal's ID (for fleetctl)")
     }
 
     private func iconButton(_ name: String, active: Bool = false, help: String,
