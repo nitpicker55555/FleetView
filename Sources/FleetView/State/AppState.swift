@@ -708,6 +708,31 @@ final class AppState: ObservableObject {
             let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
             let body = try? JSONEncoder().encode(["exists": exists ? 1 : 0, "mtime": Int(mtime)])
             return ("200 OK", "application/json", body ?? Data(#"{"exists":0,"mtime":0}"#.utf8))
+        case "/conversation":
+            // Structured conversation for the web view — renders as chat with native scrolling,
+            // which is how you read history on a phone (the terminal mirror can't scroll a TUI).
+            guard let s = query["id"], let id = UUID(uuidString: s) else {
+                return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
+            }
+            guard let path = transcriptPath(for: id) else {
+                return ("200 OK", "application/json", Data(#"{"messages":[],"note":"no agent session yet"}"#.utf8))
+            }
+            let limit = min(400, Int(query["limit"] ?? "") ?? 120)
+            let t = terminals.first(where: { $0.id == id })
+            var result = Conversation.parse(path: path, cwd: t?.cwd ?? "", limit: limit)
+            result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
+                                                                  used: result.info.contextTokens)
+            result.info.status = t?.status.rawValue
+            // Read the choices off the live screen so a prompt can be answered with real buttons.
+            // Gated on the picker's cursor rather than on status, because trust/menu prompts don't
+            // always raise "needs you" — the cursor is what actually means "waiting on you".
+            if let screen = remote.capture(id, lines: 40) {
+                let parsed = Conversation.options(fromScreen: screen)
+                result.info.options = parsed.options
+                result.info.question = parsed.question
+            }
+            let body = (try? JSONEncoder().encode(result)) ?? Data(#"{"messages":[]}"#.utf8)
+            return ("200 OK", "application/json", body)
         case "/capture":
             // Recent screen + scrollback of a terminal (for `fleetctl` conversation view / error scan).
             guard let s = query["id"], let id = UUID(uuidString: s) else {
@@ -723,22 +748,26 @@ final class AppState: ObservableObject {
     /// Resolve what `/ask` needs for a terminal: the agent session id (from its transcript), cwd, and
     /// agent kind. nil if no agent session has been captured yet (nothing to fork a query from).
     func askSpec(_ id: UUID) -> AskSpec? {
-        guard let t = terminals.first(where: { $0.id == id }) else { return nil }
-        var sid = t.transcriptPath.map { ((($0 as NSString).lastPathComponent) as NSString).deletingPathExtension } ?? ""
-        if sid.isEmpty {
-            // No hook has reported the transcript yet — fall back to the newest Claude session for this cwd.
-            let dir = FV.transcriptDir(forCwd: t.cwd)
-            let files = (try? FileManager.default.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-            let newest = files.filter { $0.pathExtension == "jsonl" }.max { a, b in
-                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                return da < db
-            }
-            sid = newest.map { ($0.lastPathComponent as NSString).deletingPathExtension } ?? ""
-        }
+        guard let t = terminals.first(where: { $0.id == id }), let path = transcriptPath(for: id) else { return nil }
+        let sid = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         guard !sid.isEmpty else { return nil }
         return AskSpec(sessionId: sid, cwd: t.cwd, agent: t.agentKind.rawValue)
+    }
+
+    /// The agent transcript file for a terminal: the path a hook reported, else the newest Claude
+    /// session recorded for that cwd (covers sessions started before hooks caught up).
+    func transcriptPath(for id: UUID) -> String? {
+        guard let t = terminals.first(where: { $0.id == id }) else { return nil }
+        if let tp = t.transcriptPath, FileManager.default.fileExists(atPath: tp) { return tp }
+        let dir = FV.transcriptDir(forCwd: t.cwd)
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let newest = files.filter { $0.pathExtension == "jsonl" }.max { a, b in
+            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return da < db
+        }
+        return newest?.path
     }
 
     /// Typing/keys from the web are real interaction — record it (drives "3m ago").

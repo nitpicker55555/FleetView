@@ -9,7 +9,15 @@ struct NotesSection: View {
     var fill: Bool = false
 
     @State private var newNote = ""
+    @State private var filter = ""
     @FocusState private var addFocused: Bool
+    @FocusState private var filterFocused: Bool
+
+    /// Notes matching the filter (case-insensitive substring).
+    private var shown: [Note] {
+        let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty ? state.notes : state.notes.filter { $0.text.lowercased().contains(q) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -20,17 +28,48 @@ struct NotesSection: View {
                         .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.5))
                         .padding(.horizontal, 16).padding(.vertical, 6)
                 } else {
-                    ScrollView {
-                        VStack(spacing: 3) {
-                            ForEach(state.notes) { NoteRow(note: $0) }
+                    if state.notes.count > 5 { filterField }   // only worth the row once the list is long
+                    if shown.isEmpty {
+                        Text("No note matches “\(filter)”")
+                            .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.6))
+                            .padding(.horizontal, 16).padding(.vertical, 8)
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 3) {
+                                ForEach(shown) { NoteRow(note: $0) }
+                            }
+                            .padding(.horizontal, 8).padding(.top, 2).padding(.bottom, 4)
                         }
-                        .padding(.horizontal, 8).padding(.top, 2).padding(.bottom, 4)
+                        .frame(maxHeight: fill ? .infinity : 240)
                     }
-                    .frame(maxHeight: fill ? .infinity : 240)
                 }
                 addField
             }
         }
+    }
+
+    private var filterField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 10))
+                .foregroundColor(Theme.subtext.opacity(0.8))
+            TextField("Filter notes", text: $filter)
+                .textFieldStyle(.plain).font(.system(size: 12)).foregroundColor(Theme.text)
+                .focused($filterFocused)
+                .onExitCommand { filter = "" }
+            if !filter.isEmpty {
+                Button { filter = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+                        .foregroundColor(Theme.subtext.opacity(0.7))
+                }
+                .buttonStyle(.plain).help("Clear filter")
+            }
+        }
+        .padding(.horizontal, 9).padding(.vertical, 6)
+        .background(Theme.card.opacity(filterFocused ? 0.95 : 0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7)
+            .stroke(filterFocused ? Theme.accent.opacity(0.5) : Theme.stroke, lineWidth: 1))
+        .padding(.horizontal, 12).padding(.bottom, 5)
     }
 
     private var header: some View {
@@ -44,7 +83,8 @@ struct NotesSection: View {
                     .rotationEffect(.degrees(state.notesCollapsed ? 0 : 90))
                 Text("NOTES").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.subtext)
                 Spacer()
-                Text("\(state.notes.count)").font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.7))
+                Text(filter.isEmpty ? "\(state.notes.count)" : "\(shown.count)/\(state.notes.count)")
+                    .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.7))
             }
             .contentShape(Rectangle())
         }
