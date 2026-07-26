@@ -12,6 +12,9 @@ enum FV {
     static var tmuxConf: URL { supportDir.appendingPathComponent("tmux.conf") }
     static var remoteLog: URL { supportDir.appendingPathComponent("remote.log") }
     static var webPortFile: URL { supportDir.appendingPathComponent("web-port") }   // fleetctl discovers the server here
+    static var uiDir: URL { supportDir.appendingPathComponent("ui", isDirectory: true) }   // agent-authored dynamic panel
+    static var panelHTML: URL { uiDir.appendingPathComponent("panel.html") }
+    static var panelJSON: URL { uiDir.appendingPathComponent("panel.json") }
 
     static func ensureSupportDir() {
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)

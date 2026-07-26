@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FleetView · Fleet Panel</title>
+<style>
+  :root{
+    --bg:#13161b; --card:#1e2129; --card2:#242833; --stroke:rgba(255,255,255,.07);
+    --ink:#eceef3; --sub:#98a0af; --faint:#5a6070;
+    --accent:#7a9eff; --accent-deep:#5f86ef;
+    --working:#5cd18c; --needs:#fab852; --idle:#8c93a3; --shell:#4dadc2; --exited:#d96b73; --closed:#3a3f49;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:
+      radial-gradient(120% 180% at 12% -40%, rgba(122,158,255,.13), transparent 60%),
+      radial-gradient(90% 140% at 88% 140%, rgba(92,209,140,.09), transparent 62%),
+      var(--bg);
+    color:var(--ink);
+    font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;
+    display:flex;flex-direction:column;overflow:hidden;
+    animation:ambient 24s ease-in-out infinite alternate;
+  }
+  @keyframes ambient{from{background-position:0% 0%,100% 100%,0 0}to{background-position:14% 6%,86% 94%,0 0}}
+  .wrap{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;
+    padding:10px 16px 11px;gap:8px;max-width:1500px;width:100%;margin:0 auto}
+
+  /* ---- header ---- */
+  header{display:flex;align-items:center;gap:11px;flex-wrap:nowrap}
+  .mark{font-size:10.5px;font-weight:800;letter-spacing:.14em;color:var(--sub);display:flex;align-items:center;gap:6px;white-space:nowrap}
+  .mark i{font-style:normal;color:var(--accent);text-shadow:0 0 12px rgba(122,158,255,.55)}
+  .summary{font-size:12px;color:var(--sub);white-space:nowrap}
+  .summary b{color:var(--ink);font-weight:650}
+  .pill{font-size:11px;font-weight:650;padding:2px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:6px;
+    cursor:pointer;border:1px solid transparent;transition:transform .12s,border-color .12s;white-space:nowrap}
+  .pill:hover{transform:translateY(-1px);border-color:currentColor}
+  .pill .d{width:7px;height:7px;border-radius:50%;flex:none}
+  .pill.w .d{animation:breathe 1.8s ease-in-out infinite}
+  @keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(92,209,140,.55)}50%{box-shadow:0 0 0 5px rgba(92,209,140,0)}}
+  .spacer{flex:1}
+  .live{font-size:10px;color:var(--faint);display:flex;align-items:center;gap:6px;white-space:nowrap}
+  .live .beat{width:6px;height:6px;border-radius:50%;background:var(--working);animation:breathe 2.2s ease-in-out infinite}
+
+  /* segmented view switcher */
+  .seg{display:flex;background:rgba(255,255,255,.05);border:1px solid var(--stroke);border-radius:8px;
+    padding:2px;gap:2px;position:relative}
+  .seg button{appearance:none;border:0;background:transparent;color:var(--sub);cursor:pointer;
+    font:600 10.5px/1 inherit;letter-spacing:.05em;text-transform:uppercase;padding:5px 10px;border-radius:6px;
+    transition:color .18s;position:relative;z-index:1}
+  .seg button:hover{color:var(--ink)}
+  .seg button[aria-selected="true"]{color:#0d1017}
+  .seg .thumb{position:absolute;top:2px;bottom:2px;border-radius:6px;background:var(--accent);
+    transition:left .32s cubic-bezier(.3,.9,.3,1),width .32s cubic-bezier(.3,.9,.3,1);z-index:0}
+  .seg button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* ---- layout ---- */
+  .grid{flex:1;min-height:0;display:grid;grid-template-columns:minmax(182px,.8fr) 1.75fr;gap:15px}
+  .col{min-height:0;display:flex;flex-direction:column;gap:6px}
+  .cap{font-size:9px;font-weight:800;letter-spacing:.13em;color:var(--faint);text-transform:uppercase;
+    display:flex;align-items:baseline;gap:7px}
+  .cap em{font-style:normal;color:var(--accent);letter-spacing:.04em}
+
+  /* ---- stat tiles (clickable) ---- */
+  .tiles{display:grid;grid-template-columns:1fr 1fr;gap:6px;flex:1;min-height:0}
+  .tile{position:relative;background:linear-gradient(180deg,var(--card2),var(--card));
+    border:1px solid var(--stroke);border-radius:11px;padding:7px 11px;overflow:hidden;cursor:pointer;
+    display:flex;flex-direction:column;justify-content:center;gap:1px;min-height:0;text-align:left;
+    transition:transform .16s cubic-bezier(.3,.9,.3,1),border-color .16s;
+    opacity:0;animation:tileIn .5s cubic-bezier(.2,.8,.2,1) forwards}
+  .tile:nth-child(2){animation-delay:.05s}.tile:nth-child(3){animation-delay:.1s}.tile:nth-child(4){animation-delay:.15s}
+  @keyframes tileIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .tile:hover{transform:translateY(-2px);border-color:rgba(122,158,255,.45)}
+  .tile:active{transform:translateY(0) scale(.985)}
+  .tile:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .tile .n{font-size:24px;font-weight:750;line-height:1.05;letter-spacing:-.015em}
+  .tile .l{font-size:10px;color:var(--sub);font-weight:500;display:flex;align-items:center;gap:4px}
+  .tile .l .arrow{opacity:0;transform:translateX(-3px);transition:.16s;font-size:9px;color:var(--accent)}
+  .tile:hover .l .arrow{opacity:1;transform:none}
+  .tile.accent .n{color:var(--accent)} .tile.work .n{color:var(--working)} .tile.need .n{color:var(--needs)}
+  .tile.hot::after{content:"";position:absolute;inset:0;border-radius:11px;pointer-events:none;
+    box-shadow:inset 0 0 0 1px rgba(92,209,140,.35),0 0 22px -6px rgba(92,209,140,.5);animation:glow 2.6s ease-in-out infinite}
+  .tile.need.hot::after{box-shadow:inset 0 0 0 1px rgba(250,184,82,.4),0 0 22px -6px rgba(250,184,82,.55)}
+  @keyframes glow{0%,100%{opacity:.35}50%{opacity:1}}
+
+  /* ---- view stage ---- */
+  .stage{position:relative;flex:1;min-height:0}
+  .view{position:absolute;inset:0;display:flex;flex-direction:column;
+    opacity:0;transform:translateY(7px) scale(.995);pointer-events:none;
+    transition:opacity .26s ease,transform .3s cubic-bezier(.2,.8,.2,1)}
+  .view.on{opacity:1;transform:none;pointer-events:auto}
+
+  /* bars */
+  .bars{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:space-around;gap:2px}
+  .bar{display:grid;grid-template-columns:110px 1fr auto;align-items:center;gap:10px;
+    padding:1px 0;border-radius:6px;cursor:pointer;transition:background .15s;
+    opacity:0;animation:barIn .5s cubic-bezier(.2,.8,.2,1) forwards}
+  @keyframes barIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+  .bar:hover{background:rgba(255,255,255,.04)}
+  .bar .name{font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
+  .bar:hover .name{color:var(--ink)}
+  .track{display:block;height:13px;background:rgba(255,255,255,.05);border-radius:7px;overflow:hidden;position:relative}
+  /* display:block is REQUIRED — a bare <span> is inline and width/height don't apply (bars render empty). */
+  .fill{display:block;height:100%;border-radius:7px;position:relative;overflow:hidden;min-width:6px;width:0;
+    background:linear-gradient(90deg,var(--accent-deep),var(--accent));
+    transition:width .9s cubic-bezier(.2,.75,.2,1)}
+  .fill::before{content:"";position:absolute;top:0;bottom:0;left:0;width:calc(100% + 22px);
+    background:repeating-linear-gradient(112deg,rgba(255,255,255,.18) 0 6px,rgba(255,255,255,0) 6px 22px);
+    animation:flow 1.5s linear infinite}
+  @keyframes flow{from{transform:translateX(-22px)}to{transform:translateX(0)}}
+  .bar.lead .fill{box-shadow:0 0 15px -3px rgba(122,158,255,.8)}
+  .bar.lead .fill::after{content:"";position:absolute;inset:0;
+    background:linear-gradient(100deg,transparent 20%,rgba(255,255,255,.45) 50%,transparent 80%);
+    transform:translateX(-100%);animation:sheen 3.4s ease-in-out infinite}
+  @keyframes sheen{0%{transform:translateX(-100%)}55%,100%{transform:translateX(220%)}}
+  .bar .val{font-size:11px;font-weight:650;color:var(--ink);min-width:56px;text-align:right}
+  .bar .val small{color:var(--faint);font-weight:450;margin-left:3px}
+
+  /* ring */
+  .ringwrap{flex:1;min-height:0;display:flex;align-items:center;gap:18px}
+  .ringbox{position:relative;height:100%;aspect-ratio:1;max-height:132px;flex:none}
+  .ringbox svg{width:100%;height:100%;transform:rotate(-90deg)}
+  .ringbox circle{fill:none;stroke-width:5.2;stroke-linecap:round;
+    transition:stroke-dasharray .9s cubic-bezier(.2,.75,.2,1),stroke-dashoffset .9s cubic-bezier(.2,.75,.2,1),opacity .2s}
+  .ringbox circle:hover{opacity:.75}
+  .ringcenter{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;pointer-events:none}
+  .ringcenter .big{font-size:21px;font-weight:750;letter-spacing:-.02em;color:var(--ink)}
+  .ringcenter .lil{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+  .ringlegend{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:3px}
+  .rl{display:grid;grid-template-columns:9px 1fr auto;align-items:center;gap:8px;font-size:11px;
+    padding:2px 5px;border-radius:6px;cursor:pointer;transition:background .15s;
+    opacity:0;animation:rlIn .45s cubic-bezier(.2,.8,.2,1) forwards}
+  @keyframes rlIn{from{opacity:0;transform:translateX(7px)}to{opacity:1;transform:none}}
+  .rl:hover{background:rgba(255,255,255,.04)}
+  .rl .sw{width:9px;height:9px;border-radius:3px}
+  .rl .nm{color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rl:hover .nm{color:var(--ink)}
+  .rl .vv{font-weight:650;color:var(--ink)}
+  .rl .vv small{color:var(--faint);font-weight:450;margin-left:4px}
+
+  /* grid of terminals */
+  .cells{flex:1;min-height:0;display:flex;flex-wrap:wrap;align-content:center;gap:6px;padding:2px 0;overflow:auto}
+  .cell{border-radius:8px;position:relative;cursor:pointer;flex:none;
+    transition:transform .18s cubic-bezier(.3,.9,.3,1),box-shadow .18s;
+    opacity:0;transform:scale(.6);animation:cellIn .42s cubic-bezier(.2,1.3,.4,1) forwards}
+  @keyframes cellIn{to{opacity:1;transform:scale(1)}}
+  .cell:hover{transform:scale(1.14);box-shadow:0 4px 16px -4px rgba(0,0,0,.6);z-index:2}
+  .cell.act::after{content:"";position:absolute;inset:0;border-radius:8px;
+    box-shadow:0 0 0 1.5px rgba(255,255,255,.55) inset;animation:glow 2.2s ease-in-out infinite}
+
+  /* ---- status strip ---- */
+  .statusbar{display:flex;flex-direction:column;gap:5px}
+  .stack{height:9px;border-radius:5px;overflow:hidden;display:flex;background:var(--card)}
+  .stack span{height:100%;cursor:pointer;transition:width .8s cubic-bezier(.2,.75,.2,1),filter .15s}
+  .stack span:hover{filter:brightness(1.3)}
+  .stack span + span{box-shadow:-2px 0 0 0 var(--bg)}
+  .legend{display:flex;gap:12px;flex-wrap:wrap}
+  .legend .it{font-size:10px;color:var(--sub);display:flex;align-items:center;gap:5px;cursor:pointer;transition:color .15s}
+  .legend .it:hover{color:var(--ink)}
+  .legend .it .d{width:8px;height:8px;border-radius:2.5px;flex:none}
+  .legend .it b{color:var(--ink);font-weight:650}
+  .empty{color:var(--faint);font-size:12px;padding:16px}
+
+  /* ---- detail overlay ---- */
+  .sheet{position:absolute;inset:0;z-index:9;background:linear-gradient(180deg,rgba(19,22,27,.97),rgba(19,22,27,.99));
+    backdrop-filter:blur(7px);display:flex;flex-direction:column;padding:10px 16px 11px;gap:7px;
+    opacity:0;transform:translateY(14px);pointer-events:none;
+    transition:opacity .24s ease,transform .3s cubic-bezier(.2,.8,.2,1)}
+  .sheet.on{opacity:1;transform:none;pointer-events:auto}
+  .sheethead{display:flex;align-items:center;gap:10px}
+  .sheethead h2{margin:0;font-size:13px;font-weight:700;letter-spacing:.01em}
+  .sheethead .sub{font-size:11px;color:var(--sub)}
+  .back{appearance:none;border:1px solid var(--stroke);background:var(--card);color:var(--ink);cursor:pointer;
+    font:650 11px/1 inherit;padding:6px 11px;border-radius:7px;transition:background .15s,transform .12s}
+  .back:hover{background:var(--card2)} .back:active{transform:scale(.96)}
+  .rows{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:3px;padding-right:2px}
+  .row{display:grid;grid-template-columns:11px minmax(90px,1.3fr) minmax(70px,1fr) 74px 52px;
+    align-items:center;gap:10px;padding:5px 8px;border-radius:7px;background:rgba(255,255,255,.028);
+    font-size:11.5px;opacity:0;animation:rowIn .4s cubic-bezier(.2,.8,.2,1) forwards}
+  @keyframes rowIn{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+  .row:hover{background:rgba(255,255,255,.06)}
+  .row .dot{width:9px;height:9px;border-radius:50%}
+  .row .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .pj{color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .tk{text-align:right;font-weight:650}
+  .row .ag{text-align:right;color:var(--faint);font-size:10px}
+  .row .miniwrap{grid-column:1/-1;height:4px;border-radius:2px;background:rgba(255,255,255,.05);overflow:hidden}
+  .row .mini{display:block;height:100%;border-radius:2px;background:linear-gradient(90deg,var(--accent-deep),var(--accent));
+    width:0;transition:width .8s cubic-bezier(.2,.75,.2,1)}
+  .prow{display:grid;grid-template-columns:minmax(110px,1fr) 58px 1.4fr 92px;align-items:center;gap:11px;
+    padding:6px 8px;border-radius:7px;background:rgba(255,255,255,.028);font-size:11.5px;
+    opacity:0;animation:rowIn .4s cubic-bezier(.2,.8,.2,1) forwards}
+  .prow:hover{background:rgba(255,255,255,.06)}
+  .prow .nm{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prow .ct{color:var(--sub);font-size:10.5px}
+  .prow .tk{text-align:right;font-weight:650}
+  .prow .tk small{color:var(--faint);font-weight:450;margin-left:4px}
+
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation:none!important;transition:none!important}
+    .tile,.bar,.rl,.cell,.row,.prow{opacity:1!important;transform:none!important}
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="mark"><i>▉</i> FLEETVIEW</span>
+    <span class="summary" id="summary">—</span>
+    <span id="pills"></span>
+    <span class="spacer"></span>
+    <div class="seg" id="seg" role="tablist" aria-label="Visualisation">
+      <span class="thumb" id="thumb"></span>
+      <button role="tab" data-v="bars" aria-selected="true">Bars</button>
+      <button role="tab" data-v="ring" aria-selected="false">Ring</button>
+      <button role="tab" data-v="grid" aria-selected="false">Grid</button>
+    </div>
+    <span class="live"><span class="beat"></span><span id="src">live</span> · <span id="upd"></span></span>
+  </header>
+
+  <div class="grid">
+    <div class="col">
+      <div class="cap">Fleet</div>
+      <div class="tiles">
+        <button class="tile" data-open="terminals"><span class="n" id="t_term">0</span><span class="l">terminals <span class="arrow">▸</span></span></button>
+        <button class="tile accent" data-open="projects"><span class="n" id="t_proj">0</span><span class="l">projects <span class="arrow">▸</span></span></button>
+        <button class="tile work" id="tile_work" data-open="working"><span class="n" id="t_work">0</span><span class="l">working <span class="arrow">▸</span></span></button>
+        <button class="tile need" id="tile_need" data-open="needsYou"><span class="n" id="t_need">0</span><span class="l">needs you <span class="arrow">▸</span></span></button>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="cap" id="viewcap">Tokens by project <em id="t_total">0</em></div>
+      <div class="stage">
+        <div class="view on" data-view="bars"><div class="bars" id="bars"></div></div>
+        <div class="view" data-view="ring">
+          <div class="ringwrap">
+            <div class="ringbox">
+              <svg viewBox="0 0 42 42" id="ringsvg" aria-hidden="true"></svg>
+              <div class="ringcenter"><span class="big" id="ringtotal">0</span><span class="lil">tokens</span></div>
+            </div>
+            <div class="ringlegend" id="ringlegend"></div>
+          </div>
+        </div>
+        <div class="view" data-view="grid"><div class="cells" id="cells"></div></div>
+      </div>
+      <div class="statusbar">
+        <div class="stack" id="stack"></div>
+        <div class="legend" id="legend"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- detail sheet -->
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true">
+    <div class="sheethead">
+      <button class="back" id="back">‹ Back</button>
+      <h2 id="sheettitle">Terminals</h2>
+      <span class="sub" id="sheetsub"></span>
+    </div>
+    <div class="rows" id="sheetrows"></div>
+  </div>
+</div>
+
+<script>
+const STATUS = [
+  ["working","working","--working"], ["needsYou","needs you","--needs"],
+  ["idle","idle","--idle"], ["shell","shell","--shell"],
+  ["exited","exited","--exited"], ["closed","closed","--closed"]
+];
+const SC = Object.fromEntries(STATUS.map(s=>[s[0],"var("+s[2]+")"]));
+const LABEL = Object.fromEntries(STATUS.map(s=>[s[0],s[1]]));
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+/* one hue, light→dark by rank — a sequential ramp, never a rainbow */
+const RAMP = ["#a9c1ff","#8fadfb","#7a9eff","#6b8ff2","#5f86ef","#4f74d8"];
+
+const SAMPLE = {projects:[
+  {id:"p1",name:"datagen_vision2web"},{id:"p2",name:"home_puzhen"},{id:"p3",name:"FleetView"},
+  {id:"p4",name:"Benchmark_COWORK"},{id:"p5",name:"hass-tantron"},{id:"p6",name:"invoice"}],
+ terminals:[
+  {id:"a",name:"FleetView-1",projectId:"p3",status:"working",tokens:2800000,idle:0,agent:"claude"},
+  {id:"b",name:"home_puzhen-1",projectId:"p2",status:"idle",tokens:5400000,idle:900,agent:"claude"},
+  {id:"c",name:"hass-tantron-1",projectId:"p5",status:"idle",tokens:870000,idle:5400,agent:"claude"},
+  {id:"d",name:"l1",projectId:"p1",status:"working",tokens:10700000,idle:20,agent:"claude"},
+  {id:"e",name:"verify对齐",projectId:"p1",status:"idle",tokens:7500000,idle:50400,agent:"claude"},
+  {id:"f",name:"fix pipeline",projectId:"p1",status:"shell",tokens:2200000,idle:43200,agent:"claude"},
+  {id:"g",name:"l2",projectId:"p1",status:"idle",tokens:7900000,idle:7200,agent:"claude"},
+  {id:"h",name:"l1-b",projectId:"p1",status:"idle",tokens:22700000,idle:120,agent:"claude"},
+  {id:"i",name:"verify-b",projectId:"p1",status:"idle",tokens:2100000,idle:300,agent:"claude"},
+  {id:"j",name:"Benchmark-1",projectId:"p4",status:"needsYou",tokens:1700000,idle:60,agent:"codex"},
+  {id:"k",name:"Benchmark-2",projectId:"p4",status:"idle",tokens:3600000,idle:1800,agent:"claude"},
+  {id:"l",name:"Benchmark-3",projectId:"p4",status:"idle",tokens:1900000,idle:2400,agent:"claude"},
+  {id:"m",name:"invoice-1",projectId:"p6",status:"closed",tokens:40600,idle:-1,agent:"claude"}]};
+
+function short(n){n=Math.round(n);if(n<1000)return ""+n;if(n<1e6)return (n/1e3).toFixed(n<1e4?1:0)+"k";return (n/1e6).toFixed(1)+"M";}
+function ago(s){if(s==null||s<0)return "—";if(s<60)return s+"s";if(s<3600)return Math.floor(s/60)+"m";if(s<86400)return Math.floor(s/3600)+"h";return Math.floor(s/86400)+"d";}
+function esc(s){const d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML;}
+
+/* rolling counters — telemetry should move, not jump */
+const rollers=new Map();
+function roll(el,to,fmt){
+  fmt=fmt||(v=>Math.round(v));
+  const from=rollers.get(el)??0; rollers.set(el,to);
+  if(REDUCED||from===to){el.textContent=fmt(to);return;}
+  const t0=performance.now(),dur=620;
+  // clamp to [0,1] — an unclamped k (clock skew / background tab) makes the easing overshoot wildly
+  // and briefly renders huge negative numbers.
+  (function step(t){const k=Math.max(0,Math.min(1,(t-t0)/dur)),e=1-Math.pow(1-k,3);
+    el.textContent=fmt(from+(to-from)*e); if(k<1)requestAnimationFrame(step);})(t0);
+}
+
+let DATA=null, view="bars", sheetKind=null;
+
+/* ---------- view switcher ---------- */
+const seg=document.getElementById("seg"), thumb=document.getElementById("thumb");
+function moveThumb(){
+  const b=seg.querySelector('[aria-selected="true"]'); if(!b)return;
+  thumb.style.left=b.offsetLeft+"px"; thumb.style.width=b.offsetWidth+"px";
+}
+seg.addEventListener("click",e=>{
+  const b=e.target.closest("button[data-v]"); if(!b)return;
+  setView(b.dataset.v);
+});
+function setView(v){
+  view=v;
+  seg.querySelectorAll("button").forEach(b=>b.setAttribute("aria-selected",String(b.dataset.v===v)));
+  document.querySelectorAll(".view").forEach(el=>el.classList.toggle("on",el.dataset.view===v));
+  document.getElementById("viewcap").innerHTML =
+    (v==="grid" ? 'Every terminal · <em id="t_total2">'+ (DATA?DATA.terminals.length:0) +'</em> cells'
+                : 'Tokens by project <em id="t_total">'+ (DATA?short(DATA.terminals.reduce((a,t)=>a+(t.tokens||0),0)):0) +'</em>');
+  moveThumb();
+  if(DATA) paint(DATA);
+}
+addEventListener("resize",moveThumb);
+
+/* ---------- detail sheet ---------- */
+const sheet=document.getElementById("sheet");
+document.querySelectorAll("[data-open]").forEach(el=>el.addEventListener("click",()=>openSheet(el.dataset.open)));
+document.getElementById("back").addEventListener("click",closeSheet);
+addEventListener("keydown",e=>{if(e.key==="Escape")closeSheet();});
+function openSheet(kind){ sheetKind=kind; sheet.classList.add("on"); paintSheet(); }
+function closeSheet(){ sheetKind=null; sheet.classList.remove("on"); }
+
+function paintSheet(){
+  if(!sheetKind||!DATA)return;
+  const {terminals:terms,projects:projs}=DATA;
+  const pname=id=>(projs.find(p=>p.id===id)||{}).name||"—";
+  const rowsEl=document.getElementById("sheetrows");
+  const title=document.getElementById("sheettitle"), sub=document.getElementById("sheetsub");
+
+  if(sheetKind==="projects"){
+    title.textContent="Projects";
+    const agg=projs.map(p=>{
+      const ts=terms.filter(t=>t.projectId===p.id);
+      return {name:p.name,n:ts.length,v:ts.reduce((a,t)=>a+(t.tokens||0),0)};
+    }).filter(p=>p.n>0).sort((a,b)=>b.v-a.v);
+    const max=Math.max(1,...agg.map(p=>p.v)), tot=agg.reduce((a,p)=>a+p.v,0);
+    sub.textContent=agg.length+" active · "+short(tot)+" tokens";
+    rowsEl.innerHTML=agg.map((p,i)=>
+      '<div class="prow" style="animation-delay:'+(i*38)+'ms">'
+      +'<span class="nm">'+esc(p.name)+'</span>'
+      +'<span class="ct">'+p.n+' term'+(p.n===1?'':'s')+'</span>'
+      +'<span class="track"><span class="fill" data-w="'+(p.v/max*100).toFixed(1)+'"></span></span>'
+      +'<span class="tk">'+short(p.v)+' <small>'+(tot?Math.round(p.v/tot*100):0)+'%</small></span></div>').join("");
+  }else{
+    const filt = (sheetKind==="terminals") ? terms : terms.filter(t=>t.status===sheetKind);
+    title.textContent = sheetKind==="terminals" ? "Terminals" : LABEL[sheetKind]||sheetKind;
+    sub.textContent = filt.length+" of "+terms.length;
+    const max=Math.max(1,...filt.map(t=>t.tokens||0));
+    rowsEl.innerHTML = filt.length? filt.slice().sort((a,b)=>(b.tokens||0)-(a.tokens||0)).map((t,i)=>
+      '<div class="row" style="animation-delay:'+(i*32)+'ms" title="'+esc(t.name)+'">'
+      +'<span class="dot" style="background:'+(SC[t.status]||SC.closed)+'"></span>'
+      +'<span class="nm">'+esc(t.name)+'</span>'
+      +'<span class="pj">'+esc(pname(t.projectId))+'</span>'
+      +'<span class="tk">'+short(t.tokens||0)+'</span>'
+      +'<span class="ag">'+ago(t.idle)+'</span>'
+      +'<span class="miniwrap"><span class="mini" data-w="'+((t.tokens||0)/max*100).toFixed(1)+'"></span></span>'
+      +'</div>').join("")
+      : '<div class="empty">Nothing here right now.</div>';
+  }
+  requestAnimationFrame(()=>rowsEl.querySelectorAll("[data-w]").forEach(el=>el.style.width=el.dataset.w+"%"));
+}
+
+/* ---------- main paint ---------- */
+function paint(s){
+  const terms=s.terminals||[], projs=s.projects||[];
+  const pname=id=>(projs.find(p=>p.id===id)||{}).name||"—";
+  const total=terms.reduce((a,t)=>a+(t.tokens||0),0);
+  const byProj={}; terms.forEach(t=>{byProj[t.projectId]=(byProj[t.projectId]||0)+(t.tokens||0);});
+  const rows=Object.entries(byProj).map(([id,v])=>({id,name:pname(id),v}))
+    .filter(r=>r.v>0).sort((a,b)=>b.v-a.v).slice(0,6);
+  const max=Math.max(1,...rows.map(r=>r.v));
+
+  if(view==="bars"){
+    const bars=document.getElementById("bars"), key=rows.map(r=>r.name).join("|");
+    if(!rows.length){ bars.innerHTML='<div class="empty">No token usage yet.</div>'; bars.dataset.k=""; }
+    else{
+      if(bars.dataset.k!==key){
+        bars.dataset.k=key;
+        bars.innerHTML=rows.map((r,i)=>
+          '<div class="bar'+(i===0?' lead':'')+'" data-p="'+esc(r.id)+'" style="animation-delay:'+(i*45)+'ms">'
+          +'<span class="name">'+esc(r.name)+'</span>'
+          +'<span class="track"><span class="fill"></span></span>'
+          +'<span class="val"></span></div>').join("");
+        bars.querySelectorAll(".bar").forEach(b=>b.addEventListener("click",()=>openSheet("projects")));
+      }
+      const els=bars.querySelectorAll(".bar");
+      rows.forEach((r,i)=>{const el=els[i]; if(!el)return;
+        const share=total?Math.round(r.v/total*100):0;
+        el.querySelector(".fill").style.width=(r.v/max*100).toFixed(1)+"%";
+        el.querySelector(".val").innerHTML=short(r.v)+' <small>'+share+'%</small>';
+        el.title=r.name+" · "+r.v.toLocaleString()+" tokens ("+share+"%)";});
+    }
+  }
+
+  if(view==="ring"){
+    const svg=document.getElementById("ringsvg"), key=rows.map(r=>r.name).join("|");
+    if(svg.dataset.k!==key){
+      svg.dataset.k=key;
+      svg.innerHTML='<circle cx="21" cy="21" r="15.9" stroke="rgba(255,255,255,.06)" stroke-dasharray="100 0"></circle>'
+        + rows.map((r,i)=>'<circle cx="21" cy="21" r="15.9" stroke="'+RAMP[i%RAMP.length]
+          +'" stroke-dasharray="0 100" stroke-dashoffset="0"><title>'+esc(r.name)+'</title></circle>').join("");
+    }
+    let off=0; const cs=svg.querySelectorAll("circle");
+    rows.forEach((r,i)=>{
+      const c=cs[i+1]; if(!c)return;
+      const pct=total?r.v/total*100:0;
+      requestAnimationFrame(()=>{c.setAttribute("stroke-dasharray",pct.toFixed(2)+" "+(100-pct).toFixed(2));
+        c.setAttribute("stroke-dashoffset",(-off).toFixed(2));});
+      off+=pct;
+    });
+    roll(document.getElementById("ringtotal"),total,short);
+    const lg=document.getElementById("ringlegend");
+    if(lg.dataset.k!==key){
+      lg.dataset.k=key;
+      lg.innerHTML=rows.map((r,i)=>
+        '<div class="rl" style="animation-delay:'+(i*45)+'ms" title="'+esc(r.name)+'">'
+        +'<span class="sw" style="background:'+RAMP[i%RAMP.length]+'"></span>'
+        +'<span class="nm">'+esc(r.name)+'</span><span class="vv" data-i="'+i+'"></span></div>').join("");
+      lg.querySelectorAll(".rl").forEach(el=>el.addEventListener("click",()=>openSheet("projects")));
+    }
+    rows.forEach((r,i)=>{const v=lg.querySelector('[data-i="'+i+'"]');
+      if(v) v.innerHTML=short(r.v)+' <small>'+(total?Math.round(r.v/total*100):0)+'%</small>';});
+  }
+
+  if(view==="grid"){
+    const cells=document.getElementById("cells");
+    const key=terms.map(t=>t.id+t.status).join("|");
+    if(cells.dataset.k!==key){
+      cells.dataset.k=key;
+      const mx=Math.max(1,...terms.map(t=>t.tokens||0));
+      cells.innerHTML=terms.map((t,i)=>{
+        const sz=Math.round(16+Math.sqrt((t.tokens||0)/mx)*24);
+        return '<span class="cell'+(t.status==="working"||t.status==="needsYou"?" act":"")+'" '
+          +'style="width:'+sz+'px;height:'+sz+'px;background:'+(SC[t.status]||SC.closed)
+          +';animation-delay:'+(i*26)+'ms" title="'+esc(t.name)+' · '+LABEL[t.status]+' · '+short(t.tokens||0)+' tokens"></span>';
+      }).join("");
+      cells.querySelectorAll(".cell").forEach(el=>el.addEventListener("click",()=>openSheet("terminals")));
+    }
+  }
+  return {total,counts:(()=>{const c={};STATUS.forEach(x=>c[x[0]]=0);terms.forEach(t=>c[t.status]=(c[t.status]||0)+1);return c;})()};
+}
+
+function render(s,isLive){
+  DATA=s;
+  const terms=s.terminals||[], projs=s.projects||[];
+  document.getElementById("src").textContent=isLive?"live":"preview · sample";
+  document.getElementById("upd").textContent=new Date().toLocaleTimeString();
+  document.getElementById("summary").innerHTML="<b>"+projs.length+"</b> projects · <b>"+terms.length+"</b> terminals";
+
+  const {total,counts}=paint(s);
+  roll(document.getElementById("t_term"),terms.length);
+  roll(document.getElementById("t_proj"),projs.length);
+  roll(document.getElementById("t_work"),counts.working||0);
+  roll(document.getElementById("t_need"),counts.needsYou||0);
+  const tt=document.getElementById("t_total"); if(tt) roll(tt,total,short);
+  document.getElementById("tile_work").classList.toggle("hot",(counts.working||0)>0);
+  document.getElementById("tile_need").classList.toggle("hot",(counts.needsYou||0)>0);
+
+  let pills="";
+  if(counts.working) pills+='<span class="pill w" data-open="working" style="color:var(--working);background:rgba(92,209,140,.14)"><span class="d" style="background:var(--working)"></span>'+counts.working+' working</span> ';
+  if(counts.needsYou) pills+='<span class="pill" data-open="needsYou" style="color:var(--needs);background:rgba(250,184,82,.14)"><span class="d" style="background:var(--needs)"></span>'+counts.needsYou+' needs you</span>';
+  const pb=document.getElementById("pills");
+  if(pb.dataset.k!==pills){ pb.dataset.k=pills; pb.innerHTML=pills;
+    pb.querySelectorAll("[data-open]").forEach(el=>el.addEventListener("click",()=>openSheet(el.dataset.open))); }
+
+  const present=STATUS.filter(x=>counts[x[0]]>0);
+  const stack=document.getElementById("stack"), skey=present.map(x=>x[0]).join("|");
+  if(stack.dataset.k!==skey){
+    stack.dataset.k=skey;
+    stack.innerHTML=present.map(x=>'<span data-s="'+x[0]+'" style="width:0;background:var('+x[2]+')"></span>').join("");
+    stack.querySelectorAll("[data-s]").forEach(el=>el.addEventListener("click",()=>openSheet(el.dataset.s)));
+  }
+  present.forEach(x=>{const seg2=stack.querySelector('[data-s="'+x[0]+'"]');
+    if(seg2){seg2.style.width=(terms.length?counts[x[0]]/terms.length*100:0)+"%"; seg2.title=x[1]+": "+counts[x[0]];}});
+  const lgd=document.getElementById("legend"), lkey=present.map(x=>x[0]+counts[x[0]]).join("|");
+  if(lgd.dataset.k!==lkey){
+    lgd.dataset.k=lkey;
+    lgd.innerHTML=present.map(x=>'<span class="it" data-open="'+x[0]+'"><span class="d" style="background:var('+x[2]+')"></span>'+x[1]+' <b>'+counts[x[0]]+'</b></span>').join("");
+    lgd.querySelectorAll("[data-open]").forEach(el=>el.addEventListener("click",()=>openSheet(el.dataset.open)));
+  }
+  if(sheetKind) paintSheet();
+}
+
+async function tick(){
+  try{
+    const r=await fetch("/state",{cache:"no-store"}); if(!r.ok)throw 0;
+    render(await r.json(),true);
+  }catch(e){ render(SAMPLE,false); }
+}
+tick(); setInterval(tick,1500); requestAnimationFrame(moveThumb);
+</script>
+
+</html>

@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RemoteServer.installConfig() // tmux config for LAN web access (harmless if tmux is absent)
         state.web.app = state
         state.web.start()            // web dashboard (mirror of this window) on the LAN
+        state.startPanelWatch()      // hot-load the agent-authored top panel (no relaunch needed)
         let w = EventWatcher()
         w.onEvent = { [weak self] ev in
             Task { @MainActor in self?.state.handleHookEvent(ev) }

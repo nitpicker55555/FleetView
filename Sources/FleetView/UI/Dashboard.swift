@@ -5,13 +5,16 @@ struct DashboardView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
-        HStack(spacing: 0) {
-            Sidebar().frame(width: state.sidebarWidth)
-            SidebarDivider()
-            VStack(spacing: 0) {
-                TopBar()
-                Divider().overlay(Theme.stroke)
-                MainArea()
+        VStack(spacing: 0) {
+            DynamicPanel()                      // agent-authored dynamic UI, full-width at the very top
+            HStack(spacing: 0) {
+                Sidebar().frame(width: state.sidebarWidth)
+                SidebarDivider()
+                VStack(spacing: 0) {
+                    TopBar()
+                    Divider().overlay(Theme.stroke)
+                    MainArea()
+                }
             }
         }
         .background(Theme.bg)

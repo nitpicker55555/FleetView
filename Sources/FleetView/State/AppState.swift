@@ -37,6 +37,38 @@ final class AppState: ObservableObject {
     /// Serves the web dashboard (a mirror of this window, viewable + interactive from any device).
     let web = WebServer()
 
+    // MARK: - Dynamic panel (agent-authored UI pinned to the top)
+
+    @Published var panelExists = false
+    @Published var panelMtime: TimeInterval = 0
+    private var panelTimer: Timer?
+
+    /// Watch `~/.fleetview/ui/panel.html` so an agent can create / update / remove the panel *while*
+    /// FleetView runs — it appears, reloads and disappears live, no relaunch. The polling lives here
+    /// rather than in the view because a SwiftUI view that currently renders nothing (no panel yet)
+    /// never receives timer events, which would make the panel appear only after a restart.
+    func startPanelWatch() {
+        try? FileManager.default.createDirectory(at: FV.uiDir, withIntermediateDirectories: true)
+        refreshPanel()
+        panelTimer?.invalidate()
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshPanel() }
+        }
+        RunLoop.main.add(t, forMode: .common)   // keep ticking during menu tracking / scrolling
+        panelTimer = t
+    }
+
+    private func refreshPanel() {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: FV.panelHTML.path)
+        let exists = attrs != nil
+        let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        if exists != panelExists {
+            panelExists = exists
+            FV.log("panel \(exists ? "appeared" : "removed")")
+        }
+        if mtime != panelMtime { panelMtime = mtime }
+    }
+
     // MARK: - Persistence
 
     private struct Persisted: Codable {
@@ -661,6 +693,21 @@ final class AppState: ObservableObject {
             if let add = query["add"] { addNote(add) }
             else if let d = query["del"], let nid = UUID(uuidString: d) { removeNote(nid) }
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/panel":
+            // The agent-authored dynamic panel (self-contained HTML). Empty page if none written yet.
+            let html = (try? String(contentsOf: FV.panelHTML, encoding: .utf8)) ?? "<!doctype html><body></body>"
+            return ("200 OK", "text/html; charset=utf-8", Data(html.utf8))
+        case "/panel-data":
+            // Fast-changing data the panel's own JS polls via fetch('/panel-data').
+            let data = (try? Data(contentsOf: FV.panelJSON)) ?? Data("{}".utf8)
+            return ("200 OK", "application/json", data)
+        case "/panel-meta":
+            // Container polls this to know whether a panel exists and when to reload (html changed).
+            let attrs = try? FileManager.default.attributesOfItem(atPath: FV.panelHTML.path)
+            let exists = attrs != nil
+            let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            let body = try? JSONEncoder().encode(["exists": exists ? 1 : 0, "mtime": Int(mtime)])
+            return ("200 OK", "application/json", body ?? Data(#"{"exists":0,"mtime":0}"#.utf8))
         case "/capture":
             // Recent screen + scrollback of a terminal (for `fleetctl` conversation view / error scan).
             guard let s = query["id"], let id = UUID(uuidString: s) else {

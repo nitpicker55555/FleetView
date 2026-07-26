@@ -25,6 +25,12 @@ enum WebDashboardPage {
   body{background:var(--bg);color:var(--text);
     font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     -webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+  #panel{display:none;position:relative;border-bottom:1px solid var(--stroke);background:var(--bg)}
+  #panel.show{display:block}
+  #panelframe{width:100%;height:240px;border:0;display:block;background:var(--bg)}
+  #panel.min #panelframe{height:0}
+  #panel .pcollapse{position:absolute;right:8px;top:6px;z-index:2;background:var(--card);color:var(--sub);
+    border:1px solid var(--stroke);border-radius:6px;font-size:11px;padding:2px 8px;cursor:pointer}
   header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
     padding:12px 16px;background:rgba(28,31,37,.92);backdrop-filter:blur(8px);
     border-bottom:1px solid var(--stroke);padding-top:max(12px,env(safe-area-inset-top))}
@@ -102,6 +108,8 @@ enum WebDashboardPage {
 </style>
 </head>
 <body>
+<div id="panel"><button class="pcollapse" onclick="togglePanel()">▾ hide</button>
+  <iframe id="panelframe" sandbox="allow-scripts allow-same-origin allow-popups allow-forms" src="about:blank"></iframe></div>
 <header>
   <span class="logo"><b>▉</b> FleetView</span>
   <span class="muted" id="counts">…</span>
@@ -336,6 +344,24 @@ async function tick(){
   }catch(e){document.getElementById('refresh').textContent='offline — retrying…';}
 }
 tick();setInterval(tick,1500);
+
+// ---------- agent-authored dynamic panel (top region) ----------
+let panelMtime=-1;
+function togglePanel(){
+  const el=document.getElementById('panel');el.classList.toggle('min');
+  el.querySelector('.pcollapse').textContent=el.classList.contains('min')?'▸ show':'▾ hide';
+}
+async function pollPanel(){
+  try{
+    const m=await (await fetch('/panel-meta',{cache:'no-store'})).json();
+    const el=document.getElementById('panel');
+    if(m.exists){
+      el.classList.add('show');
+      if(m.mtime!==panelMtime){panelMtime=m.mtime;document.getElementById('panelframe').src='/panel?t='+m.mtime;}
+    }else{el.classList.remove('show');panelMtime=-1;}
+  }catch(e){}
+}
+pollPanel();setInterval(pollPanel,1500);
 </script>
 </body>
 </html>
