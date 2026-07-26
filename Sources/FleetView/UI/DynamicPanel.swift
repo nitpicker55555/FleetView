@@ -1,7 +1,8 @@
 import SwiftUI
 import WebKit
 
-/// The full-width region at the very top of FleetView that renders the agent-authored dynamic panel
+/// The region at the top of FleetView's content column (to the right of the sidebar) that renders
+/// the agent-authored dynamic panel
 /// (`~/.fleetview/ui/panel.html`, served at `/panel`). Shown only when a panel file exists; polls its
 /// mtime and reloads the web view when the agent rewrites it. Collapsible. Read-only (v1).
 struct DynamicPanel: View {
