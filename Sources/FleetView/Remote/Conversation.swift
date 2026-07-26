@@ -119,28 +119,44 @@ enum Conversation {
 
     /// Parse the numbered choices an agent prints when it needs a decision (Claude and Codex both
     /// use "1. Yes" style lists), so the web can render one button per option.
+    /// A run of consecutive "N. label" lines, and whether the picker's cursor sits on one of them.
+    private struct OptionRun { var hasCursor = false; var opts: [ConvOption] = []; var question: String? }
+
     static func options(fromScreen screen: String) -> (question: String?, options: [ConvOption]) {
-        var opts: [ConvOption] = []
-        var question: String?
-        var cursorSeen = false     // a picker is only *active* if one choice is highlighted
-        for raw in screen.split(separator: "\n") {
+        var runs: [OptionRun] = []
+        var cur = OptionRun()
+        var lastQuestion: String?
+
+        for raw in screen.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = raw.trimmingCharacters(in: .whitespaces)
-            // "❯ 1. Yes, I trust this folder" / "› 2. No, quit" / "  3) Something"
-            if line.hasPrefix("❯") || line.hasPrefix("›") { cursorSeen = true }
-            let body = line.drop(while: { "❯›>*•".contains($0) || $0 == " " })
-            guard let dot = body.firstIndex(where: { $0 == "." || $0 == ")" }) else {
-                if line.hasSuffix("?") && line.count > 8 && question == nil { question = line }
-                continue
+            if line.isEmpty { continue }                       // blanks don't break a picker block
+            // The cursor must be on THIS line for it to count — Claude's composer prompt is also
+            // "❯", just with nothing after it, so "cursor anywhere on screen" matches every frame.
+            let cursor = line.hasPrefix("❯") || line.hasPrefix("›")
+            let body = line.drop(while: { "❯›".contains($0) || $0 == " " })
+
+            if let sep = body.firstIndex(where: { $0 == "." || $0 == ")" }) {
+                let num = String(body[body.startIndex..<sep])
+                let label = String(body[body.index(after: sep)...]).trimmingCharacters(in: .whitespaces)
+                if !num.isEmpty, num.count <= 2, num.allSatisfy({ $0.isNumber }),
+                   !label.isEmpty, label.count < 120 {
+                    if cur.opts.isEmpty { cur.question = lastQuestion }
+                    if !cur.opts.contains(where: { $0.n == num }) {
+                        cur.opts.append(ConvOption(n: num, label: clip(label, 90)))
+                    }
+                    if cursor { cur.hasCursor = true }
+                    continue
+                }
             }
-            let num = String(body[body.startIndex..<dot]).trimmingCharacters(in: .whitespaces)
-            guard num.count <= 2, !num.isEmpty, num.allSatisfy({ $0.isNumber }) else { continue }
-            let label = String(body[body.index(after: dot)...]).trimmingCharacters(in: .whitespaces)
-            guard !label.isEmpty, label.count < 120 else { continue }
-            if !opts.contains(where: { $0.n == num }) { opts.append(ConvOption(n: num, label: clip(label, 90))) }
+            if !cur.opts.isEmpty { runs.append(cur); cur = OptionRun() }   // any other line ends the run
+            if line.hasSuffix("?") && line.count > 8 { lastQuestion = line }
         }
-        // Needs a cursor AND ≥2 choices, so a numbered list the agent merely *printed* isn't
-        // mistaken for a prompt that's waiting on you.
-        return (question, (cursorSeen && opts.count >= 2) ? opts : [])
+        if !cur.opts.isEmpty { runs.append(cur) }
+
+        // The live picker is the LAST block that has a highlighted choice. A numbered list the agent
+        // merely printed has no cursor on it, so it can never be mistaken for a prompt.
+        guard let picker = runs.last(where: { $0.hasCursor && $0.opts.count >= 2 }) else { return (nil, []) }
+        return (picker.question, picker.opts)
     }
 
     // MARK: - Claude Code
