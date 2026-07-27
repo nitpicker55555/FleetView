@@ -85,8 +85,12 @@ enum WebDashboardPage {
   .zone.danger{color:var(--red);border-color:rgba(217,107,115,.4)}
   .zone.danger.hot{background:var(--red);color:#fff}
   /* terminal overlay */
-  #term{position:fixed;inset:0;z-index:50;background:#000;display:none;flex-direction:column}
+  /* 100dvh, not 100%: mobile browser chrome changes the viewport height, and a fixed inset:0
+     overlay ends up short — which is the strip of the page you could see under the composer. */
+  #term{position:fixed;inset:0;height:100vh;height:100dvh;z-index:50;background:var(--bg);
+    display:none;flex-direction:column;overscroll-behavior:none}
   #term.show{display:flex}
+  body.locked{overflow:hidden;position:fixed;width:100%}
   #termbar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--panel);
     border-bottom:1px solid var(--stroke);padding-top:max(10px,env(safe-area-inset-top))}
   #termbar button{background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer}
@@ -98,7 +102,8 @@ enum WebDashboardPage {
   #tabs button{background:transparent;border:0;color:var(--sub);border-radius:6px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer}
   #tabs button.on{background:var(--accent);color:#0b1020}
   /* conversation pane — plain scrollable chat, the reliable way to read history on a phone */
-  #chat{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;background:var(--bg);padding:12px;display:none}
+  #chat{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;background:var(--bg);
+    padding:12px;display:none;overscroll-behavior:contain}
   #chat.on{display:block}
   .msg{margin:0 0 10px;font-size:13px;line-height:1.5}
   .msg .mtext{white-space:pre-wrap;word-break:break-word}
@@ -170,6 +175,17 @@ enum WebDashboardPage {
   #sinfo .bar i{display:block;height:100%;background:var(--accent)}
   #sinfo .bar.warn i{background:var(--amber)}
   #sinfo .bar.danger i{background:var(--red)}
+  #sinfo .live{display:flex;align-items:center;gap:5px;font-weight:600}
+  #sinfo .live .dot{width:7px;height:7px;border-radius:50%}
+  #sinfo .live.run .dot{animation:live 1.1s ease-out infinite}
+  @keyframes live{0%{box-shadow:0 0 0 0 rgba(92,209,140,.55)}100%{box-shadow:0 0 0 6px rgba(92,209,140,0)}}
+  /* what the agent is doing right now, pinned under the last message */
+  .runbar{display:flex;align-items:center;gap:8px;padding:9px 11px;margin:2px 0 10px;
+    background:rgba(92,209,140,.09);border:1px solid rgba(92,209,140,.28);border-radius:10px;
+    font-size:12px;color:var(--green)}
+  .runbar .what{color:var(--sub);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .runbar.wait{background:rgba(250,184,82,.1);border-color:rgba(250,184,82,.32);color:var(--amber)}
   /* a tool still running (no result yet) */
   .msg.tool.run{border-color:rgba(122,158,255,.5)}
   .spin{display:inline-block;width:9px;height:9px;border:1.5px solid var(--accent);border-right-color:transparent;
@@ -196,62 +212,15 @@ enum WebDashboardPage {
   .qopts{margin-top:6px}
   .qopts .qq{font-size:12px;font-weight:600;margin:6px 0 3px}
   .qopts .qo{font-size:12px;color:var(--sub);padding:1px 0 1px 14px}
-  /* ---- session tree (git-graph style) ----
-     Real sessions are deep and narrow: up to ~60 turns but rarely more than 2-6 concurrent
-     branches. So: time runs DOWN (the natural scroll axis, and phone-friendly), branches take
-     LANES across (a handful, always on screen), and long unbranched stretches collapse. */
-  #tree{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;background:var(--bg);display:none;
-    padding:6px 10px 90px}
-  #tree.on{display:block}
-  .trow{display:flex;align-items:stretch;gap:9px;position:relative;min-height:42px;
-    border-radius:9px;cursor:grab;touch-action:pan-y}
-  .trow:active{cursor:grabbing}
-  .trow.sel{background:var(--card)}
-  .rail{position:relative;flex:none}
-  .rail i{position:absolute;width:2px;background:var(--stroke);top:0;bottom:0}
-  .rail i.act{background:rgba(122,158,255,.4)}
-  .rail b{position:absolute;top:50%;width:9px;height:9px;margin-top:-4.5px;margin-left:-4.5px;
-    border-radius:50%;background:var(--sub);box-shadow:0 0 0 3px var(--bg)}
-  .rail b.act{background:var(--accent)}
-  .rail b.tip{background:var(--green);box-shadow:0 0 0 3px var(--bg),0 0 0 5px rgba(92,209,140,.35)}
-  .rail u{position:absolute;height:2px;background:var(--stroke);top:50%;margin-top:-1px}
-  .rail s{position:absolute;width:2px;background:var(--stroke);top:0;height:50%}
-  .tbody{flex:1;min-width:0;padding:8px 4px;display:flex;flex-direction:column;justify-content:center}
-  .tprompt{font-size:12.5px;line-height:1.35;overflow:hidden;display:-webkit-box;
-    -webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word}
-  .trow.dim .tprompt{color:var(--sub)}
-  .tmeta{font-size:9.5px;color:var(--sub);opacity:.7;margin-top:3px;display:flex;gap:7px}
-  .tmeta .badge{color:var(--accent)}
-  .tmeta .badge.other{color:var(--amber)}
-  .trow.open .tprompt{-webkit-line-clamp:unset;display:block}
-  .treply{font-size:11.5px;color:var(--sub);margin-top:6px;padding-left:9px;
-    border-left:2px solid var(--stroke);white-space:pre-wrap;word-break:break-word;display:none}
-  .trow.open .treply{display:block}
-  .tact{display:none;gap:7px;margin-top:8px}
-  .trow.open .tact{display:flex}
-  .tact button{background:var(--accent);color:#0b1020;border:0;border-radius:7px;padding:6px 11px;
-    font-size:12px;font-weight:700;cursor:pointer}
-  .tact button.ghost{background:var(--card);color:var(--text);border:1px solid var(--stroke);font-weight:600}
-  .tfold{display:flex;align-items:center;gap:9px;min-height:30px;cursor:pointer;border-radius:8px}
-  .tfold:hover{background:var(--card)}
-  .tfold .lbl{font-size:10.5px;color:var(--sub);letter-spacing:.03em}
-  #treehead{display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--panel);
-    border-bottom:1px solid var(--stroke);font-size:10.5px;color:var(--sub)}
-  #treehead .k{display:flex;align-items:center;gap:4px}
-  #treehead .k i{width:8px;height:8px;border-radius:50%;display:inline-block}
-  /* drag a node out to open it as a terminal */
-  #tdrop{position:fixed;left:0;right:0;bottom:0;z-index:58;display:none;padding:22px 16px;
-    padding-bottom:max(22px,env(safe-area-inset-bottom));text-align:center;font-size:14px;font-weight:700;
-    color:var(--accent);background:linear-gradient(transparent,rgba(11,16,32,.92) 45%)}
-  #tdrop.on{display:block}
-  #tdrop .box{border:2px dashed var(--accent);border-radius:14px;padding:16px;background:rgba(122,158,255,.1)}
-  #tdrop.hot .box{background:var(--accent);color:#0b1020;border-style:solid}
   /* jump to latest */
   #jump{position:absolute;right:14px;bottom:96px;z-index:6;background:var(--accent);color:#0b1020;border:0;
     border-radius:999px;width:34px;height:34px;font-size:16px;line-height:1;cursor:pointer;display:none;
     box-shadow:0 4px 14px rgba(0,0,0,.45)}
   #jump.on{display:block}
-  #inputbar{background:var(--panel);border-top:1px solid var(--stroke);padding:8px;padding-bottom:max(8px,env(safe-area-inset-bottom))}
+  /* flex:none + the safe-area pad keeps the composer pinned to the true bottom; without it the
+     bar floated and the page showed through underneath on a phone. */
+  #inputbar{flex:none;background:var(--panel);border-top:1px solid var(--stroke);
+    padding:8px;padding-bottom:max(8px,env(safe-area-inset-bottom))}
   #prow{display:flex;gap:6px;align-items:center;margin-bottom:8px}
   #pfind{flex:none;width:82px;background:var(--card);color:var(--text);border:1px solid var(--stroke);
     border-radius:7px;padding:5px 8px;font-size:12px;font-family:inherit}
@@ -264,9 +233,10 @@ enum WebDashboardPage {
   #keys{display:flex;gap:6px;overflow-x:auto;margin-bottom:8px}
   #keys button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:7px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer}
   #keys button:active{background:var(--accent);color:#0b1020}
-  /* Scroll buttons only make sense in the terminal view — the chat pane scrolls natively.
-     (They exist because touch can't scroll a full-screen TUI inside xterm.js.) */
-  #keys.chatview .skey{display:none}
+  /* The key row exists to drive a TUI: scrolling a pane, arrowing through a menu, ^C, backspace.
+     Chat has none of that — it scrolls natively, answers prompts with real buttons, and stops the
+     agent with the Send/Stop button — so the whole row goes away there. */
+  #keys.chatview{display:none}
   #sendrow{display:flex;gap:8px;align-items:flex-end}
   #inputtext{flex:1;resize:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:10px;
     padding:10px 12px;font:14px/1.35 inherit;max-height:120px}
@@ -295,16 +265,12 @@ enum WebDashboardPage {
     <span class="tname" id="termname"></span>
     <div id="tabs">
       <button id="tabChat" class="on" onclick="setView('chat')">Chat</button>
-      <button id="tabTree" onclick="setView('tree')">Tree</button>
       <button id="tabTerm" onclick="setView('term')">Terminal</button>
     </div>
     <button onclick="popTerm()">↗</button>
   </div>
   <div id="sinfo"></div>
   <div id="chat" class="on"><div id="chatnote">Loading…</div></div>
-  <div id="treehead" style="display:none"></div>
-  <div id="tree"></div>
-  <div id="tdrop"><div class="box">Drop to open this turn as a new terminal</div></div>
   <button id="jump" onclick="jumpLatest()">↓</button>
   <iframe id="termframe" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
   <div id="perm"></div>
@@ -342,15 +308,16 @@ function termOpen(){return document.getElementById('term').classList.contains('s
 // ---------- terminal open / input ----------
 function openTerm(id,name){
   curId=id;curUrl='';termLoaded=false;
-  treeState.loaded=false;treeState.open.clear();treeState.folds.clear();
   document.getElementById('termname').textContent=name;
   document.getElementById('termframe').src='about:blank';
   document.getElementById('term').classList.add('show');
+  document.body.classList.add('locked');   // stop the page scrolling behind the overlay
   renderPresets();          // latest Notes as quick-commands
   setView('chat');          // reading history is the common remote case
 }
 function closeTerm(){
   document.getElementById('term').classList.remove('show');
+  document.body.classList.remove('locked');
   document.getElementById('termframe').src='about:blank';
   curId='';termLoaded=false;stopChatPoll();
 }
@@ -359,15 +326,11 @@ function closeTerm(){
 function setView(v){
   curView=v;
   document.getElementById('tabChat').classList.toggle('on',v==='chat');
-  document.getElementById('tabTree').classList.toggle('on',v==='tree');
   document.getElementById('tabTerm').classList.toggle('on',v==='term');
   document.getElementById('chat').classList.toggle('on',v==='chat');
-  document.getElementById('tree').classList.toggle('on',v==='tree');
-  document.getElementById('treehead').style.display=v==='tree'?'flex':'none';
   document.getElementById('termframe').classList.toggle('on',v==='term');
-  document.getElementById('keys').classList.toggle('chatview',v!=='term');
+  document.getElementById('keys').classList.toggle('chatview',v==='chat');
   if(v==='term'){stopChatPoll();ensureTerm();}
-  else if(v==='tree'){stopChatPoll();loadTree();}   // a tree scan is expensive — load on demand only
   else{loadChat();startChatPoll();}
 }
 async function ensureTerm(){
@@ -400,187 +363,6 @@ async function loadChat(){
     syncSendBtn();
   }catch(e){}
 }
-/* ---------- session tree ----------
-   Layout: time down, branches across. Lanes are assigned so the live branch is always lane 0 (the
-   spine you read straight down); a fork takes the first free lane and releases it when it ends.
-   Unbranched stretches collapse, because depth (~60) is the dimension that actually explodes —
-   width never exceeded 6 in practice. */
-let LANE_W=17, treeState={nodes:[],open:new Set(),folds:new Set(),loaded:false};
-
-function layoutTree(nodes){
-  const byU={}, kids={};
-  nodes.forEach(n=>{ byU[n.u]=n; if(n.p) (kids[n.p]=kids[n.p]||[]).push(n.u); });
-  // Depth-first from roots, walking the ACTIVE child first so the live branch inherits lane 0.
-  const order=[], lane={}, free=[];
-  const roots=nodes.filter(n=>!n.p||!byU[n.p]).map(n=>n.u);
-  const visit=(u,ln)=>{
-    lane[u]=ln; order.push(u);
-    const ch=(kids[u]||[]).slice().sort((a,b)=>(byU[b].active?1:0)-(byU[a].active?1:0));
-    ch.forEach((c,i)=>{
-      if(i===0) visit(c,ln);                       // first child continues this lane
-      else { const nl=free.length?free.pop():maxLane()+1; visit(c,nl); free.push(nl); }
-    });
-  };
-  const maxLane=()=>Object.values(lane).reduce((a,b)=>Math.max(a,b),0);
-  roots.forEach((r,i)=>visit(r,i===0?0:maxLane()+1));
-  const rows=order.map(u=>({n:byU[u],lane:lane[u],kids:(kids[u]||[]).length}));
-  // Lanes still "live" at each row (a lane is drawn as a through-line while it has work below).
-  const lastRow={}; rows.forEach((r,i)=>{ lastRow[r.lane]=i; });
-  rows.forEach((r,i)=>{ r.through=Object.keys(lastRow).filter(l=>lastRow[l]>i).map(Number); });
-  rows.forEach(r=>{ r.pLane = r.n.p&&lane[r.n.p]!==undefined ? lane[r.n.p] : r.lane; });
-  return {rows, lanes:Math.max(...rows.map(r=>r.lane))+1};
-}
-
-/* Collapse long unbranched stretches — on ANY lane. Depth is what explodes (60+ turns), and a turn
-   only earns a row of its own if it carries structure: the tip, a branch point, the start of a
-   branch, or the ends. Everything else folds into one "⋯ N turns" chip you can open. */
-function foldRuns(rows){
-  const anchor=rows.map(r=>r.n.tip||r.kids>1||r.pLane!==r.lane);
-  // Neighbours are taken from a SNAPSHOT: widening in place cascades (each row we keep would keep
-  // the next, and so on) and nothing ever folds.
-  const keep=anchor.slice();
-  anchor.forEach((a,i)=>{ if(a){ if(i>0)keep[i-1]=true; if(i<rows.length-1)keep[i+1]=true; } });
-  keep[0]=true; keep[rows.length-1]=true;
-  if(treeState.all) return rows.map(r=>({row:r}));
-  const out=[]; let run=[];
-  const flush=()=>{ if(!run.length)return;
-    if(run.length<=2) run.forEach(r=>out.push({row:r}));
-    else out.push({fold:run.slice()});
-    run=[]; };
-  rows.forEach((r,i)=>{ if(keep[i]||treeState.folds.has(r.n.u)){ flush(); out.push({row:r}); } else run.push(r); });
-  flush();
-  return out;
-}
-
-function railHTML(r,lanes){
-  const w=lanes*LANE_W;
-  let h='<div class="rail" style="width:'+w+'px">';
-  r.through.forEach(l=>{ h+='<i class="'+(l===0?'act':'')+'" style="left:'+(l*LANE_W+7)+'px"></i>'; });
-  if(r.pLane!==r.lane){            // elbow from the parent lane into this one
-    const a=Math.min(r.pLane,r.lane)*LANE_W+8, b=Math.max(r.pLane,r.lane)*LANE_W+8;
-    h+='<u style="left:'+a+'px;width:'+(b-a)+'px"></u>';
-    h+='<s style="left:'+(r.pLane*LANE_W+7)+'px"></s>';
-  }
-  const cls=r.n.tip?'tip':(r.n.active?'act':'');
-  h+='<b class="'+cls+'" style="left:'+(r.lane*LANE_W+8)+'px"></b></div>';
-  return h;
-}
-
-function renderTree(t){
-  const head=document.getElementById('treehead'), el=document.getElementById('tree');
-  if(t.error||!t.nodes||!t.nodes.length){
-    head.innerHTML=''; el.innerHTML='<div id="chatnote">'+esc(t.error||'No turns yet.')+'</div>'; return;
-  }
-  treeState.nodes=t.nodes;
-  const {rows,lanes}=layoutTree(t.nodes);
-  head.innerHTML='<span class="k"><i style="background:var(--accent)"></i>live branch</span>'+
-    '<span class="k"><i style="background:var(--sub)"></i>other</span>'+
-    '<span class="k"><i style="background:var(--green)"></i>now</span>'+
-    '<span class="spacer" style="flex:1"></span>'+
-    '<span>'+t.nodes.length+' turns · '+(t.branches||0)+' branch pts'+
-    (t.sessions>1?' · '+t.sessions+' sessions':'')+'</span>'+
-    '<button id="expandAll" style="background:var(--card);color:var(--text);border:1px solid var(--stroke);'+
-    'border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;margin-left:8px">'+
-    (treeState.all?'collapse':'expand all')+'</button>';
-  el.innerHTML=foldRuns(rows).map(item=>{
-    if(item.fold){
-      const f=item.fold, r=f[0];
-      return '<div class="tfold" data-fold="'+esc(r.n.u)+'">'+railHTML({...r,through:r.through,pLane:r.lane},lanes)+
-        '<span class="lbl">⋯ '+f.length+' turns</span></div>';
-    }
-    const r=item.row, n=r.n;
-    const when=n.ts?hhmm(n.ts):'';
-    return '<div class="trow'+(n.active?'':' dim')+(treeState.open.has(n.u)?' open':'')+
-      '" data-u="'+esc(n.u)+'" draggable="true">'+railHTML(r,lanes)+
-      '<div class="tbody"><div class="tprompt">'+esc(n.prompt||'(empty)')+'</div>'+
-      '<div class="tmeta">'+(when?'<span>'+when+'</span>':'')+
-      (n.tip?'<span class="badge">current</span>':'')+
-      (!n.own?'<span class="badge other">'+esc((n.session||'').slice(0,8))+'</span>':'')+
-      (r.kids>1?'<span>⑂ '+r.kids+'</span>':'')+'</div>'+
-      (n.reply?'<div class="treply">'+esc(n.reply)+'</div>':'')+
-      '<div class="tact"><button data-fork="'+esc(n.u)+'">Open as terminal ⑂</button>'+
-      '<button class="ghost" data-copy2="'+esc(n.u)+'">Copy prompt</button></div>'+
-      '</div></div>';
-  }).join('');
-}
-
-async function loadTree(){
-  if(!curId)return;
-  const el=document.getElementById('tree');
-  if(!treeState.loaded) el.innerHTML='<div id="chatnote">Reading session tree…</div>';
-  try{
-    const t=await(await fetch('/tree?id='+encodeURIComponent(curId),{cache:'no-store'})).json();
-    treeState.loaded=true; treeState.last=t; renderTree(t);
-  }catch(e){ el.innerHTML='<div id="chatnote">Could not read the tree.</div>'; }
-}
-
-/* tap: expand a turn / unfold a run / fork */
-document.getElementById('treehead').addEventListener('click',e=>{
-  if(e.target&&e.target.id==='expandAll'){
-    treeState.all=!treeState.all;
-    if(treeState.last)renderTree(treeState.last);
-  }
-});
-document.getElementById('tree').addEventListener('click',e=>{
-  const fork=e.target.closest?e.target.closest('[data-fork]'):null;
-  if(fork){ forkNode(fork.dataset.fork); return; }
-  const cp=e.target.closest?e.target.closest('[data-copy2]'):null;
-  if(cp){ const n=treeState.nodes.find(x=>x.u===cp.dataset.copy2); if(n)copyText(n.prompt); return; }
-  const fold=e.target.closest?e.target.closest('[data-fold]'):null;
-  if(fold){ treeState.folds.add(fold.dataset.fold); loadTree(); return; }
-  const row=e.target.closest?e.target.closest('.trow'):null;
-  if(!row)return;
-  const u=row.dataset.u;
-  if(treeState.open.has(u)) treeState.open.delete(u); else treeState.open.add(u);
-  row.classList.toggle('open');
-});
-
-async function forkNode(u){
-  toast('Forking…');
-  try{
-    const r=await fetch('/fork?id='+encodeURIComponent(curId)+'&node='+encodeURIComponent(u));
-    const j=await r.json();
-    if(j.id){ toast('Opened '+(j.name||'fork')); setTimeout(tick,600); }
-    else toast('Fork failed');
-  }catch(e){ toast('Fork failed'); }
-}
-
-/* drag a turn out of the tree onto the drop zone to open it */
-let tdrag=null;
-document.getElementById('tree').addEventListener('pointerdown',e=>{
-  const row=e.target.closest?e.target.closest('.trow'):null;
-  if(!row)return;
-  tdrag={u:row.dataset.u,x:e.clientX,y:e.clientY,active:false,row:row};
-  window.addEventListener('pointermove',tMove);
-  window.addEventListener('pointerup',tUp);
-});
-function tMove(e){
-  if(!tdrag)return;
-  if(!tdrag.active){
-    if(Math.hypot(e.clientX-tdrag.x,e.clientY-tdrag.y)<14)return;
-    tdrag.active=true;
-    document.getElementById('tdrop').classList.add('on');
-    const chip=document.getElementById('chip');
-    const n=treeState.nodes.find(x=>x.u===tdrag.u);
-    chip.textContent='⑂ '+((n&&n.prompt)||'turn').slice(0,28);
-    chip.style.display='block';
-  }
-  const chip=document.getElementById('chip');
-  chip.style.left=e.clientX+'px'; chip.style.top=e.clientY+'px';
-  const d=document.getElementById('tdrop'), r=d.getBoundingClientRect();
-  d.classList.toggle('hot',e.clientY>=r.top);
-}
-function tUp(e){
-  window.removeEventListener('pointermove',tMove);
-  window.removeEventListener('pointerup',tUp);
-  if(!tdrag)return;
-  const d=document.getElementById('tdrop'), hot=d.classList.contains('hot'), was=tdrag.active, u=tdrag.u;
-  document.getElementById('chip').style.display='none';
-  d.classList.remove('on','hot');
-  tdrag=null;
-  if(was&&hot) forkNode(u);
-}
-
 /* Shell terminal: the pane's scrollback, wrapped and natively scrollable. */
 async function renderShell(){
   const el=document.getElementById('chat');
@@ -596,11 +378,19 @@ async function renderShell(){
   if(nearBottom)el.scrollTop=el.scrollHeight;
 }
 /* model / permission-mode / context-window strip */
+const STATUS_TEXT={working:'running',idle:'idle',needsYou:'needs you',shell:'shell',
+  exited:'exited',closed:'closed'};
 function renderInfo(i){
   const el=document.getElementById('sinfo');
   document.getElementById('tabChat').textContent=(i&&i.shell)?'Output':'Chat';   // shell has no chat
-  if(!i||(!i.model&&!i.contextTokens)){el.innerHTML='';return;}
+  if(!i||(!i.model&&!i.contextTokens&&!i.status)){el.innerHTML='';return;}
   let h='';
+  // Chat had no sign of whether the agent was actually working — the transcript just stopped growing.
+  if(i.status){
+    const c=COLORS[i.status]||COLORS.closed;
+    h+='<span class="live'+(i.status==='working'?' run':'')+'" style="color:'+c+'">'+
+       '<span class="dot" style="background:'+c+'"></span>'+(STATUS_TEXT[i.status]||i.status)+'</span>';
+  }
   if(i.model) h+='<span class="chip">'+esc(i.model.replace(/^claude-/,''))+'</span>';
   if(i.permissionMode&&i.permissionMode!=='default'){
     const risky=/bypass|yolo|accept/i.test(i.permissionMode);
@@ -867,11 +657,26 @@ function msgHTML(m){
     (m.ts?'<span class="when">'+hhmm(m.ts)+'</span>':'')+
     '<div class="mtext md">'+md(m.text)+'</div></div>';
 }
+/* The tail of the conversation says what the agent is doing right now — a chat that simply stops
+   updating looks identical whether it is thinking, blocked, or finished. */
+function runBarHTML(){
+  const i=curInfo||{};
+  if(i.status==='working')
+    return '<div class="runbar"><span class="spin"></span><b>running</b>'+
+           (i.pendingTool?'<span class="what">'+esc(i.pendingTool)+
+             (i.pendingText?' · '+esc(i.pendingText):'')+'</span>':'')+'</div>';
+  if(i.status==='needsYou' && !(i.options&&i.options.length))
+    return '<div class="runbar wait"><b>waiting for you</b>'+
+           '<span class="what">switch to Terminal to answer</span></div>';
+  return '';
+}
 function renderChat(msgs,note){
   const el=document.getElementById('chat');
   if(!msgs.length){el.innerHTML='<div id="chatnote">'+esc(note||'No conversation yet — send a prompt to start.')+'</div>';return;}
   const last=msgs[msgs.length-1]||{};
-  const sig=msgs.length+':'+(last.text||'').length+':'+(last.output||'').length;
+  const st=curInfo||{};
+  const sig=msgs.length+':'+(last.text||'').length+':'+(last.output||'').length+
+            ':'+(st.status||'')+':'+(st.pendingText||'');
   if(el.dataset.sig===sig)return;      // unchanged → don't rebuild at all
   const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<120;
   // Remember which cards the user expanded and restore them after the rebuild — otherwise reading a
@@ -880,7 +685,7 @@ function renderChat(msgs,note){
   const open=new Set();
   Array.prototype.forEach.call(el.querySelectorAll('.msg.open'),n=>{ if(n.dataset.k) open.add(n.dataset.k); });
   el.dataset.sig=sig;
-  el.innerHTML=msgs.map(msgHTML).join('');
+  el.innerHTML=msgs.map(msgHTML).join('')+runBarHTML();
   if(open.size) Array.prototype.forEach.call(el.querySelectorAll('.msg'),n=>{
     if(n.dataset.k&&open.has(n.dataset.k)) n.classList.add('open');
   });
