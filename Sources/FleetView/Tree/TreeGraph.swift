@@ -129,7 +129,10 @@ enum SessionTreeBuilder {
             var text = ""
             if isUser {
                 isPrompt = isUserPrompt(content)
-                if isPrompt { text = clip(userText(content), promptCap) }
+                if isPrompt {
+                    text = clip(userText(content), promptCap)
+                    if isMetaPrompt(text) { isPrompt = false; text = "" }
+                }
             } else if isAssistant {
                 text = clip(userText(content), answerCap)   // same extraction: text blocks joined
             }
@@ -154,6 +157,24 @@ enum SessionTreeBuilder {
             for b in blocks where (b["type"] as? String) == "tool_result" { return false }
         }
         return !userText(content).isEmpty
+    }
+
+    /// Records the CLI writes as if the user had typed them: slash-command plumbing and
+    /// interruption markers. They are not turns, so they must not become tree nodes — their
+    /// children reparent to the nearest real prompt above, which is where they belong anyway.
+    /// Matching is deliberately prefix-anchored: real prompts do start with "[" (e.g. a pasted
+    /// image or a bracketed label), and only these exact openers are synthetic.
+    private static let metaPrefixes = [
+        "<local-command",      // <local-command-caveat> / <local-command-stdout>
+        "<command-name",       // the slash command itself
+        "<command-message",
+        "<command-args",
+        "[Request interrupted",
+    ]
+
+    private static func isMetaPrompt(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return metaPrefixes.contains { t.hasPrefix($0) }
     }
 
     private static func userText(_ content: Any?) -> String {
