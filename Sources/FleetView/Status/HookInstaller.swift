@@ -23,6 +23,18 @@ enum HookInstaller {
         base="$dir/$$-$RANDOM$RANDOM"
         printf '{"event":"%s","term":"%s","payload":%s}' "$1" "$FLEETVIEW_TERM_ID" "$payload" > "$base.tmp" 2>/dev/null
         mv -f "$base.tmp" "$base.json" 2>/dev/null
+        # Durable terminal → session binding. Events are consumed once and then deleted, so a single
+        # missed one (another FleetView reading the queue, a restart mid-flight) would leave the
+        # terminal pointing at a stale transcript forever — e.g. after `claude --resume` switches
+        # sessions. This pointer is rewritten by the terminal's own hook on every event, so it is
+        # always current and can't be lost to the queue.
+        sdir="$HOME/.fleetview/sessions"
+        mkdir -p "$sdir"
+        # Unique temp name: hooks for one terminal can run concurrently, and sharing a temp path
+        # lets one invocation rename the file another is still writing.
+        stmp="$sdir/.$FLEETVIEW_TERM_ID.$$-$RANDOM"
+        printf '%s' "$payload" > "$stmp" 2>/dev/null
+        mv -f "$stmp" "$sdir/$FLEETVIEW_TERM_ID.json" 2>/dev/null || rm -f "$stmp" 2>/dev/null
         exit 0
         """#
         try? script.write(to: FV.hookScript, atomically: true, encoding: .utf8)

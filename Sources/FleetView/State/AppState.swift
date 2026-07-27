@@ -726,11 +726,8 @@ final class AppState: ObservableObject {
             }
             let limit = min(400, Int(query["limit"] ?? "") ?? 120)
             let t = terminals.first(where: { $0.id == id })
-            // One capture serves both jobs: picking THIS terminal's branch out of a session it may
-            // share with others, and reading any on-screen choices.
-            let screen = remote.capture(id, lines: 80)
             var result = Conversation.parse(path: path, cwd: t?.cwd ?? "", limit: limit,
-                                            ownPrompt: t?.lastPrompt ?? "", screen: screen)
+                                            ownPrompt: t?.lastPrompt ?? "")
             result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
                                                                   used: result.info.contextTokens)
             result.info.status = t?.status.rawValue
@@ -739,7 +736,7 @@ final class AppState: ObservableObject {
             // Read the choices off the live screen so a prompt can be answered with real buttons.
             // Gated on the picker's cursor rather than on status, because trust/menu prompts don't
             // always raise "needs you" — the cursor is what actually means "waiting on you".
-            if let screen {
+            if let screen = remote.capture(id, lines: 40) {
                 let parsed = Conversation.options(fromScreen: screen)
                 result.info.options = parsed.options
                 result.info.question = parsed.question
@@ -776,6 +773,10 @@ final class AppState: ObservableObject {
     /// conversation belonging to a completely different one.
     func transcriptPath(for id: UUID) -> String? {
         guard let t = terminals.first(where: { $0.id == id }) else { return nil }
+        // The pointer hook.sh writes for this terminal wins: it is rewritten on every hook event, so
+        // it survives a missed event or a `claude --resume` that switched sessions, both of which
+        // leave the value we cached from the event stream pointing at the wrong conversation.
+        if let live = hookSessionPath(for: id) { return live }
         if let tp = t.transcriptPath, FileManager.default.fileExists(atPath: tp) { return tp }
         // A plain shell has no conversation at all — never guess one for it, or it would inherit
         // some unrelated session from the same project.
@@ -793,10 +794,21 @@ final class AppState: ObservableObject {
         return newest?.path
     }
 
+    /// The transcript this terminal's agent is writing *right now*, per the pointer its own hook
+    /// maintains at ~/.fleetview/sessions/<termId>.json. nil when the terminal has never run an
+    /// agent, or the file it names has since been removed.
+    func hookSessionPath(for id: UUID) -> String? {
+        guard let data = try? Data(contentsOf: FV.sessionPointer(for: id)),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let path = obj["transcript_path"] as? String,
+              FileManager.default.fileExists(atPath: path) else { return nil }
+        return path
+    }
+
     /// How many terminals point at the same transcript. >1 means the conversation genuinely belongs
     /// to a session several terminals share, so identical chat content is expected, not a bug.
     func terminalsSharing(_ path: String) -> Int {
-        terminals.filter { $0.transcriptPath == path }.count
+        terminals.filter { (hookSessionPath(for: $0.id) ?? $0.transcriptPath) == path }.count
     }
 
     /// Typing/keys from the web are real interaction — record it (drives "3m ago").

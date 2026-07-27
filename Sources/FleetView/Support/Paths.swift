@@ -12,6 +12,11 @@ enum FV {
     static var tmuxConf: URL { supportDir.appendingPathComponent("tmux.conf") }
     static var remoteLog: URL { supportDir.appendingPathComponent("remote.log") }
     static var webPortFile: URL { supportDir.appendingPathComponent("web-port") }   // fleetctl discovers the server here
+    /// Per-terminal "which agent session am I on" pointers, written by hook.sh (see HookInstaller).
+    static var sessionsDir: URL { supportDir.appendingPathComponent("sessions", isDirectory: true) }
+    static func sessionPointer(for termId: UUID) -> URL {
+        sessionsDir.appendingPathComponent("\(termId.uuidString).json")
+    }
     static var uiDir: URL { supportDir.appendingPathComponent("ui", isDirectory: true) }   // agent-authored dynamic panel
     static var panelHTML: URL { uiDir.appendingPathComponent("panel.html") }
     static var panelJSON: URL { uiDir.appendingPathComponent("panel.json") }
