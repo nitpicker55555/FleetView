@@ -726,7 +726,8 @@ final class AppState: ObservableObject {
             }
             let limit = min(400, Int(query["limit"] ?? "") ?? 120)
             let t = terminals.first(where: { $0.id == id })
-            var result = Conversation.parse(path: path, cwd: t?.cwd ?? "", limit: limit)
+            var result = Conversation.parse(path: path, cwd: t?.cwd ?? "", limit: limit,
+                                            ownPrompt: t?.lastPrompt ?? "")
             result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
                                                                   used: result.info.contextTokens)
             result.info.status = t?.status.rawValue

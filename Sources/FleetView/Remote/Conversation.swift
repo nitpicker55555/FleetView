@@ -63,7 +63,11 @@ enum Conversation {
     /// recent conversation. 1.5 MB comfortably covers hundreds of messages.
     private static let tailBytes: UInt64 = 1_500_000
 
-    static func parse(path: String, cwd: String = "", limit: Int = 120) -> ConvResult {
+    /// - Parameter ownPrompt: this terminal's last submitted prompt (recorded per terminal by the
+    ///   hooks). When several terminals resume the SAME session they all append to one file and each
+    ///   grows its own branch, so this is what tells us which branch belongs to this terminal.
+    static func parse(path: String, cwd: String = "", limit: Int = 120,
+                      ownPrompt: String = "") -> ConvResult {
         var info = ConvInfo()
         guard let text = tail(path) else { return ConvResult(messages: [], info: info) }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
@@ -77,7 +81,7 @@ enum Conversation {
         // A Claude session is a TREE, not a list: rewinding or editing a prompt starts a new branch
         // and the old one stays in the file. Rendering the file linearly interleaves abandoned
         // attempts with the real conversation, so follow only the active branch.
-        let active = activePath(records, &info)
+        let active = activePath(records, ownPrompt: ownPrompt, &info)
 
         for obj in records {
             if obj["payload"] != nil {
@@ -110,34 +114,49 @@ enum Conversation {
     /// current leaf. Claude marks the live tip with a `last-prompt` record carrying `leafUuid`;
     /// without one, the newest record is the tip. Returns nil when the file has no tree at all
     /// (nothing to filter), and fills in how many branches the session has.
-    private static func activePath(_ records: [[String: Any]], _ info: inout ConvInfo) -> Set<String>? {
+    private static func activePath(_ records: [[String: Any]], ownPrompt: String,
+                                   _ info: inout ConvInfo) -> Set<String>? {
         var parent: [String: String] = [:]
         var children: [String: [String]] = [:]     // in file order ⇒ last child is the newest
-        var known = Set<String>()
+        var byUuid: [String: [String: Any]] = [:]
+        var order: [String] = []
         var leaf: String?
-        var newest: String?
 
         for r in records {
             if (r["type"] as? String) == "last-prompt", let l = r["leafUuid"] as? String { leaf = l }
             guard let u = r["uuid"] as? String else { continue }
-            known.insert(u)
-            newest = u
+            byUuid[u] = r
+            order.append(u)
             if let p = r["parentUuid"] as? String {
                 parent[u] = p
                 children[p, default: []].append(u)
             }
         }
-        guard !known.isEmpty else { return nil }
+        guard !order.isEmpty else { return nil }
+        let leaves = order.filter { children[$0] == nil }
         info.branches = children.values.filter { $0.count > 1 }.count
 
-        // `leafUuid` is the tip *as of the last prompt*, so the replies that followed hang below it —
-        // descend to the current end of that branch (newest child at each step) before walking back,
-        // otherwise the most recent messages get filtered out as if they were another branch.
-        var tip = leaf.flatMap { known.contains($0) ? $0 : nil } ?? newest
-        var visited = Set<String>()
-        while let u = tip, let kids = children[u], let next = kids.last, !visited.contains(u) {
-            visited.insert(u)
-            tip = next
+        var tip: String?
+        // Preferred: the branch whose most recent user prompt is the one THIS terminal submitted.
+        // Several terminals resuming one session share the file, and this is the only per-terminal
+        // marker in it (the hooks record the prompt against the terminal that sent it).
+        let want = normalized(ownPrompt)
+        if !want.isEmpty {
+            tip = leaves.reversed().first { l in
+                guard let text = latestUserText(from: l, parent: parent, byUuid: byUuid) else { return false }
+                return matches(normalized(text), want)
+            }
+        }
+        if tip == nil {
+            // Otherwise: `leafUuid` is the tip *as of the last prompt*, so replies made after it hang
+            // below — descend to the current end of that branch before walking back, or the newest
+            // messages get filtered out as if they belonged to another branch.
+            tip = leaf.flatMap { byUuid[$0] != nil ? $0 : nil } ?? order.last
+            var visited = Set<String>()
+            while let u = tip, let kids = children[u], let next = kids.last, !visited.contains(u) {
+                visited.insert(u)
+                tip = next
+            }
         }
         var path = Set<String>()
         while let u = tip, !path.contains(u) {
@@ -145,6 +164,41 @@ enum Conversation {
             tip = parent[u]
         }
         return path.isEmpty ? nil : path
+    }
+
+    /// Text of the most recent real user prompt on a branch (skipping tool results and subagents).
+    private static func latestUserText(from leafUuid: String, parent: [String: String],
+                                       byUuid: [String: [String: Any]]) -> String? {
+        var u: String? = leafUuid
+        var seen = Set<String>()
+        while let cur = u, !seen.contains(cur) {
+            seen.insert(cur)
+            if let r = byUuid[cur], (r["type"] as? String) == "user",
+               (r["isSidechain"] as? Bool) != true,
+               let msg = r["message"] as? [String: Any] {
+                if let s = msg["content"] as? String, !trim(s).isEmpty { return s }
+                if let blocks = msg["content"] as? [[String: Any]] {
+                    for b in blocks where (b["type"] as? String) == "text" {
+                        if let t = b["text"] as? String, !trim(t).isEmpty { return t }
+                    }
+                }
+            }
+            u = parent[cur]
+        }
+        return nil
+    }
+
+    /// Whitespace-collapsed comparison: the stored prompt has newlines flattened to spaces.
+    private static func normalized(_ s: String) -> String {
+        s.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    /// Either side may be truncated, so a long common prefix counts as a match.
+    private static func matches(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        let n = min(a.count, b.count)
+        guard n >= 12 else { return false }
+        return a.prefix(n) == b.prefix(n)
     }
 
     /// Session facts that live in their own transcript records (Claude): the model in use, the
