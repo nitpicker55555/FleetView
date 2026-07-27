@@ -43,6 +43,7 @@ struct ConvInfo: Codable {
     var shared: Int = 0                // terminals sharing this session (>1 ⇒ same chat by design)
     var branches: Int = 0              // branch points in the session tree (abandoned attempts)
     var session: String? = nil         // session id, so it's clear WHICH conversation this is
+    var shell: Bool = false            // no agent conversation — show the pane's scrollback instead
     var pendingTool: String? = nil     // tool the agent is running or waiting on approval for
     var pendingText: String? = nil
     var question: String? = nil        // the prompt line shown on screen

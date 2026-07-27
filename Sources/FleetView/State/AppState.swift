@@ -715,7 +715,14 @@ final class AppState: ObservableObject {
                 return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
             }
             guard let path = transcriptPath(for: id) else {
-                return ("200 OK", "application/json", Data(#"{"messages":[],"note":"no agent session yet"}"#.utf8))
+                // No agent conversation (a plain shell, or one that hasn't started yet): the pane's
+                // own scrollback is the readable content, and it scrolls natively on a phone.
+                var info = ConvInfo()
+                info.status = terminals.first(where: { $0.id == id })?.status.rawValue
+                info.shell = true
+                let body = (try? JSONEncoder().encode(ConvResult(messages: [], info: info)))
+                    ?? Data(#"{"messages":[],"info":{"shell":true}}"#.utf8)
+                return ("200 OK", "application/json", body)
             }
             let limit = min(400, Int(query["limit"] ?? "") ?? 120)
             let t = terminals.first(where: { $0.id == id })
@@ -766,6 +773,9 @@ final class AppState: ObservableObject {
     func transcriptPath(for id: UUID) -> String? {
         guard let t = terminals.first(where: { $0.id == id }) else { return nil }
         if let tp = t.transcriptPath, FileManager.default.fileExists(atPath: tp) { return tp }
+        // A plain shell has no conversation at all — never guess one for it, or it would inherit
+        // some unrelated session from the same project.
+        guard t.agentKind != .unknown || t.status.isAgent else { return nil }
         let claimed = Set(terminals.filter { $0.id != id }.compactMap { $0.transcriptPath })
         let dir = FV.transcriptDir(forCwd: t.cwd)
         let files = (try? FileManager.default.contentsOfDirectory(

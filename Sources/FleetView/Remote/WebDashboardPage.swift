@@ -121,6 +121,9 @@ enum WebDashboardPage {
   .msg.think .mtext{display:none}
   .msg.think.open .mtext{display:block;margin-top:7px;font-size:12px}
   #chatnote{color:var(--sub);text-align:center;padding:30px 16px;font-size:12px}
+  /* a shell terminal's scrollback — wrapped so a phone never scrolls sideways */
+  .shellout{margin:0;white-space:pre-wrap;word-break:break-word;font-size:11.5px;line-height:1.5;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}
   /* markdown inside a message (block elements handle spacing, so no pre-wrap here) */
   .msg .mtext.md{white-space:normal}
   .md p{margin:0 0 8px}
@@ -329,15 +332,33 @@ async function loadChat(){
   try{
     const j=await(await fetch('/conversation?id='+encodeURIComponent(curId)+'&limit=150',{cache:'no-store'})).json();
     curInfo=j.info||{};
-    renderChat(j.messages||[],j.note);
+    // A plain shell has no conversation — show its scrollback instead, which is the thing you
+    // actually want to read remotely (and unlike the terminal mirror, this scrolls on touch).
+    if(curInfo.shell) await renderShell();
+    else renderChat(j.messages||[],j.note);
     renderInfo(curInfo);
     renderPerm(curInfo);
     syncSendBtn();
   }catch(e){}
 }
+/* Shell terminal: the pane's scrollback, wrapped and natively scrollable. */
+async function renderShell(){
+  const el=document.getElementById('chat');
+  let txt='';
+  try{ txt=await(await fetch('/capture?id='+encodeURIComponent(curId)+'&lines=1500',{cache:'no-store'})).text(); }catch(e){ return; }
+  txt=txt.replace(/\s+$/,'');
+  const sig='sh'+txt.length+':'+txt.slice(-80);
+  if(el.dataset.sig===sig)return;
+  const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<120;
+  el.dataset.sig=sig;
+  el.innerHTML=txt?'<pre class="shellout">'+esc(txt)+'</pre>'
+                  :'<div id="chatnote">Nothing on screen yet.</div>';
+  if(nearBottom)el.scrollTop=el.scrollHeight;
+}
 /* model / permission-mode / context-window strip */
 function renderInfo(i){
   const el=document.getElementById('sinfo');
+  document.getElementById('tabChat').textContent=(i&&i.shell)?'Output':'Chat';   // shell has no chat
   if(!i||(!i.model&&!i.contextTokens)){el.innerHTML='';return;}
   let h='';
   if(i.model) h+='<span class="chip">'+esc(i.model.replace(/^claude-/,''))+'</span>';
