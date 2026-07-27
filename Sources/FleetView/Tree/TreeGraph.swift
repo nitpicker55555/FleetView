@@ -31,6 +31,10 @@ struct TreeTurn {
     let ts: String
     var answer: String = ""   // aggregated assistant reply text (clipped)
     var nativeSessionId: String?  // stock `claude --resume <sid>` lands exactly here
+    /// Single-line, row-sized excerpts. Rows show two lines and one line respectively, so handing
+    /// SwiftUI the full multi-thousand-character text just to clip it is what made scrolling stall.
+    var preview: String = ""
+    var answerPreview: String = ""
 }
 
 /// A display row: either a node or a fold pill covering a linear run.
@@ -78,6 +82,9 @@ struct TreeGraph {
 enum SessionTreeBuilder {
     static let answerCap = 2400
     static let promptCap = 4000
+    /// What a row can actually show (2 lines / 1 line at ~13px in a ~380pt panel).
+    static let previewCap = 200
+    static let answerPreviewCap = 160
     /// Linear runs on the main lane longer than this fold into a "⋯ N turns" pill,
     /// keeping `foldKeep` nodes visible at each end of the run.
     static let foldThreshold = 7
@@ -165,6 +172,10 @@ enum SessionTreeBuilder {
         s.count <= n ? s : String(s.prefix(n)) + "…"
     }
 
+    private static func oneLine(_ s: String, _ n: Int) -> String {
+        clip(s.replacingOccurrences(of: "\n", with: " "), n)
+    }
+
     // MARK: Tree building
 
     /// Build the tree for the project directory containing `transcriptPath`, rooted at the subtree
@@ -228,6 +239,14 @@ enum SessionTreeBuilder {
                 acc = acc.isEmpty ? r.text : acc + "\n" + r.text
                 tree.nodes[owner]!.answer = clip(acc, answerCap)
             }
+        }
+
+        // Row-sized excerpts, computed once here rather than on every scroll tick.
+        for u in tree.nodes.keys {
+            guard var n = tree.nodes[u] else { continue }
+            n.preview = oneLine(n.text, previewCap)
+            n.answerPreview = oneLine(n.answer, answerPreviewCap)
+            tree.nodes[u] = n
         }
 
         // native_reachable: sessions whose stock --resume lands on a node (first claim wins).

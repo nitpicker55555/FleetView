@@ -52,6 +52,7 @@ struct DashboardView: View {
     @ViewBuilder private var treeInspector: some View {
         if state.treePanelTerminalId != nil {
             TreeInspector(model: state.treeModel,
+                          focus: state.treeModel.focus,
                           boardFrame: state.boardFrame,
                           dragging: state.treeDrag != nil,
                           onClosePanel: { state.closeSessionTree() })

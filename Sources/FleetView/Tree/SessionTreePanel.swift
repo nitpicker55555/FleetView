@@ -268,7 +268,7 @@ struct TreeRowView: View {
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Theme.accent.opacity(0.14)).clipShape(Capsule())
                     }
-                    Text(treeHighlight(promptLine, query: model.query, base: Theme.text))
+                    promptText
                         .font(.system(size: 12.5, weight: row.onActivePath ? .medium : .regular))
                         .lineLimit(2)
                     Spacer(minLength: 4)
@@ -276,15 +276,8 @@ struct TreeRowView: View {
                         .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.8))
                         .layoutPriority(1)
                 }
-                if let n = node, !n.answer.isEmpty {
-                    let answerHit = model.searching && model.hits(n).answer
-                    Text(treeHighlight("↳ " + (answerHit ? model.answerSnippet(n)
-                                                         : n.answer.replacingOccurrences(of: "\n", with: " ")),
-                                       query: model.query,
-                                       base: answerHit ? Theme.lanePalette[0].opacity(0.95)
-                                                       : Theme.subtext.opacity(0.75)))
-                        .font(.system(size: 11))
-                        .lineLimit(1)
+                if let n = node, !n.answerPreview.isEmpty {
+                    answerText(n).font(.system(size: 11)).lineLimit(1)
                 }
                 if !chips.isEmpty {
                     HStack(spacing: 5) {
@@ -312,12 +305,13 @@ struct TreeRowView: View {
         .contentShape(Rectangle())
         .background(GeometryReader { g in
             Color.clear.onChange(of: hover) { _, h in
-                if h { model.focusY = g.frame(in: .named("fleet")).midY }
+                if h { model.focus.focusY = g.frame(in: .named("fleet")).midY }
             }
         })
         .onHover { h in
             hover = h
-            if h { model.hovered = row.nodeUuid } else if model.hovered == row.nodeUuid { model.hovered = nil }
+            if h { model.focus.hovered = row.nodeUuid }
+            else if model.focus.hovered == row.nodeUuid { model.focus.hovered = nil }
         }
         .onTapGesture {
             model.selected = (model.selected == row.nodeUuid) ? nil : row.nodeUuid
@@ -334,15 +328,33 @@ struct TreeRowView: View {
         .help(node?.text ?? "")
     }
 
+    /// Plain Text while idle — building an AttributedString for every visible row on every scroll
+    /// tick is what made the list stutter. Rich text only appears once a search is on.
+    @ViewBuilder private var promptText: some View {
+        let preview = node?.preview ?? ""
+        if model.searching {
+            Text(treeHighlight(preview, query: model.query, base: Theme.text))
+        } else {
+            Text(preview).foregroundColor(Theme.text)
+        }
+    }
+
+    @ViewBuilder private func answerText(_ n: TreeTurn) -> some View {
+        let answerHit = model.searching && model.hits(n).answer
+        let body = "↳ " + (answerHit ? model.answerSnippet(n) : n.answerPreview)
+        let tint = answerHit ? Theme.lanePalette[0].opacity(0.95) : Theme.subtext.opacity(0.75)
+        if model.searching {
+            Text(treeHighlight(body, query: model.query, base: tint))
+        } else {
+            Text(body).foregroundColor(tint)
+        }
+    }
+
     private func hitBadge(_ label: String, _ color: Color) -> some View {
         Text(label)
             .font(.system(size: 8.5, weight: .bold)).foregroundColor(color)
             .padding(.horizontal, 5).padding(.vertical, 1)
             .background(color.opacity(0.15)).clipShape(Capsule())
-    }
-
-    private var promptLine: String {
-        (node?.text ?? "").replacingOccurrences(of: "\n", with: " ")
     }
 
     private var relativeTime: String {
@@ -487,6 +499,7 @@ func treeHighlight(_ text: String, query: String,
 /// hovering a turn, pinning one, or the tree finishing its background load all re-render it.
 struct TreeInspector: View {
     @ObservedObject var model: SessionTreeModel
+    @ObservedObject var focus: TreeFocus
     let boardFrame: CGRect
     let dragging: Bool
     var onClosePanel: () -> Void
@@ -494,6 +507,7 @@ struct TreeInspector: View {
     var body: some View {
         if !dragging, boardFrame != .zero {
             let pinned = model.selected != nil
+            let turn = model.detailNode(hovered: focus.hovered)
             let cardW: CGFloat = 380
             let cardH: CGFloat = pinned ? 470 : 190
             ZStack {
@@ -506,12 +520,13 @@ struct TreeInspector: View {
                     .onTapGesture {
                         if model.selected != nil { model.selected = nil } else { onClosePanel() }
                     }
-                if model.detailNode != nil {
-                    TreeDetailCard(model: model)
+                if let turn {
+                    TreeDetailCard(turn: turn, pinned: pinned, query: model.query,
+                                   onUnpin: { model.selected = nil })
                         .position(x: max(boardFrame.minX + cardW / 2 + 8, boardFrame.maxX - cardW / 2 - 14),
-                                  y: min(max(model.focusY ?? boardFrame.midY, boardFrame.minY + cardH / 2 + 8),
+                                  y: min(max(focus.focusY ?? boardFrame.midY, boardFrame.minY + cardH / 2 + 8),
                                          boardFrame.maxY - cardH / 2 - 8))
-                        .animation(.easeOut(duration: 0.14), value: model.focusY)
+                        .animation(.easeOut(duration: 0.14), value: focus.focusY)
                         .animation(.easeOut(duration: 0.16), value: pinned)
                 }
             }
@@ -525,60 +540,54 @@ struct TreeInspector: View {
 /// Hovering a turn shows a clipped preview; clicking one pins it and reveals the full prompt and
 /// the full reply.
 struct TreeDetailCard: View {
-    @ObservedObject var model: SessionTreeModel
-
-    private var pinned: Bool { model.selected != nil }
-    private var turn: TreeTurn? { model.detailNode }
+    let turn: TreeTurn
+    let pinned: Bool
+    let query: String
+    var onUnpin: () -> Void
 
     var body: some View {
-        if let turn {
-            VStack(alignment: .leading, spacing: 9) {
-                header(turn)
-                content(turn)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                if turn.nativeSessionId != nil {
+                    Image(systemName: "bolt.fill").font(.system(size: 8)).foregroundColor(Theme.green)
+                        .help("已有会话的 leaf 正好在此 — fork 无需写文件")
+                }
+                Text(absoluteTime(turn.ts)).font(.system(size: 9.5)).foregroundColor(Theme.subtext)
+                Spacer()
             }
-            .padding(13)
-            .frame(width: 380, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 13)
-                    .fill(Theme.panel)
-                    .overlay(                       // one soft top highlight = "lifted", not blurred
-                        RoundedRectangle(cornerRadius: 13).fill(
-                            LinearGradient(colors: [Color.white.opacity(0.055), .clear],
-                                           startPoint: .top, endPoint: .bottom))
-                    )
-            )
-            .overlay(RoundedRectangle(cornerRadius: 13)
-                .stroke(pinned ? Theme.accent.opacity(0.55) : Theme.stroke, lineWidth: 1))
-            .shadow(color: .black.opacity(0.55), radius: 26, y: 12)
-            // A hover preview must not eat clicks meant for the tree; a pinned card is interactive
-            // so its text can be selected and scrolled.
-            .allowsHitTesting(pinned)
-            .transition(.opacity.combined(with: .move(edge: .trailing)))
+            content
         }
+        .padding(13)
+        .frame(width: 380, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 13)
+                .fill(Theme.panel)
+                .overlay(                       // one soft top highlight = "lifted", not blurred
+                    RoundedRectangle(cornerRadius: 13).fill(
+                        LinearGradient(colors: [Color.white.opacity(0.055), .clear],
+                                       startPoint: .top, endPoint: .bottom))
+                )
+        )
+        .overlay(RoundedRectangle(cornerRadius: 13)
+            .stroke(pinned ? Theme.accent.opacity(0.55) : Theme.stroke, lineWidth: 1))
+        .shadow(color: .black.opacity(0.55), radius: 26, y: 12)
+        // A hover preview must not eat clicks meant for the tree; a pinned card is interactive
+        // so its text can be selected and scrolled.
+        .allowsHitTesting(pinned)
+        .transition(.opacity.combined(with: .move(edge: .trailing)))
     }
 
-    private func header(_ turn: TreeTurn) -> some View {
-        HStack(spacing: 6) {
-            if turn.nativeSessionId != nil {
-                Image(systemName: "bolt.fill").font(.system(size: 8)).foregroundColor(Theme.green)
-                    .help("已有会话的 leaf 正好在此 — fork 无需写文件")
-            }
-            Text(absoluteTime(turn.ts)).font(.system(size: 9.5)).foregroundColor(Theme.subtext)
-            Spacer()
-        }
-    }
-
-    @ViewBuilder private func content(_ turn: TreeTurn) -> some View {
+    @ViewBuilder private var content: some View {
         if pinned {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(treeHighlight(turn.text, query: model.query, base: Theme.text))
+                    Text(treeHighlight(turn.text, query: query, base: Theme.text))
                         .font(.system(size: 12))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if !turn.answer.isEmpty {
                         Divider().overlay(Theme.stroke)
-                        Text(treeHighlight(turn.answer, query: model.query, base: Theme.subtext))
+                        Text(treeHighlight(turn.answer, query: query, base: Theme.subtext))
                             .font(.system(size: 11, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -588,10 +597,12 @@ struct TreeDetailCard: View {
             .frame(maxHeight: 420)
         } else {
             VStack(alignment: .leading, spacing: 7) {
-                Text(treeHighlight(turn.text, query: model.query, base: Theme.text))
+                // The hover card shows excerpts, so it never lays out a multi-thousand-character
+                // string that the reader isn't going to see.
+                Text(treeHighlight(turn.preview, query: query, base: Theme.text))
                     .font(.system(size: 12)).lineLimit(4)
-                if !turn.answer.isEmpty {
-                    Text(treeHighlight(turn.answer, query: model.query, base: Theme.subtext))
+                if !turn.answerPreview.isEmpty {
+                    Text(treeHighlight(turn.answerPreview, query: query, base: Theme.subtext))
                         .font(.system(size: 11, design: .monospaced))
                         .lineLimit(5)
                 }

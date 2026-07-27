@@ -1,5 +1,21 @@
 import SwiftUI
 
+/// A terminal sitting on a turn. A struct (not a tuple) so the model can tell whether the chips
+/// actually changed and skip republishing — hook events fire constantly while agents work.
+struct TermChip: Equatable {
+    let name: String
+    let status: TermStatus
+}
+
+/// Hover follows the pointer, so it must NOT live on the model the rows observe: publishing it
+/// there re-rendered every visible row on every mouse move, which is what made scrolling stutter.
+/// Rows write here without observing it; only the floating inspector listens.
+@MainActor
+final class TreeFocus: ObservableObject {
+    @Published var hovered: String?
+    @Published var focusY: CGFloat?
+}
+
 /// View-model for the session-tree panel: loads/refreshes the tree on a background queue,
 /// tracks selection, search, fold expansion, and where each attached terminal currently sits.
 @MainActor
@@ -9,10 +25,8 @@ final class SessionTreeModel: ObservableObject {
     @Published private(set) var loading = false
     @Published private(set) var emptyReason: String?
     @Published var selected: String?          // clicked → full prompt + full reply
-    @Published var hovered: String?           // transient preview → clipped
-    /// Vertical center of the hovered/selected row in "fleet" space, so the floating detail card
-    /// can line up with the row it describes.
-    @Published var focusY: CGFloat?
+    /// Pointer-driven state, deliberately kept off this object (see TreeFocus).
+    let focus = TreeFocus()
     @Published var query = "" { didSet { applyRows() } }
     /// Include assistant replies in the search, not just prompts.
     @Published var searchAnswers = true { didSet { applyRows() } }
@@ -20,7 +34,7 @@ final class SessionTreeModel: ObservableObject {
     @Published var newestFirst = true { didSet { applyRows() } }
 
     /// nodeUuid → chips for terminals whose current session leaf sits on that node.
-    @Published private(set) var chips: [String: [(name: String, status: TermStatus)]] = [:]
+    @Published private(set) var chips: [String: [TermChip]] = [:]
 
     private(set) var projectDir: URL?
     private(set) var boundSessionId: String?
@@ -30,8 +44,8 @@ final class SessionTreeModel: ObservableObject {
     private var dirSignature = ""
     private var generation = 0
 
-    /// The node shown in the detail pane: pinned selection, else hover preview, else current leaf.
-    var detailNode: TreeTurn? {
+    /// The turn the inspector shows: the pinned one, else whatever is hovered, else the live leaf.
+    func detailNode(hovered: String?) -> TreeTurn? {
         for candidate in [selected, hovered, tree.activeLeafNode] {
             if let c = candidate, let n = tree.nodes[c] { return n }
         }
@@ -80,7 +94,8 @@ final class SessionTreeModel: ObservableObject {
         self.sessionInfo = sessions
         self.emptyReason = nil
         self.selected = nil
-        self.hovered = nil
+        self.focus.hovered = nil
+        self.focus.focusY = nil
         self.expandedFolds = []
         reload(showSpinner: true)
         startRefresh()
@@ -144,12 +159,12 @@ final class SessionTreeModel: ObservableObject {
     }
 
     private func applyChips() {
-        var out: [String: [(String, TermStatus)]] = [:]
+        var out: [String: [TermChip]] = [:]
         for (sid, infos) in sessionInfo {
             guard let node = tree.leafNodeBySession[sid] else { continue }
-            for info in infos { out[node, default: []].append((info.name, info.status)) }
+            for info in infos { out[node, default: []].append(TermChip(name: info.name, status: info.status)) }
         }
-        chips = out
+        if out != chips { chips = out }   // hook events are frequent; don't redraw rows for nothing
     }
 
     /// Called by AppState when terminal statuses change, so chips stay truthful without a reload.
