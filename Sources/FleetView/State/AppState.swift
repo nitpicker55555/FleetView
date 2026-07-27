@@ -53,7 +53,7 @@ final class AppState: ObservableObject {
     @Published var treeDrag: TreeDrag?
     @Published var treeDropCardId: UUID?      // same-project card under the cursor → join its cluster
     @Published var treeBoardHot = false       // over the board → open standalone
-    var boardFrame: CGRect = .zero            // reported by MainArea (not published — read on hit test)
+    @Published var boardFrame: CGRect = .zero   // reported by MainArea; drives the inspector's placement
     var cardFrames: [UUID: CGRect] = [:]      // reported by each card
 
     /// Open the tree panel for a terminal's current session (project-dir scoped, treeflow-style).

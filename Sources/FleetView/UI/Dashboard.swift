@@ -38,30 +38,14 @@ struct DashboardView: View {
         }
     }
 
-    /// The floating node inspector, plus a click-catcher so a click anywhere outside it dismisses
-    /// the pinned card (the card carries no close button).
+    /// The floating node inspector. It observes the tree model directly (see TreeInspector):
+    /// AppState only holds it as a plain reference, so a card whose visibility was decided here
+    /// would never react to hovering, pinning, or the tree finishing its load.
     @ViewBuilder private var treeInspector: some View {
-        if state.treePanelTerminalId != nil, state.treeDrag == nil,
-           state.treeModel.detailNode != nil, state.boardFrame != .zero {
-            let pinned = state.treeModel.selected != nil
-            let cardW: CGFloat = 380, cardH: CGFloat = pinned ? 470 : 190
-            ZStack {
-                if pinned {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .frame(width: state.boardFrame.width, height: state.boardFrame.height)
-                        .position(x: state.boardFrame.midX, y: state.boardFrame.midY)
-                        .onTapGesture { state.treeModel.selected = nil }
-                }
-                TreeDetailCard(model: state.treeModel)
-                    .position(x: max(state.boardFrame.minX + cardW / 2 + 8,
-                                     state.boardFrame.maxX - cardW / 2 - 14),
-                              y: min(max(state.treeModel.focusY ?? state.boardFrame.midY,
-                                         state.boardFrame.minY + cardH / 2 + 8),
-                                     state.boardFrame.maxY - cardH / 2 - 8))
-                    .animation(.easeOut(duration: 0.14), value: state.treeModel.focusY)
-                    .animation(.easeOut(duration: 0.16), value: pinned)
-            }
+        if state.treePanelTerminalId != nil {
+            TreeInspector(model: state.treeModel,
+                          boardFrame: state.boardFrame,
+                          dragging: state.treeDrag != nil)
         }
     }
 

@@ -443,7 +443,41 @@ struct LeafPulse: View {
     }
 }
 
-// MARK: - Floating detail card
+// MARK: - Floating inspector (card + outside-click catcher)
+
+/// Owns everything about the floating inspector and — crucially — observes the model itself, so
+/// hovering a turn, pinning one, or the tree finishing its background load all re-render it.
+struct TreeInspector: View {
+    @ObservedObject var model: SessionTreeModel
+    let boardFrame: CGRect
+    let dragging: Bool
+
+    var body: some View {
+        if !dragging, model.detailNode != nil, boardFrame != .zero {
+            let pinned = model.selected != nil
+            let cardW: CGFloat = 380
+            let cardH: CGFloat = pinned ? 470 : 190
+            ZStack {
+                if pinned {
+                    // Everything left of the tree panel dismisses on click. The panel itself stays
+                    // live so clicking another turn switches to it instead of just closing.
+                    Color.black.opacity(0.001)
+                        .frame(width: boardFrame.maxX, height: boardFrame.maxY)
+                        .position(x: boardFrame.maxX / 2, y: boardFrame.maxY / 2)
+                        .onTapGesture { model.selected = nil }
+                }
+                TreeDetailCard(model: model)
+                    .position(x: max(boardFrame.minX + cardW / 2 + 8, boardFrame.maxX - cardW / 2 - 14),
+                              y: min(max(model.focusY ?? boardFrame.midY, boardFrame.minY + cardH / 2 + 8),
+                                     boardFrame.maxY - cardH / 2 - 8))
+                    .animation(.easeOut(duration: 0.14), value: model.focusY)
+                    .animation(.easeOut(duration: 0.16), value: pinned)
+            }
+        }
+    }
+}
+
+// MARK: - Detail card
 
 /// The node inspector: a frosted card that floats to the LEFT of the tree so it never covers it.
 /// Hovering a turn shows a clipped preview; clicking one pins it and reveals the full prompt and
