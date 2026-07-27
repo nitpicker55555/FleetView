@@ -345,6 +345,14 @@ function renderInfo(i){
     const risky=/bypass|yolo|accept/i.test(i.permissionMode);
     h+='<span class="chip'+(risky?' danger':'')+'">'+esc(i.permissionMode)+'</span>';
   }
+  // Several terminals can be attached to one agent session — then the chat is identical for all of
+  // them by definition. Say so, rather than letting it look like the wrong conversation.
+  if(i.shared>1) h+='<span class="chip warn" title="This conversation belongs to one session that '+
+    i.shared+' terminals share — use the Terminal tab to see this pane on its own">⇉ shared by '+i.shared+' terminals</span>';
+  if(i.session) h+='<span class="chip" title="session '+esc(i.session)+'">'+esc(i.session.slice(0,8))+'</span>';
+  // The session is a tree; only the live branch is shown. Say when earlier attempts exist.
+  if(i.branches>0) h+='<span class="chip" title="This session has '+i.branches+
+    ' branch point(s) from rewinds/edits — only the active branch is shown">⑂ '+i.branches+'</span>';
   if(i.contextWindow>0&&i.contextTokens>0){
     const pct=Math.min(100,Math.round(i.contextTokens*100/i.contextWindow));
     const lvl=pct>=95?'danger':(pct>=90?'warn':'');

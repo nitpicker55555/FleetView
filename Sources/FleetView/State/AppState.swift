@@ -723,6 +723,8 @@ final class AppState: ObservableObject {
             result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
                                                                   used: result.info.contextTokens)
             result.info.status = t?.status.rawValue
+            result.info.session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+            result.info.shared = terminalsSharing(path)
             // Read the choices off the live screen so a prompt can be answered with real buttons.
             // Gated on the picker's cursor rather than on status, because trust/menu prompts don't
             // always raise "needs you" — the cursor is what actually means "waiting on you".
@@ -754,20 +756,33 @@ final class AppState: ObservableObject {
         return AskSpec(sessionId: sid, cwd: t.cwd, agent: t.agentKind.rawValue)
     }
 
-    /// The agent transcript file for a terminal: the path a hook reported, else the newest Claude
-    /// session recorded for that cwd (covers sessions started before hooks caught up).
+    /// The agent transcript file for a terminal: the path its own hooks reported, else — only when
+    /// nothing else has claimed it — the newest unclaimed session for that cwd (covers a session
+    /// started before hooks caught up).
+    ///
+    /// The fallback must never hand back another terminal's transcript: several terminals usually
+    /// share a project directory, so "newest file in this cwd" would show a brand-new terminal the
+    /// conversation belonging to a completely different one.
     func transcriptPath(for id: UUID) -> String? {
         guard let t = terminals.first(where: { $0.id == id }) else { return nil }
         if let tp = t.transcriptPath, FileManager.default.fileExists(atPath: tp) { return tp }
+        let claimed = Set(terminals.filter { $0.id != id }.compactMap { $0.transcriptPath })
         let dir = FV.transcriptDir(forCwd: t.cwd)
         let files = (try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        let newest = files.filter { $0.pathExtension == "jsonl" }.max { a, b in
-            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            return da < db
-        }
+        let newest = files.filter { $0.pathExtension == "jsonl" && !claimed.contains($0.path) }
+            .max { a, b in
+                let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return da < db
+            }
         return newest?.path
+    }
+
+    /// How many terminals point at the same transcript. >1 means the conversation genuinely belongs
+    /// to a session several terminals share, so identical chat content is expected, not a bug.
+    func terminalsSharing(_ path: String) -> Int {
+        terminals.filter { $0.transcriptPath == path }.count
     }
 
     /// Typing/keys from the web are real interaction — record it (drives "3m ago").

@@ -40,6 +40,9 @@ struct ConvInfo: Codable {
     var contextTokens: Int = 0
     var contextWindow: Int = 0
     var status: String? = nil          // terminal status, so the composer can offer Stop while working
+    var shared: Int = 0                // terminals sharing this session (>1 ⇒ same chat by design)
+    var branches: Int = 0              // branch points in the session tree (abandoned attempts)
+    var session: String? = nil         // session id, so it's clear WHICH conversation this is
     var pendingTool: String? = nil     // tool the agent is running or waiting on approval for
     var pendingText: String? = nil
     var question: String? = nil        // the prompt line shown on screen
@@ -66,12 +69,25 @@ enum Conversation {
         var msgs: [ConvMsg] = []
         var toolIndex: [String: Int] = [:]      // tool_use / call id → index in msgs
 
-        for line in lines {
-            guard let d = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { continue }
+        let records: [[String: Any]] = lines.compactMap {
+            guard let d = $0.data(using: .utf8) else { return nil }
+            return (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
+        }
+        // A Claude session is a TREE, not a list: rewinding or editing a prompt starts a new branch
+        // and the old one stays in the file. Rendering the file linearly interleaves abandoned
+        // attempts with the real conversation, so follow only the active branch.
+        let active = activePath(records, &info)
+
+        for obj in records {
             if obj["payload"] != nil {
                 parseCodex(obj, into: &msgs, toolIndex: &toolIndex)
             } else {
+                if let active {
+                    // Keep subagent (sidechain) records regardless — they hang off their own chain.
+                    let uuid = obj["uuid"] as? String
+                    let sidechain = (obj["isSidechain"] as? Bool) ?? false
+                    if !sidechain, let uuid, !active.contains(uuid) { continue }
+                }
                 parseClaude(obj, into: &msgs, toolIndex: &toolIndex, cwd: cwd)
                 collectInfo(obj, into: &info)
             }
@@ -87,6 +103,47 @@ enum Conversation {
         }
         let out = msgs.count > limit ? Array(msgs.suffix(limit)) : msgs
         return ConvResult(messages: out, info: info)
+    }
+
+    /// The set of record uuids on the session's *active* branch, walking `parentUuid` back from the
+    /// current leaf. Claude marks the live tip with a `last-prompt` record carrying `leafUuid`;
+    /// without one, the newest record is the tip. Returns nil when the file has no tree at all
+    /// (nothing to filter), and fills in how many branches the session has.
+    private static func activePath(_ records: [[String: Any]], _ info: inout ConvInfo) -> Set<String>? {
+        var parent: [String: String] = [:]
+        var children: [String: [String]] = [:]     // in file order ⇒ last child is the newest
+        var known = Set<String>()
+        var leaf: String?
+        var newest: String?
+
+        for r in records {
+            if (r["type"] as? String) == "last-prompt", let l = r["leafUuid"] as? String { leaf = l }
+            guard let u = r["uuid"] as? String else { continue }
+            known.insert(u)
+            newest = u
+            if let p = r["parentUuid"] as? String {
+                parent[u] = p
+                children[p, default: []].append(u)
+            }
+        }
+        guard !known.isEmpty else { return nil }
+        info.branches = children.values.filter { $0.count > 1 }.count
+
+        // `leafUuid` is the tip *as of the last prompt*, so the replies that followed hang below it —
+        // descend to the current end of that branch (newest child at each step) before walking back,
+        // otherwise the most recent messages get filtered out as if they were another branch.
+        var tip = leaf.flatMap { known.contains($0) ? $0 : nil } ?? newest
+        var visited = Set<String>()
+        while let u = tip, let kids = children[u], let next = kids.last, !visited.contains(u) {
+            visited.insert(u)
+            tip = next
+        }
+        var path = Set<String>()
+        while let u = tip, !path.contains(u) {
+            path.insert(u)
+            tip = parent[u]
+        }
+        return path.isEmpty ? nil : path
     }
 
     /// Session facts that live in their own transcript records (Claude): the model in use, the
