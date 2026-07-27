@@ -726,8 +726,11 @@ final class AppState: ObservableObject {
             }
             let limit = min(400, Int(query["limit"] ?? "") ?? 120)
             let t = terminals.first(where: { $0.id == id })
+            // One capture serves both jobs: picking THIS terminal's branch out of a session it may
+            // share with others, and reading any on-screen choices.
+            let screen = remote.capture(id, lines: 80)
             var result = Conversation.parse(path: path, cwd: t?.cwd ?? "", limit: limit,
-                                            ownPrompt: t?.lastPrompt ?? "")
+                                            ownPrompt: t?.lastPrompt ?? "", screen: screen)
             result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
                                                                   used: result.info.contextTokens)
             result.info.status = t?.status.rawValue
@@ -736,7 +739,7 @@ final class AppState: ObservableObject {
             // Read the choices off the live screen so a prompt can be answered with real buttons.
             // Gated on the picker's cursor rather than on status, because trust/menu prompts don't
             // always raise "needs you" — the cursor is what actually means "waiting on you".
-            if let screen = remote.capture(id, lines: 40) {
+            if let screen {
                 let parsed = Conversation.options(fromScreen: screen)
                 result.info.options = parsed.options
                 result.info.question = parsed.question
