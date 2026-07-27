@@ -597,6 +597,15 @@ final class AppState: ObservableObject {
         var id: String { rawValue }
     }
 
+    /// While a card is being dragged, the right edge becomes a drop target that opens that
+    /// terminal's session tree — the same edge the panel itself slides out from.
+    @Published var hoveredTreeZone = false
+    var sessionTreeZoneFrame: CGRect {
+        guard boardFrame != .zero else { return .zero }
+        let w: CGFloat = 96
+        return CGRect(x: boardFrame.maxX - w, y: boardFrame.minY, width: w, height: boardFrame.height)
+    }
+
     @Published var draggingTerminalId: UUID?
     @Published var dragLocation: CGPoint = .zero      // in the "fleet" coordinate space
     @Published var hoveredZone: DragZone?
@@ -615,17 +624,23 @@ final class AppState: ObservableObject {
         if draggingTerminalId != id { draggingTerminalId = id }
         dragLocation = point
         hoveredZone = zoneAt(point)
+        // The dock's explicit zones win; the edge only claims what they don't.
+        hoveredTreeZone = hoveredZone == nil && sessionTreeZoneFrame.contains(point)
     }
 
     func dragEnded(at point: CGPoint) {
         let zone = zoneAt(point)
+        let onTreeZone = hoveredTreeZone
         let id = draggingTerminalId
         draggingTerminalId = nil
         hoveredZone = nil
-        if let id, let zone { perform(zone, on: id) }
+        hoveredTreeZone = false
+        guard let id else { return }
+        if let zone { perform(zone, on: id) }
+        else if onTreeZone { openSessionTree(id) }
     }
 
-    func cancelDrag() { draggingTerminalId = nil; hoveredZone = nil }
+    func cancelDrag() { draggingTerminalId = nil; hoveredZone = nil; hoveredTreeZone = false }
 
     private func zoneAt(_ p: CGPoint) -> DragZone? {
         zoneFrames.first(where: { $0.value.contains(p) })?.key

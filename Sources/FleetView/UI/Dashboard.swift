@@ -6,18 +6,26 @@ struct DashboardView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Sidebar().frame(width: state.sidebarWidth)
-            SidebarDivider()
-            VStack(spacing: 0) {
-                DynamicPanel()          // agent-authored dynamic UI — tops the content column, beside the sidebar
-                TopBar()
-                Divider().overlay(Theme.stroke)
-                MainArea()
-                    .background(GeometryReader { g in     // the tree-drag drop area ("fleet" space)
-                        Color.clear.preference(key: BoardFrameKey.self,
-                                               value: g.frame(in: .named("fleet")))
-                    })
+            // Everything but the tree panel recedes while the tree is open, so the reader has the
+            // room. Never while dragging — drop targets have to stay legible.
+            let receded = state.treePanelTerminalId != nil && state.treeDrag == nil
+            HStack(spacing: 0) {
+                Sidebar().frame(width: state.sidebarWidth)
+                SidebarDivider()
+                VStack(spacing: 0) {
+                    DynamicPanel()      // agent-authored dynamic UI — tops the content column, beside the sidebar
+                    TopBar()
+                    Divider().overlay(Theme.stroke)
+                    MainArea()
+                        .background(GeometryReader { g in     // the tree-drag drop area ("fleet" space)
+                            Color.clear.preference(key: BoardFrameKey.self,
+                                                   value: g.frame(in: .named("fleet")))
+                        })
+                }
             }
+            .blur(radius: receded ? 3 : 0)
+            .overlay(Color.black.opacity(receded ? 0.28 : 0).allowsHitTesting(false))
+            .animation(.easeOut(duration: 0.2), value: receded)
             if state.treePanelTerminalId != nil {
                 TreePanelDivider()
                 SessionTreePanel(model: state.treeModel)
@@ -54,6 +62,7 @@ struct DashboardView: View {
         ZStack {
             if let dragId = state.draggingTerminalId {
                 Color.black.opacity(0.16).ignoresSafeArea()
+                SessionTreeDropEdge(hot: state.hoveredTreeZone, frame: state.sessionTreeZoneFrame)
                 VStack { Spacer(); ActionDock(terminalId: dragId).environmentObject(state) }
                 if let t = state.terminals.first(where: { $0.id == dragId }) {
                     DragPreviewChip(name: t.name, status: t.status)
@@ -654,6 +663,36 @@ struct CardFramesKey: PreferenceKey {
     static var defaultValue: [UUID: CGRect] = [:]
     static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
         value.merge(nextValue()) { $1 }
+    }
+}
+
+/// The right edge turns into a drop target while a card is dragged — release there to open that
+/// terminal's session tree, on the side the panel itself comes from.
+struct SessionTreeDropEdge: View {
+    let hot: Bool
+    let frame: CGRect
+
+    var body: some View {
+        if frame != .zero {
+            VStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(hot ? .white : Theme.accent)
+                Text("会话树")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(hot ? .white : Theme.accent.opacity(0.9))
+            }
+            .frame(width: frame.width, height: frame.height)
+            .background(
+                LinearGradient(colors: [Theme.accent.opacity(hot ? 0.42 : 0.13), .clear],
+                               startPoint: .trailing, endPoint: .leading)
+            )
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(Theme.accent.opacity(hot ? 1 : 0.5)).frame(width: hot ? 3 : 1.5)
+            }
+            .position(x: frame.midX, y: frame.midY)
+            .animation(.easeOut(duration: 0.12), value: hot)
+        }
     }
 }
 

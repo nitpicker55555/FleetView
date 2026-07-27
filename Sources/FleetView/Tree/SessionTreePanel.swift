@@ -268,9 +268,8 @@ struct TreeRowView: View {
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Theme.accent.opacity(0.14)).clipShape(Capsule())
                     }
-                    Text(promptLine)
+                    Text(treeHighlight(promptLine, query: model.query, base: Theme.text))
                         .font(.system(size: 12.5, weight: row.onActivePath ? .medium : .regular))
-                        .foregroundColor(Theme.text)
                         .lineLimit(2)
                     Spacer(minLength: 4)
                     Text(relativeTime)
@@ -279,11 +278,12 @@ struct TreeRowView: View {
                 }
                 if let n = node, !n.answer.isEmpty {
                     let answerHit = model.searching && model.hits(n).answer
-                    Text("↳ " + (answerHit ? model.answerSnippet(n)
-                                           : n.answer.replacingOccurrences(of: "\n", with: " ")))
+                    Text(treeHighlight("↳ " + (answerHit ? model.answerSnippet(n)
+                                                         : n.answer.replacingOccurrences(of: "\n", with: " ")),
+                                       query: model.query,
+                                       base: answerHit ? Theme.lanePalette[0].opacity(0.95)
+                                                       : Theme.subtext.opacity(0.75)))
                         .font(.system(size: 11))
-                        .foregroundColor(answerHit ? Theme.lanePalette[0].opacity(0.95)
-                                                   : Theme.subtext.opacity(0.75))
                         .lineLimit(1)
                 }
                 if !chips.isEmpty {
@@ -459,6 +459,28 @@ struct LeafPulse: View {
     }
 }
 
+/// Paints every occurrence of `query` in a different colour so the match is findable inside a
+/// long prompt or reply — a badge tells you WHERE it hit, this tells you WHAT hit.
+func treeHighlight(_ text: String, query: String,
+                   base: Color, hit: Color = Theme.amber) -> AttributedString {
+    var a = AttributedString(text)
+    a.foregroundColor = base
+    let q = query.trimmingCharacters(in: .whitespaces)
+    guard !q.isEmpty else { return a }
+    var from = text.startIndex
+    while let r = text.range(of: q, options: .caseInsensitive, range: from ..< text.endIndex) {
+        if let lo = AttributedString.Index(r.lowerBound, within: a),
+           let hi = AttributedString.Index(r.upperBound, within: a) {
+            a[lo ..< hi].foregroundColor = hit
+            a[lo ..< hi].backgroundColor = hit.opacity(0.18)
+            a[lo ..< hi].inlinePresentationIntent = .stronglyEmphasized
+        }
+        from = r.upperBound
+        if from >= text.endIndex { break }
+    }
+    return a
+}
+
 // MARK: - Floating inspector (card + outside-click catcher)
 
 /// Owns everything about the floating inspector and — crucially — observes the model itself, so
@@ -550,14 +572,14 @@ struct TreeDetailCard: View {
         if pinned {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(turn.text).font(.system(size: 12)).foregroundColor(Theme.text)
+                    Text(treeHighlight(turn.text, query: model.query, base: Theme.text))
+                        .font(.system(size: 12))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if !turn.answer.isEmpty {
                         Divider().overlay(Theme.stroke)
-                        Text(turn.answer)
+                        Text(treeHighlight(turn.answer, query: model.query, base: Theme.subtext))
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(Theme.subtext)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -566,12 +588,11 @@ struct TreeDetailCard: View {
             .frame(maxHeight: 420)
         } else {
             VStack(alignment: .leading, spacing: 7) {
-                Text(turn.text).font(.system(size: 12)).foregroundColor(Theme.text)
-                    .lineLimit(4)
+                Text(treeHighlight(turn.text, query: model.query, base: Theme.text))
+                    .font(.system(size: 12)).lineLimit(4)
                 if !turn.answer.isEmpty {
-                    Text(turn.answer)
+                    Text(treeHighlight(turn.answer, query: model.query, base: Theme.subtext))
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(Theme.subtext)
                         .lineLimit(5)
                 }
                 Text("点击该节点查看完整内容 · 拖动它可开新终端")
