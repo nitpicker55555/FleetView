@@ -86,6 +86,7 @@ final class WebServer {
         let (path, params) = Self.parsePath(rawPath)
 
         if path == "/ask" { handleAsk(conn, params); return }   // long-running; handled off the main thread
+        if path == "/tree" || path == "/fork" { handleTree(conn, path, params); return }   // dir scans — same
 
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
@@ -118,6 +119,41 @@ final class WebServer {
             DispatchQueue.global(qos: .userInitiated).async {
                 let answer = RemoteServer.ask(spec, question: q)
                 self.send(conn, type: "text/plain; charset=utf-8", body: Data(answer.utf8))
+            }
+        }
+    }
+
+    /// GET /tree and /fork — building a session tree reads every jsonl in the project dir (seconds
+    /// on a big project), so the scan runs on a global queue; only the terminal lookup and the
+    /// new-terminal creation touch the main actor.
+    private func handleTree(_ conn: NWConnection, _ path: String, _ query: [String: String]) {
+        guard let s = query["id"], let id = UUID(uuidString: s) else {
+            send(conn, status: "400 Bad Request", type: "application/json", body: Data(#"{"error":"bad id"}"#.utf8)); return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else { return }
+            if path == "/tree" {
+                let tp = MainActor.assumeIsolated { app.transcriptPath(for: id) }
+                guard let tp else {
+                    self.send(conn, type: "application/json",
+                              body: Data(#"{"nodes":[],"error":"no agent session yet"}"#.utf8)); return
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let tree = SessionTree.build(transcriptPath: tp)
+                    self.send(conn, type: "application/json",
+                              body: (try? JSONEncoder().encode(tree)) ?? Data("{}".utf8))
+                }
+            } else {
+                MainActor.assumeIsolated {
+                    app.forkTerminalAsync(from: id, at: query["node"]) { t in
+                        if let t, let body = try? JSONEncoder().encode(["id": t.id.uuidString, "name": t.name]) {
+                            self.send(conn, type: "application/json", body: body)
+                        } else {
+                            self.send(conn, status: "409 Conflict", type: "application/json",
+                                      body: Data(#"{"error":"fork failed"}"#.utf8))
+                        }
+                    }
+                }
             }
         }
     }

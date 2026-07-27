@@ -14,7 +14,8 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     var onClose: ((UUID) -> Void)?
     var onInterrupt: ((UUID) -> Void)?   // user pressed Escape (Claude's interrupt key)
 
-    init(termId: UUID, title: String, cwd: String, autoRunClaude: Bool, port: Int?, tmux: TmuxSpec?) {
+    init(termId: UUID, title: String, cwd: String, autoRunClaude: Bool, port: Int?, tmux: TmuxSpec?,
+         autoCommand: String? = nil) {
         self.termId = termId
         self.termView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 920, height: 560))
         super.init()
@@ -75,7 +76,12 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
             return event
         }
 
-        if autoRunClaude {
+        if let autoCommand {
+            // A one-shot command handed over by AppState (fork/duplicate → `claude --resume <sid>`).
+            DispatchQueue.main.asyncAfter(deadline: .now() + (tmux == nil ? 0.7 : 1.1)) { [weak self] in
+                self?.type(autoCommand + "\r")
+            }
+        } else if autoRunClaude {
             // Type `claude` into the ready interactive shell — same as the user does by hand.
             // A touch longer under tmux, which needs a moment to spin up the session + pane.
             DispatchQueue.main.asyncAfter(deadline: .now() + (tmux == nil ? 0.7 : 1.1)) { [weak self] in

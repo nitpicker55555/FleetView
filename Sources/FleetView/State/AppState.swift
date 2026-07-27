@@ -26,6 +26,9 @@ final class AppState: ObservableObject {
     @Published var highlightedClusterId: UUID?
     @Published var scrollToId: UUID?
 
+    /// Terminal whose session tree is open as a full-window overlay (nil = closed).
+    @Published var treeTerminalId: UUID?
+
     private var controllers: [UUID: TerminalWindowController] = [:]
     private var cascadePoint = NSPoint(x: 60, y: 60)
     var hookPort: Int? = nil
@@ -143,15 +146,21 @@ final class AppState: ObservableObject {
 
     // MARK: - Terminals
 
+    /// One-shot commands typed into a terminal right after it opens (e.g. `claude --resume <fork>`).
+    /// Not persisted — a reopened terminal reattaches to its tmux session instead.
+    private var pendingCommands: [UUID: String] = [:]
+
     @discardableResult
     func newTerminal(projectId: UUID, name: String? = nil, clusterId: UUID? = nil,
-                     autoRunClaude: Bool = false) -> TerminalSession? {
+                     autoRunClaude: Bool = false, autoCommand: String? = nil,
+                     cwd: String? = nil) -> TerminalSession? {
         guard let proj = project(projectId) else { return nil }
         var t = TerminalSession(projectId: projectId,
                                 name: name ?? defaultTerminalName(for: proj),
-                                clusterId: clusterId, cwd: proj.path, autoRunClaude: autoRunClaude)
+                                clusterId: clusterId, cwd: cwd ?? proj.path, autoRunClaude: autoRunClaude)
         t.status = .shell
         terminals.append(t)
+        if let autoCommand { pendingCommands[t.id] = autoCommand }
         openWindow(for: t)
         save()
         return t
@@ -189,16 +198,51 @@ final class AppState: ObservableObject {
 
     func duplicateTerminal(_ id: UUID) {
         guard let src = terminals.first(where: { $0.id == id }) else { return }
-        // Duplicate → both terminals belong to one cluster (they serve the same task).
-        var clusterId = src.clusterId
-        if clusterId == nil {
-            let cluster = Cluster(name: src.name)
-            clusters.append(cluster)
-            clusterId = cluster.id
-            if let i = terminals.firstIndex(where: { $0.id == src.id }) { terminals[i].clusterId = cluster.id }
+        // An agent terminal duplicates by FORKING its conversation at the live tip (treeflow-style):
+        // the sibling opens with the whole conversation so far, in its own session, and the original
+        // is untouched. A plain shell (or Codex, no fork mechanism) duplicates as before.
+        if let tp = transcriptPath(for: id), tp.contains("/.claude/") {
+            forkTerminalAsync(from: id, at: nil) { _ in }
+            return
         }
         _ = newTerminal(projectId: src.projectId, name: src.name,
-                        clusterId: clusterId, autoRunClaude: src.autoRunClaude)
+                        clusterId: clusterInto(src), autoRunClaude: src.autoRunClaude)
+    }
+
+    /// Source + fork/duplicate live in one cluster (they serve the same task); create it on demand.
+    private func clusterInto(_ src: TerminalSession) -> UUID? {
+        if let c = src.clusterId { return c }
+        let cluster = Cluster(name: src.name)
+        clusters.append(cluster)
+        if let i = terminals.firstIndex(where: { $0.id == src.id }) { terminals[i].clusterId = cluster.id }
+        return cluster.id
+    }
+
+    /// Open a new terminal whose agent session is a fork of `id`'s conversation — at a specific turn
+    /// (`nodeUuid` from the session tree) or at the live tip (nil). The fork file is written by
+    /// SessionTree (original session untouched) and the new terminal auto-runs `claude --resume`.
+    /// Writing the fork re-reads the whole project dir (seconds on big projects), so that part runs
+    /// on a background queue; the terminal is created back on the main actor.
+    func forkTerminalAsync(from id: UUID, at nodeUuid: String?,
+                           completion: @escaping @MainActor (TerminalSession?) -> Void) {
+        guard let src = terminals.first(where: { $0.id == id }),
+              let tp = transcriptPath(for: id) else { completion(nil); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let forked = nodeUuid.map { SessionTree.fork(transcriptPath: tp, at: $0) }
+                         ?? SessionTree.forkAtTip(transcriptPath: tp)
+            Task { @MainActor [weak self] in
+                guard let self, let forked else { completion(nil); return }
+                let cwd = forked.cwd.isEmpty ? src.cwd : forked.cwd
+                // cd is only needed when the agent ran somewhere other than the terminal's own cwd.
+                let resume = "claude --resume \(forked.sid)"
+                let cmd = cwd == src.cwd ? resume : "cd '\(cwd)' && \(resume)"
+                completion(self.newTerminal(projectId: src.projectId,
+                                            name: src.name + " ⑂",
+                                            clusterId: self.clusterInto(src),
+                                            autoCommand: cmd,
+                                            cwd: cwd))
+            }
+        }
     }
 
     func raiseTerminal(_ id: UUID) {
@@ -872,7 +916,8 @@ final class AppState: ObservableObject {
         let spec = remote.tmuxSpec(for: t.id)
         let autoRun = t.autoRunClaude && !(spec != nil && remote.sessionExists(t.id))
         let ctrl = TerminalWindowController(termId: t.id, title: t.name, cwd: t.cwd,
-                                            autoRunClaude: autoRun, port: hookPort, tmux: spec)
+                                            autoRunClaude: autoRun, port: hookPort, tmux: spec,
+                                            autoCommand: pendingCommands.removeValue(forKey: t.id))
         ctrl.onExit = { [weak self] id, _ in
             Task { @MainActor in self?.setStatus(id, .exited) }
         }
