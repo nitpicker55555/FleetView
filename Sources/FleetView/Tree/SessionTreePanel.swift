@@ -115,11 +115,28 @@ struct SessionTreePanel: View {
                 .focused($searchFocused)
                 .onExitCommand { model.query = "" }
             if !model.query.isEmpty {
+                Text("\(model.rows.count)").font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Theme.subtext)
                 Button { model.query = "" } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 11))
                         .foregroundColor(Theme.subtext.opacity(0.7))
                 }.buttonStyle(.plain)
             }
+            Button { model.searchAnswers.toggle() } label: {
+                Text("含回复")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundColor(model.searchAnswers ? Theme.accent : Theme.subtext.opacity(0.7))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(model.searchAnswers ? Theme.accent.opacity(0.15) : Color.clear)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain).help("搜索范围是否包含 agent 回复")
+            Button { model.newestFirst.toggle() } label: {
+                Image(systemName: model.newestFirst ? "arrow.down" : "arrow.up")
+                    .font(.system(size: 9.5, weight: .bold)).foregroundColor(Theme.subtext)
+            }
+            .buttonStyle(.plain)
+            .help(model.newestFirst ? "最新在上 — 点击改为最早在上" : "最早在上 — 点击改为最新在上")
         }
         .padding(.horizontal, 9).padding(.vertical, 6)
         .background(Theme.card.opacity(searchFocused ? 0.95 : 0.45))
@@ -144,15 +161,23 @@ struct SessionTreePanel: View {
                 .padding(.vertical, 6)
             }
             .onChange(of: model.tree.activeLeafNode) { _, leaf in
-                if let leaf { withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(leaf, anchor: .bottom) } }
+                if let leaf {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo(leaf, anchor: model.newestFirst ? .top : .bottom)
+                    }
+                }
             }
             .onChange(of: jumpToLeaf) { _, _ in
                 if let leaf = model.tree.activeLeafNode {
-                    withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(leaf, anchor: .bottom) }
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo(leaf, anchor: model.newestFirst ? .top : .bottom)
+                    }
                 }
             }
             .onAppear {
-                if let leaf = model.tree.activeLeafNode { proxy.scrollTo(leaf, anchor: .bottom) }
+                if let leaf = model.tree.activeLeafNode {
+                    proxy.scrollTo(leaf, anchor: model.newestFirst ? .top : .bottom)
+                }
             }
         }
     }
@@ -192,10 +217,7 @@ struct TreeRowView: View {
 
     private var node: TreeTurn? { row.nodeUuid.flatMap { model.tree.nodes[$0] } }
     private var isSelected: Bool { row.nodeUuid != nil && model.selected == row.nodeUuid }
-    private var dimmedBySearch: Bool {
-        guard let n = node else { return false }
-        return !model.matches(n)
-    }
+
 
     var body: some View {
         switch row.kind {
@@ -208,7 +230,7 @@ struct TreeRowView: View {
 
     private func foldRow(id: String, count: Int) -> some View {
         HStack(spacing: 0) {
-            TreeRailView(row: row, rowHeight: 32, hasChips: false)
+            TreeRailView(row: row, rowHeight: 32, hasChips: false, flipped: model.newestFirst)
                 .frame(width: TreeLane.railWidth, height: 32)
             Button {
                 withAnimation(.easeOut(duration: 0.18)) { model.expandFold(id) }
@@ -229,7 +251,8 @@ struct TreeRowView: View {
         let chips = row.nodeUuid.flatMap { model.chips[$0] } ?? []
         let rowHeight: CGFloat = chips.isEmpty ? 54 : 70
         return HStack(alignment: .top, spacing: 0) {
-            TreeRailView(row: row, rowHeight: rowHeight, hasChips: !chips.isEmpty)
+            TreeRailView(row: row, rowHeight: rowHeight, hasChips: !chips.isEmpty,
+                         flipped: model.newestFirst)
                 .frame(width: TreeLane.railWidth, height: rowHeight)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -278,7 +301,6 @@ struct TreeRowView: View {
             if isSelected { Rectangle().fill(Theme.accent).frame(width: 2) }
         }
         .contentShape(Rectangle())
-        .opacity(dimmedBySearch ? 0.32 : 1)
         .background(GeometryReader { g in
             Color.clear.onChange(of: hover) { _, h in
                 if h { model.focusY = g.frame(in: .named("fleet")).midY }
@@ -319,6 +341,9 @@ struct TreeRailView: View {
     let row: TreeRow
     let rowHeight: CGFloat
     let hasChips: Bool
+    /// Newest-first flips the timeline: lanes that ran downward now run upward. Mirroring every
+    /// y EXCEPT the dot keeps the dot on its text while the lines still point at the right rows.
+    var flipped: Bool = false
 
     /// Dot sits at the vertical center of the text block (not of a chip-tall row).
     private var dotY: CGFloat { hasChips ? 27 : rowHeight / 2 }
@@ -326,6 +351,7 @@ struct TreeRailView: View {
     var body: some View {
         Canvas { ctx, size in
             let mainX = TreeLane.x(0)
+            func Y(_ y: CGFloat) -> CGFloat { flipped ? size.height - y : y }
             // Pass-through ancestor lanes.
             for lane in row.passLanes {
                 var p = Path()
@@ -336,8 +362,8 @@ struct TreeRailView: View {
             // Main accent lane.
             if row.laneDepth == 0 {
                 var p = Path()
-                p.move(to: CGPoint(x: mainX, y: row.mainStartsHere ? dotY : 0))
-                p.addLine(to: CGPoint(x: mainX, y: row.mainEndsHere ? dotY : size.height))
+                p.move(to: CGPoint(x: mainX, y: row.mainStartsHere ? dotY : Y(0)))
+                p.addLine(to: CGPoint(x: mainX, y: row.mainEndsHere ? dotY : Y(size.height)))
                 ctx.stroke(p, with: .color(Theme.accent), lineWidth: 2)
             } else if row.mainLanePasses {
                 var p = Path()
@@ -351,28 +377,29 @@ struct TreeRailView: View {
                 let color = laneColor(row.colorIndex)
                 if row.isBranchFirst {
                     var c = Path()
-                    c.move(to: CGPoint(x: TreeLane.x(row.laneDepth - 1), y: 0))
-                    c.addQuadCurve(to: CGPoint(x: x, y: dotY), control: CGPoint(x: x, y: 0))
+                    c.move(to: CGPoint(x: TreeLane.x(row.laneDepth - 1), y: Y(0)))
+                    c.addQuadCurve(to: CGPoint(x: x, y: dotY), control: CGPoint(x: x, y: Y(0)))
                     ctx.stroke(c, with: .color(color.opacity(0.7)), lineWidth: 1.5)
                 } else {
                     var p = Path()
-                    p.move(to: CGPoint(x: x, y: 0))
+                    p.move(to: CGPoint(x: x, y: Y(0)))
                     p.addLine(to: CGPoint(x: x, y: dotY))
                     ctx.stroke(p, with: .color(color.opacity(0.7)), lineWidth: 1.5)
                 }
                 if !row.isBranchLast {
                     var p = Path()
                     p.move(to: CGPoint(x: x, y: dotY))
-                    p.addLine(to: CGPoint(x: x, y: size.height))
+                    p.addLine(to: CGPoint(x: x, y: Y(size.height)))
                     ctx.stroke(p, with: .color(color.opacity(0.7)), lineWidth: 1.5)
                 } else {
-                    // dead end — short fade below the dot
+                    // dead end — short fade away from the dot, in whichever direction is "later"
+                    let end = flipped ? max(dotY - 12, 0) : min(dotY + 12, size.height)
                     var p = Path()
                     p.move(to: CGPoint(x: x, y: dotY))
-                    p.addLine(to: CGPoint(x: x, y: min(dotY + 12, size.height)))
+                    p.addLine(to: CGPoint(x: x, y: end))
                     ctx.stroke(p, with: .linearGradient(
                         Gradient(colors: [color.opacity(0.6), .clear]),
-                        startPoint: CGPoint(x: x, y: dotY), endPoint: CGPoint(x: x, y: dotY + 12)),
+                        startPoint: CGPoint(x: x, y: dotY), endPoint: CGPoint(x: x, y: end)),
                         lineWidth: 1.5)
                 }
             }
@@ -435,11 +462,20 @@ struct TreeDetailCard: View {
             }
             .padding(13)
             .frame(width: 380, alignment: .leading)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13))
+            .background(
+                RoundedRectangle(cornerRadius: 13)
+                    .fill(Theme.panel)
+                    .overlay(                       // one soft top highlight = "lifted", not blurred
+                        RoundedRectangle(cornerRadius: 13).fill(
+                            LinearGradient(colors: [Color.white.opacity(0.055), .clear],
+                                           startPoint: .top, endPoint: .bottom))
+                    )
+            )
             .overlay(RoundedRectangle(cornerRadius: 13)
-                .stroke(pinned ? Theme.accent.opacity(0.5) : Color.white.opacity(0.12), lineWidth: 1))
-            .shadow(color: .black.opacity(0.45), radius: 22, y: 10)
-            // A hover preview must not eat clicks meant for the tree; a pinned card is scrollable.
+                .stroke(pinned ? Theme.accent.opacity(0.55) : Theme.stroke, lineWidth: 1))
+            .shadow(color: .black.opacity(0.55), radius: 26, y: 12)
+            // A hover preview must not eat clicks meant for the tree; a pinned card is interactive
+            // so its text can be selected and scrolled.
             .allowsHitTesting(pinned)
             .transition(.opacity.combined(with: .move(edge: .trailing)))
         }
@@ -447,22 +483,12 @@ struct TreeDetailCard: View {
 
     private func header(_ turn: TreeTurn) -> some View {
         HStack(spacing: 6) {
-            Text(pinned ? "完整对话" : "预览")
-                .font(.system(size: 9, weight: .bold)).foregroundColor(Theme.accent)
-                .padding(.horizontal, 6).padding(.vertical, 1)
-                .background(Theme.accent.opacity(0.15)).clipShape(Capsule())
             if turn.nativeSessionId != nil {
                 Image(systemName: "bolt.fill").font(.system(size: 8)).foregroundColor(Theme.green)
                     .help("已有会话的 leaf 正好在此 — fork 无需写文件")
             }
-            Spacer()
             Text(absoluteTime(turn.ts)).font(.system(size: 9.5)).foregroundColor(Theme.subtext)
-            if pinned {
-                Button { model.selected = nil } label: {
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
-                        .foregroundColor(Theme.subtext)
-                }.buttonStyle(.plain).help("收起")
-            }
+            Spacer()
         }
     }
 

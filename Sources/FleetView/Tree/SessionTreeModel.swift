@@ -13,7 +13,11 @@ final class SessionTreeModel: ObservableObject {
     /// Vertical center of the hovered/selected row in "fleet" space, so the floating detail card
     /// can line up with the row it describes.
     @Published var focusY: CGFloat?
-    @Published var query = ""
+    @Published var query = "" { didSet { applyRows() } }
+    /// Include assistant replies in the search, not just prompts.
+    @Published var searchAnswers = true { didSet { applyRows() } }
+    /// Newest turn first — the end of the conversation is what you came to look at.
+    @Published var newestFirst = true { didSet { applyRows() } }
 
     /// nodeUuid → chips for terminals whose current session leaf sits on that node.
     @Published private(set) var chips: [String: [(name: String, status: TermStatus)]] = [:]
@@ -34,11 +38,13 @@ final class SessionTreeModel: ObservableObject {
         return nil
     }
 
+    var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+
     func matches(_ node: TreeTurn) -> Bool {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return true }
-        return node.text.localizedCaseInsensitiveContains(q)
-            || node.answer.localizedCaseInsensitiveContains(q)
+        if node.text.localizedCaseInsensitiveContains(q) { return true }
+        return searchAnswers && node.answer.localizedCaseInsensitiveContains(q)
     }
 
     // MARK: - Lifecycle
@@ -104,7 +110,14 @@ final class SessionTreeModel: ObservableObject {
     private func applyRows() {
         var r = tree.rows
         for f in expandedFolds { r = SessionTreeBuilder.expandFold(r, foldId: f, tree: tree) }
-        rows = r
+        if searching {
+            // Show ONLY hits — a dimmed haystack is still a haystack. Folds carry no text, so drop them.
+            r = r.filter { row in
+                guard let u = row.nodeUuid, let n = tree.nodes[u] else { return false }
+                return matches(n)
+            }
+        }
+        rows = newestFirst ? r.reversed() : r
     }
 
     private func applyChips() {

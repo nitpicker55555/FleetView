@@ -28,12 +28,40 @@ struct DashboardView: View {
         .animation(.easeOut(duration: 0.22), value: state.treePanelTerminalId != nil)
         .background(Theme.bg)
         .frame(minWidth: 960, minHeight: 580)
+        .overlay { treeInspector }     // interactive: text selection + scrolling
         .overlay { dragOverlay }
         .coordinateSpace(name: "fleet")
         .onPreferenceChange(BoardFrameKey.self) { state.boardFrame = $0 }
         .onPreferenceChange(CardFramesKey.self) { state.cardFrames = $0 }
         .sheet(item: $state.nameSheet) { req in
             NameSheet(request: req).environmentObject(state)
+        }
+    }
+
+    /// The floating node inspector, plus a click-catcher so a click anywhere outside it dismisses
+    /// the pinned card (the card carries no close button).
+    @ViewBuilder private var treeInspector: some View {
+        if state.treePanelTerminalId != nil, state.treeDrag == nil,
+           state.treeModel.detailNode != nil, state.boardFrame != .zero {
+            let pinned = state.treeModel.selected != nil
+            let cardW: CGFloat = 380, cardH: CGFloat = pinned ? 470 : 190
+            ZStack {
+                if pinned {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .frame(width: state.boardFrame.width, height: state.boardFrame.height)
+                        .position(x: state.boardFrame.midX, y: state.boardFrame.midY)
+                        .onTapGesture { state.treeModel.selected = nil }
+                }
+                TreeDetailCard(model: state.treeModel)
+                    .position(x: max(state.boardFrame.minX + cardW / 2 + 8,
+                                     state.boardFrame.maxX - cardW / 2 - 14),
+                              y: min(max(state.treeModel.focusY ?? state.boardFrame.midY,
+                                         state.boardFrame.minY + cardH / 2 + 8),
+                                     state.boardFrame.maxY - cardH / 2 - 8))
+                    .animation(.easeOut(duration: 0.14), value: state.treeModel.focusY)
+                    .animation(.easeOut(duration: 0.16), value: pinned)
+            }
         }
     }
 
@@ -46,18 +74,6 @@ struct DashboardView: View {
                     DragPreviewChip(name: t.name, status: t.status)
                         .position(x: state.dragLocation.x, y: state.dragLocation.y - 16)
                 }
-            }
-            if state.treePanelTerminalId != nil, state.treeDrag == nil,
-               state.treeModel.detailNode != nil, state.boardFrame != .zero {
-                let cardW: CGFloat = 380, cardH: CGFloat = state.treeModel.selected != nil ? 470 : 190
-                TreeDetailCard(model: state.treeModel)
-                    .position(x: max(state.boardFrame.minX + cardW / 2 + 8,
-                                     state.boardFrame.maxX - cardW / 2 - 14),
-                              y: min(max(state.treeModel.focusY ?? state.boardFrame.midY,
-                                         state.boardFrame.minY + cardH / 2 + 8),
-                                     state.boardFrame.maxY - cardH / 2 - 8))
-                    .animation(.easeOut(duration: 0.14), value: state.treeModel.focusY)
-                    .animation(.easeOut(duration: 0.16), value: state.treeModel.selected)
             }
             if let d = state.treeDrag {
                 // Board glow: release here → fork-open the node standalone.
