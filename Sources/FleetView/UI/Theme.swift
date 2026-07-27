@@ -29,6 +29,20 @@ enum Theme {
         }
     }
 
+    // Session-tree branch lanes: the active path is always `accent`; each side branch takes the
+    // next palette colour so parallel attempts stay visually distinct (muted, never louder than
+    // the active lane).
+    static let lanePalette: [Color] = [
+        Color(red: 0.40, green: 0.80, blue: 0.85),   // teal
+        Color(red: 0.90, green: 0.58, blue: 0.35),   // orange
+        Color(red: 0.71, green: 0.56, blue: 0.90),   // purple
+        Color(red: 0.36, green: 0.82, blue: 0.55),   // green
+        Color(red: 0.98, green: 0.72, blue: 0.32),   // amber
+    ]
+    static func laneColor(_ index: Int) -> Color {
+        index < 0 ? accent : lanePalette[index % lanePalette.count]
+    }
+
     static func statusColor(_ s: TermStatus) -> Color {
         switch s {
         case .working:  return Color(red: 0.36, green: 0.82, blue: 0.55)   // green

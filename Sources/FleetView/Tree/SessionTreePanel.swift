@@ -1,0 +1,550 @@
+import SwiftUI
+import AppKit
+
+/// The right-hand "会话树" panel: a GitUp-style vertical lane graph of one Claude session's
+/// prompt tree — active branch in accent, each side branch in its own palette colour, current
+/// leaf pulsing. Rows drag onto the fleet board to fork-open that node in a new terminal.
+struct SessionTreePanel: View {
+    @EnvironmentObject var state: AppState
+    @ObservedObject var model: SessionTreeModel
+
+    @State private var copiedSid = false
+    @FocusState private var searchFocused: Bool
+
+    private var boundTerminal: TerminalSession? {
+        state.terminals.first { $0.id == state.treePanelTerminalId }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(Theme.stroke)
+            if let reason = model.emptyReason {
+                emptyState(reason)
+            } else if model.loading && model.rows.isEmpty {
+                loadingState
+            } else {
+                searchField
+                treeList
+                Divider().overlay(Theme.stroke)
+                DetailPane(model: model)
+            }
+        }
+        .background(Theme.panel)
+        .onExitCommand { state.closeSessionTree() }              // Esc closes the panel
+        .background {                                            // ⌘F focus search · ⌘↓ jump to leaf
+            Button("") { searchFocused = true }
+                .keyboardShortcut("f", modifiers: .command).hidden()
+            Button("") { jumpToLeaf.toggle() }
+                .keyboardShortcut(.downArrow, modifiers: .command).hidden()
+        }
+    }
+
+    /// Toggled by ⌘↓ — observed by the scroll reader to jump back to the current leaf.
+    @State private var jumpToLeaf = false
+
+    // MARK: Header
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 13, weight: .bold)).foregroundColor(Theme.accent)
+                Text("会话树").font(.system(size: 14, weight: .semibold)).foregroundColor(Theme.text)
+                if let sid = model.boundSessionId {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(sid, forType: .string)
+                        withAnimation(.easeOut(duration: 0.12)) { copiedSid = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            withAnimation { copiedSid = false }
+                        }
+                    } label: {
+                        Text(copiedSid ? "copied" : String(sid.prefix(8)))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(copiedSid ? Theme.green : Theme.subtext)
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain).help("复制会话 id")
+                }
+                Spacer()
+                Button { state.closeSessionTree() } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Theme.subtext)
+                }
+                .buttonStyle(.plain).help("关闭 (Esc)")
+            }
+            if model.emptyReason == nil {
+                HStack(spacing: 6) {
+                    ForEach(attachedChips, id: \.name) { chip in
+                        HStack(spacing: 4) {
+                            Circle().fill(Theme.statusColor(chip.status)).frame(width: 6, height: 6)
+                            Text(chip.name).font(.system(size: 9.5, weight: .semibold))
+                                .foregroundColor(Theme.text).lineLimit(1)
+                        }
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Theme.card).clipShape(Capsule())
+                    }
+                    Text("⑂ \(model.tree.branchPoints) · \(model.tree.nodeCount) 节点")
+                        .font(.system(size: 10)).foregroundColor(Theme.subtext)
+                    Spacer()
+                    if model.loading { ProgressView().controlSize(.small) }
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+    }
+
+    /// Terminals attached to any session in this tree (deduped by name for the header).
+    private var attachedChips: [(name: String, status: TermStatus)] {
+        var seen = Set<String>(), out: [(String, TermStatus)] = []
+        for list in model.chips.values {
+            for c in list where !seen.contains(c.name) {
+                seen.insert(c.name); out.append(c)
+            }
+        }
+        return out.sorted { $0.0 < $1.0 }
+    }
+
+    // MARK: Search
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 10))
+                .foregroundColor(Theme.subtext.opacity(0.8))
+            TextField("搜索 prompt 与回复", text: $model.query)
+                .textFieldStyle(.plain).font(.system(size: 12)).foregroundColor(Theme.text)
+                .focused($searchFocused)
+                .onExitCommand { model.query = "" }
+            if !model.query.isEmpty {
+                Button { model.query = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+                        .foregroundColor(Theme.subtext.opacity(0.7))
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 9).padding(.vertical, 6)
+        .background(Theme.card.opacity(searchFocused ? 0.95 : 0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7)
+            .stroke(searchFocused ? Theme.accent.opacity(0.5) : Theme.stroke, lineWidth: 1))
+        .padding(.horizontal, 12).padding(.vertical, 8)
+    }
+
+    // MARK: Tree
+
+    private var treeList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(model.rows) { row in
+                        TreeRowView(row: row, model: model)
+                            .environmentObject(state)
+                            .id(row.id)
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+            .onChange(of: model.tree.activeLeafNode) { _, leaf in
+                if let leaf { withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(leaf, anchor: .bottom) } }
+            }
+            .onChange(of: jumpToLeaf) { _, _ in
+                if let leaf = model.tree.activeLeafNode {
+                    withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(leaf, anchor: .bottom) }
+                }
+            }
+            .onAppear {
+                if let leaf = model.tree.activeLeafNode { proxy.scrollTo(leaf, anchor: .bottom) }
+            }
+        }
+    }
+
+    // MARK: States
+
+    private func emptyState(_ reason: String) -> some View {
+        VStack(spacing: 10) {
+            Spacer()
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 28, weight: .light)).foregroundColor(Theme.subtext.opacity(0.5))
+            Text(reason).font(.system(size: 12)).foregroundColor(Theme.subtext)
+                .multilineTextAlignment(.center).padding(.horizontal, 24)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var loadingState: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            ProgressView().controlSize(.regular)
+            Text("正在解析会话树…").font(.system(size: 12)).foregroundColor(Theme.subtext)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - One row
+
+struct TreeRowView: View {
+    @EnvironmentObject var state: AppState
+    let row: TreeRow
+    @ObservedObject var model: SessionTreeModel
+    @State private var hover = false
+
+    private var node: TreeTurn? { row.nodeUuid.flatMap { model.tree.nodes[$0] } }
+    private var isSelected: Bool { row.nodeUuid != nil && model.selected == row.nodeUuid }
+    private var dimmedBySearch: Bool {
+        guard let n = node else { return false }
+        return !model.matches(n)
+    }
+
+    var body: some View {
+        switch row.kind {
+        case .fold(let id, let hidden):
+            foldRow(id: id, count: hidden.count)
+        case .node:
+            nodeRow
+        }
+    }
+
+    private func foldRow(id: String, count: Int) -> some View {
+        HStack(spacing: 0) {
+            TreeRailView(row: row, rowHeight: 32, hasChips: false)
+                .frame(width: TreeLane.railWidth, height: 32)
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) { model.expandFold(id) }
+            } label: {
+                Text("⋯ \(count) turns")
+                    .font(.system(size: 10.5)).foregroundColor(Theme.subtext)
+                    .padding(.horizontal, 11).padding(.vertical, 3)
+                    .background(Theme.card).clipShape(Capsule())
+                    .overlay(Capsule().stroke(Theme.stroke, lineWidth: 1))
+            }
+            .buttonStyle(.plain).help("展开被折叠的 \(count) 个节点")
+            Spacer(minLength: 0)
+        }
+        .frame(height: 32)
+    }
+
+    private var nodeRow: some View {
+        let chips = row.nodeUuid.flatMap { model.chips[$0] } ?? []
+        let rowHeight: CGFloat = chips.isEmpty ? 54 : 70
+        return HStack(alignment: .top, spacing: 0) {
+            TreeRailView(row: row, rowHeight: rowHeight, hasChips: !chips.isEmpty)
+                .frame(width: TreeLane.railWidth, height: rowHeight)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if row.branchChildCount > 0 {
+                        Text("⑂ \(row.branchChildCount + 1)")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(Theme.accent)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Theme.accent.opacity(0.14)).clipShape(Capsule())
+                    }
+                    Text(promptLine)
+                        .font(.system(size: 12.5, weight: row.onActivePath ? .medium : .regular))
+                        .foregroundColor(Theme.text)
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    Text(relativeTime)
+                        .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.8))
+                        .layoutPriority(1)
+                }
+                if let answer = node?.answer, !answer.isEmpty {
+                    Text("↳ " + answer.replacingOccurrences(of: "\n", with: " "))
+                        .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.75))
+                        .lineLimit(1)
+                }
+                if !chips.isEmpty {
+                    HStack(spacing: 5) {
+                        ForEach(chips, id: \.name) { chip in
+                            HStack(spacing: 4) {
+                                Circle().fill(Theme.statusColor(chip.status)).frame(width: 6, height: 6)
+                                Text("\(chip.name) 停在这里").font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundColor(Theme.text)
+                            }
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(Theme.card).clipShape(Capsule())
+                            .overlay(Capsule().stroke(Theme.stroke, lineWidth: 1))
+                        }
+                    }
+                }
+            }
+            .padding(.trailing, 12).padding(.vertical, 8)
+            .opacity(row.onActivePath ? 1 : 0.62)
+        }
+        .frame(minHeight: rowHeight)
+        .background(isSelected ? Theme.card : (hover ? Theme.cardHover.opacity(0.55) : Color.clear))
+        .overlay(alignment: .leading) {
+            if isSelected { Rectangle().fill(Theme.accent).frame(width: 2) }
+        }
+        .contentShape(Rectangle())
+        .opacity(dimmedBySearch ? 0.32 : 1)
+        .onHover { h in
+            hover = h
+            if h { model.hovered = row.nodeUuid } else if model.hovered == row.nodeUuid { model.hovered = nil }
+        }
+        .onTapGesture {
+            model.selected = (model.selected == row.nodeUuid) ? nil : row.nodeUuid
+        }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 6, coordinateSpace: .named("fleet"))
+                .onChanged { v in
+                    guard let u = row.nodeUuid, let n = node else { return }
+                    state.treeDragChanged(nodeUuid: u, nativeSid: n.nativeSessionId,
+                                          prompt: n.text, location: v.location)
+                }
+                .onEnded { v in state.treeDragEnded(at: v.location) }
+        )
+        .help(node?.text ?? "")
+    }
+
+    private var promptLine: String {
+        (node?.text ?? "").replacingOccurrences(of: "\n", with: " ")
+    }
+
+    private var relativeTime: String {
+        guard let ts = node?.ts, let d = TreeTime.parse(ts) else { return "" }
+        return RelativeTime.short(d) ?? ""
+    }
+}
+
+// MARK: - Rail (lanes, curves, dots)
+
+struct TreeRailView: View {
+    let row: TreeRow
+    let rowHeight: CGFloat
+    let hasChips: Bool
+
+    /// Dot sits at the vertical center of the text block (not of a chip-tall row).
+    private var dotY: CGFloat { hasChips ? 27 : rowHeight / 2 }
+
+    var body: some View {
+        Canvas { ctx, size in
+            let mainX = TreeLane.x(0)
+            // Pass-through ancestor lanes.
+            for lane in row.passLanes {
+                var p = Path()
+                p.move(to: CGPoint(x: TreeLane.x(lane.depth), y: 0))
+                p.addLine(to: CGPoint(x: TreeLane.x(lane.depth), y: size.height))
+                ctx.stroke(p, with: .color(laneColor(lane.colorIndex).opacity(0.45)), lineWidth: 1.5)
+            }
+            // Main accent lane.
+            if row.laneDepth == 0 {
+                var p = Path()
+                p.move(to: CGPoint(x: mainX, y: row.mainStartsHere ? dotY : 0))
+                p.addLine(to: CGPoint(x: mainX, y: row.mainEndsHere ? dotY : size.height))
+                ctx.stroke(p, with: .color(Theme.accent), lineWidth: 2)
+            } else if row.mainLanePasses {
+                var p = Path()
+                p.move(to: CGPoint(x: mainX, y: 0))
+                p.addLine(to: CGPoint(x: mainX, y: size.height))
+                ctx.stroke(p, with: .color(Theme.accent), lineWidth: 2)
+            }
+            // Side lane: connect curve on the branch's first row, then its own vertical.
+            if row.laneDepth > 0 {
+                let x = TreeLane.x(row.laneDepth)
+                let color = laneColor(row.colorIndex)
+                if row.isBranchFirst {
+                    var c = Path()
+                    c.move(to: CGPoint(x: TreeLane.x(row.laneDepth - 1), y: 0))
+                    c.addQuadCurve(to: CGPoint(x: x, y: dotY), control: CGPoint(x: x, y: 0))
+                    ctx.stroke(c, with: .color(color.opacity(0.7)), lineWidth: 1.5)
+                } else {
+                    var p = Path()
+                    p.move(to: CGPoint(x: x, y: 0))
+                    p.addLine(to: CGPoint(x: x, y: dotY))
+                    ctx.stroke(p, with: .color(color.opacity(0.7)), lineWidth: 1.5)
+                }
+                if !row.isBranchLast {
+                    var p = Path()
+                    p.move(to: CGPoint(x: x, y: dotY))
+                    p.addLine(to: CGPoint(x: x, y: size.height))
+                    ctx.stroke(p, with: .color(color.opacity(0.7)), lineWidth: 1.5)
+                } else {
+                    // dead end — short fade below the dot
+                    var p = Path()
+                    p.move(to: CGPoint(x: x, y: dotY))
+                    p.addLine(to: CGPoint(x: x, y: min(dotY + 12, size.height)))
+                    ctx.stroke(p, with: .linearGradient(
+                        Gradient(colors: [color.opacity(0.6), .clear]),
+                        startPoint: CGPoint(x: x, y: dotY), endPoint: CGPoint(x: x, y: dotY + 12)),
+                        lineWidth: 1.5)
+                }
+            }
+            // The dot (only node rows draw one).
+            if case .node = row.kind {
+                let x = TreeLane.x(row.laneDepth)
+                let color = row.laneDepth == 0 ? Theme.accent : laneColor(row.colorIndex)
+                if row.laneDepth == 0 {
+                    let r: CGFloat = row.isCurrentLeaf ? 5.5 : 4.5
+                    ctx.fill(Path(ellipseIn: CGRect(x: x - r, y: dotY - r, width: r * 2, height: r * 2)),
+                             with: .color(color))
+                } else {
+                    let r: CGFloat = 4
+                    let rect = CGRect(x: x - r, y: dotY - r, width: r * 2, height: r * 2)
+                    ctx.fill(Path(ellipseIn: rect), with: .color(Theme.panel))
+                    ctx.stroke(Path(ellipseIn: rect), with: .color(color.opacity(0.9)), lineWidth: 2)
+                }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if row.isCurrentLeaf { LeafPulse().offset(x: TreeLane.x(0) - 9, y: dotY - 9) }
+        }
+    }
+
+    private func laneColor(_ idx: Int) -> Color { Theme.laneColor(idx) }
+}
+
+/// The current-leaf pulse ring (same animation language as StatusDot).
+struct LeafPulse: View {
+    @State private var pulse = false
+    var body: some View {
+        Circle()
+            .stroke(Theme.accent.opacity(0.5), lineWidth: 2)
+            .frame(width: 18, height: 18)
+            .scaleEffect(pulse ? 1.15 : 0.5)
+            .opacity(pulse ? 0 : 0.8)
+            .onAppear {
+                withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) { pulse = true }
+            }
+            .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Detail pane
+
+struct DetailPane: View {
+    @EnvironmentObject var state: AppState
+    @ObservedObject var model: SessionTreeModel
+    @State private var copiedPrompt = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let node = model.detailNode {
+                HStack(spacing: 6) {
+                    Text(model.selected != nil ? "节点详情 · 已钉住" : "节点详情")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundColor(Theme.subtext).textCase(.uppercase).kerning(0.5)
+                    Spacer()
+                    if node.nativeSessionId != nil {
+                        Label("native", systemImage: "bolt.fill")
+                            .font(.system(size: 9, weight: .semibold)).foregroundColor(Theme.green)
+                            .help("已有会话的 leaf 正好在此 — fork 无需写文件")
+                    }
+                    Text(absoluteTime(node.ts)).font(.system(size: 9.5)).foregroundColor(Theme.subtext)
+                }
+                ScrollView {
+                    Text(node.text)
+                        .font(.system(size: 12)).foregroundColor(Theme.text)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 96)
+                if !node.answer.isEmpty {
+                    ScrollView {
+                        Text(node.answer)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundColor(Theme.subtext)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 84)
+                    .padding(8).background(Theme.bg)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                HStack(spacing: 8) {
+                    Button {
+                        state.forkOpenNode(nodeUuid: node.uuid, nativeSid: node.nativeSessionId,
+                                           prompt: node.text, joinClusterOf: nil)
+                    } label: {
+                        Label("以此节点开新终端", systemImage: "arrow.triangle.branch")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 7))
+                    }
+                    .buttonStyle(.plain)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(node.text, forType: .string)
+                        withAnimation(.easeOut(duration: 0.12)) { copiedPrompt = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            withAnimation { copiedPrompt = false }
+                        }
+                    } label: {
+                        Text(copiedPrompt ? "已复制" : "复制 prompt")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundColor(copiedPrompt ? Theme.green : Theme.text)
+                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 7))
+                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.stroke, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+            } else {
+                Text("悬停或点击一个节点查看上下文")
+                    .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.6))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 18)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Theme.panel)
+    }
+
+    private func absoluteTime(_ ts: String) -> String {
+        guard let d = TreeTime.parse(ts) else { return "" }
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f.string(from: d)
+    }
+}
+
+// MARK: - Time parsing
+
+enum TreeTime {
+    private static let isoFrac: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let iso = ISO8601DateFormatter()
+
+    static func parse(_ s: String) -> Date? {
+        guard !s.isEmpty else { return nil }
+        return isoFrac.date(from: s) ?? iso.date(from: s)
+    }
+}
+
+/// Drag handle on the panel's left edge (mirror of SidebarDivider).
+struct TreePanelDivider: View {
+    @EnvironmentObject var state: AppState
+    @State private var startWidth: Double?
+    @State private var hovering = false
+
+    var body: some View {
+        Rectangle()
+            .fill(hovering ? Theme.accent.opacity(0.6) : Theme.stroke)
+            .frame(width: hovering ? 2 : 1)
+            .overlay(
+                Rectangle().fill(Color.clear).frame(width: 10).contentShape(Rectangle())
+                    .onHover { h in
+                        hovering = h
+                        if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { v in
+                                if startWidth == nil { startWidth = state.treePanelWidth }
+                                let base = startWidth ?? state.treePanelWidth
+                                state.treePanelWidth = min(720, max(380, base - v.translation.width))
+                            }
+                            .onEnded { _ in startWidth = nil; state.save() }
+                    )
+            )
+    }
+}

@@ -14,6 +14,7 @@ struct TerminalCardView: View {
     private var cluster: Cluster? { state.cluster(terminal.clusterId) }
     private var done: Bool { terminal.subtaskDone }
     private var highlighted: Bool { state.highlightedTerminalId == terminal.id }
+    private var treeDropTarget: Bool { state.treeDropCardId == terminal.id }
     private var cardStroke: Color {
         if done { return Theme.doneStroke.opacity(0.55) }
         if terminal.agentKind != .unknown { return Theme.agentColor(terminal.agentKind).opacity(0.5) }
@@ -33,8 +34,13 @@ struct TerminalCardView: View {
         .overlay(RoundedRectangle(cornerRadius: 12)
             .stroke(cardStroke, lineWidth: done ? 1.5 : 1))
         .overlay(RoundedRectangle(cornerRadius: 12)
-            .stroke(highlighted ? Theme.accent : Color.clear, lineWidth: 2))
-        .shadow(color: highlighted ? Theme.accent.opacity(0.45) : .clear, radius: highlighted ? 9 : 0)
+            .stroke(highlighted || treeDropTarget ? Theme.accent : Color.clear, lineWidth: 2))
+        .shadow(color: (highlighted || treeDropTarget) ? Theme.accent.opacity(0.45) : .clear,
+                radius: (highlighted || treeDropTarget) ? 9 : 0)
+        .background(GeometryReader { g in            // tree-drag drop target ("join this cluster")
+            Color.clear.preference(key: CardFramesKey.self,
+                                   value: [terminal.id: g.frame(in: .named("fleet"))])
+        })
         .onHover { hovering = $0 }
         .contentShape(Rectangle())
         .onTapGesture { if !renaming { state.raiseTerminal(terminal.id) } }
@@ -53,7 +59,9 @@ struct TerminalCardView: View {
         .animation(.easeOut(duration: 0.2), value: highlighted)
         .contextMenu {
             Button("Rename…") { renaming = true }
-            Button("Duplicate (cluster)") { state.duplicateTerminal(terminal.id) }
+            Button("Show Session Tree") { state.openSessionTree(terminal.id) }
+            Button("Duplicate (fork session)") { state.duplicateTerminal(terminal.id) }
+            Button("Duplicate blank") { state.duplicateTerminal(terminal.id, blank: true) }
             Button(done ? "Mark Not Done" : "Mark Done") { state.toggleSubtaskDone(terminal.id) }
             if terminal.clusterId != nil {
                 Button("Remove from Cluster") { state.removeFromCluster(terminal.id) }
@@ -150,13 +158,20 @@ struct TerminalCardView: View {
             } else {
                 iconButton("play.circle", help: "Reopen terminal") { state.reopenTerminal(terminal.id) }
             }
-            iconButton("plus.square.on.square", help: "Duplicate (cluster)") { state.duplicateTerminal(terminal.id) }
+            iconButton("plus.square.on.square", help: "Duplicate (fork session)") { state.duplicateTerminal(terminal.id) }
+            iconButton("arrow.triangle.branch", active: state.treePanelTerminalId == terminal.id,
+                       help: "会话树 — 查看/fork 任意历史节点") {
+                if state.treePanelTerminalId == terminal.id { state.closeSessionTree() }
+                else { state.openSessionTree(terminal.id) }
+            }
             iconButton("globe", active: showRemote, help: "Open on another device (web)") {
                 showRemote.toggle()
             }
             .popover(isPresented: $showRemote, arrowEdge: .bottom) { remotePopover }
             Menu {
                 Button("Rename…") { state.requestRename(terminal.id) }
+                Button("Show Session Tree") { state.openSessionTree(terminal.id) }
+                Button("Duplicate blank") { state.duplicateTerminal(terminal.id, blank: true) }
                 if terminal.clusterId != nil {
                     Button("Remove from Cluster") { state.removeFromCluster(terminal.id) }
                 }

@@ -13,12 +13,25 @@ struct DashboardView: View {
                 TopBar()
                 Divider().overlay(Theme.stroke)
                 MainArea()
+                    .background(GeometryReader { g in     // the tree-drag drop area ("fleet" space)
+                        Color.clear.preference(key: BoardFrameKey.self,
+                                               value: g.frame(in: .named("fleet")))
+                    })
+            }
+            if state.treePanelTerminalId != nil {
+                TreePanelDivider()
+                SessionTreePanel(model: state.treeModel)
+                    .frame(width: state.treePanelWidth)
+                    .transition(.move(edge: .trailing))
             }
         }
+        .animation(.easeOut(duration: 0.22), value: state.treePanelTerminalId != nil)
         .background(Theme.bg)
         .frame(minWidth: 960, minHeight: 580)
         .overlay { dragOverlay }
         .coordinateSpace(name: "fleet")
+        .onPreferenceChange(BoardFrameKey.self) { state.boardFrame = $0 }
+        .onPreferenceChange(CardFramesKey.self) { state.cardFrames = $0 }
         .sheet(item: $state.nameSheet) { req in
             NameSheet(request: req).environmentObject(state)
         }
@@ -34,9 +47,32 @@ struct DashboardView: View {
                         .position(x: state.dragLocation.x, y: state.dragLocation.y - 16)
                 }
             }
+            if let d = state.treeDrag {
+                // Board glow: release here → fork-open the node standalone.
+                if state.treeBoardHot {
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Theme.accent, lineWidth: 2)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.accent.opacity(0.045)))
+                        .frame(width: max(0, state.boardFrame.width - 14),
+                               height: max(0, state.boardFrame.height - 14))
+                        .position(x: state.boardFrame.midX, y: state.boardFrame.midY)
+                }
+                Text(state.treeDropCardId != nil ? "松开：开新终端并加入该 cluster"
+                     : (state.treeBoardHot ? "松开：以此节点开新终端" : "拖到 fleet 面板打开这个节点"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.accent)
+                    .padding(.horizontal, 13).padding(.vertical, 6)
+                    .background(Theme.panel.opacity(0.95))
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(Theme.accent.opacity(0.45), lineWidth: 1))
+                    .position(x: state.boardFrame.midX, y: state.boardFrame.minY + 30)
+                TreeDragChip(prompt: d.prompt)
+                    .position(x: d.location.x, y: d.location.y - 20)
+            }
         }
         .allowsHitTesting(false)   // purely visual; the drag is driven by the card gesture
         .animation(.easeOut(duration: 0.16), value: state.draggingTerminalId)
+        .animation(.easeOut(duration: 0.12), value: state.treeBoardHot)
         .onPreferenceChange(ZoneFrameKey.self) { state.setZoneFrames($0) }
     }
 
@@ -593,5 +629,43 @@ struct EmptyState: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
+    }
+}
+
+// MARK: - Session-tree drag plumbing
+
+/// The fleet board's frame in the "fleet" space — the standalone drop target for tree nodes.
+struct BoardFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let n = nextValue()
+        if n != .zero { value = n }
+    }
+}
+
+/// Every terminal card's frame — same-project cards double as "join this cluster" drop targets.
+struct CardFramesKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+/// The floating chip that follows the cursor while dragging a tree node.
+struct TreeDragChip: View {
+    let prompt: String
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 11, weight: .bold)).foregroundColor(Theme.accent)
+            Text(prompt.replacingOccurrences(of: "\n", with: " ").prefix(24))
+                .font(.system(size: 12.5, weight: .semibold)).foregroundColor(Theme.text)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .background(Theme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.accent, lineWidth: 1))
+        .shadow(color: .black.opacity(0.5), radius: 12, y: 6)
     }
 }
