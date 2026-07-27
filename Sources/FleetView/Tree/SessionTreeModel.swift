@@ -40,6 +40,29 @@ final class SessionTreeModel: ObservableObject {
 
     var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
+    /// Where a turn matched — the row shows this, so a hit inside a long reply doesn't look like
+    /// a prompt match you can't find.
+    func hits(_ node: TreeTurn) -> (prompt: Bool, answer: Bool) {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return (false, false) }
+        return (node.text.localizedCaseInsensitiveContains(q),
+                searchAnswers && node.answer.localizedCaseInsensitiveContains(q))
+    }
+
+    /// The slice of a reply around the match, so the hit is actually visible on the row.
+    func answerSnippet(_ node: TreeTurn) -> String {
+        let flat = node.answer.replacingOccurrences(of: "\n", with: " ")
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty, let r = flat.range(of: q, options: .caseInsensitive) else {
+            return flat
+        }
+        let lead = 24
+        let start = flat.index(r.lowerBound, offsetBy: -lead,
+                               limitedBy: flat.startIndex) ?? flat.startIndex
+        let clipped = String(flat[start...])
+        return (start > flat.startIndex ? "…" : "") + clipped
+    }
+
     func matches(_ node: TreeTurn) -> Bool {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return true }

@@ -256,6 +256,11 @@ struct TreeRowView: View {
                 .frame(width: TreeLane.railWidth, height: rowHeight)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if model.searching, let n = node {
+                        let h = model.hits(n)
+                        if h.prompt { hitBadge("prompt", Theme.accent) }
+                        if h.answer { hitBadge("回复", Theme.lanePalette[0]) }
+                    }
                     if row.branchChildCount > 0 {
                         Text("⑂ \(row.branchChildCount + 1)")
                             .font(.system(size: 9, weight: .bold))
@@ -272,9 +277,13 @@ struct TreeRowView: View {
                         .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.8))
                         .layoutPriority(1)
                 }
-                if let answer = node?.answer, !answer.isEmpty {
-                    Text("↳ " + answer.replacingOccurrences(of: "\n", with: " "))
-                        .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.75))
+                if let n = node, !n.answer.isEmpty {
+                    let answerHit = model.searching && model.hits(n).answer
+                    Text("↳ " + (answerHit ? model.answerSnippet(n)
+                                           : n.answer.replacingOccurrences(of: "\n", with: " ")))
+                        .font(.system(size: 11))
+                        .foregroundColor(answerHit ? Theme.lanePalette[0].opacity(0.95)
+                                                   : Theme.subtext.opacity(0.75))
                         .lineLimit(1)
                 }
                 if !chips.isEmpty {
@@ -323,6 +332,13 @@ struct TreeRowView: View {
                 .onEnded { v in state.treeDragEnded(at: v.location) }
         )
         .help(node?.text ?? "")
+    }
+
+    private func hitBadge(_ label: String, _ color: Color) -> some View {
+        Text(label)
+            .font(.system(size: 8.5, weight: .bold)).foregroundColor(color)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(color.opacity(0.15)).clipShape(Capsule())
     }
 
     private var promptLine: String {
@@ -451,27 +467,31 @@ struct TreeInspector: View {
     @ObservedObject var model: SessionTreeModel
     let boardFrame: CGRect
     let dragging: Bool
+    var onClosePanel: () -> Void
 
     var body: some View {
-        if !dragging, model.detailNode != nil, boardFrame != .zero {
+        if !dragging, boardFrame != .zero {
             let pinned = model.selected != nil
             let cardW: CGFloat = 380
             let cardH: CGFloat = pinned ? 470 : 190
             ZStack {
-                if pinned {
-                    // Everything left of the tree panel dismisses on click. The panel itself stays
-                    // live so clicking another turn switches to it instead of just closing.
-                    Color.black.opacity(0.001)
-                        .frame(width: boardFrame.maxX, height: boardFrame.maxY)
-                        .position(x: boardFrame.maxX / 2, y: boardFrame.maxY / 2)
-                        .onTapGesture { model.selected = nil }
+                // Everything left of the tree panel dismisses, one layer at a time: the expanded
+                // card first, then the panel itself. The panel stays live throughout, so clicking
+                // another turn switches to it rather than counting as an outside click.
+                Color.black.opacity(0.001)
+                    .frame(width: boardFrame.maxX, height: boardFrame.maxY)
+                    .position(x: boardFrame.maxX / 2, y: boardFrame.maxY / 2)
+                    .onTapGesture {
+                        if model.selected != nil { model.selected = nil } else { onClosePanel() }
+                    }
+                if model.detailNode != nil {
+                    TreeDetailCard(model: model)
+                        .position(x: max(boardFrame.minX + cardW / 2 + 8, boardFrame.maxX - cardW / 2 - 14),
+                                  y: min(max(model.focusY ?? boardFrame.midY, boardFrame.minY + cardH / 2 + 8),
+                                         boardFrame.maxY - cardH / 2 - 8))
+                        .animation(.easeOut(duration: 0.14), value: model.focusY)
+                        .animation(.easeOut(duration: 0.16), value: pinned)
                 }
-                TreeDetailCard(model: model)
-                    .position(x: max(boardFrame.minX + cardW / 2 + 8, boardFrame.maxX - cardW / 2 - 14),
-                              y: min(max(model.focusY ?? boardFrame.midY, boardFrame.minY + cardH / 2 + 8),
-                                     boardFrame.maxY - cardH / 2 - 8))
-                    .animation(.easeOut(duration: 0.14), value: model.focusY)
-                    .animation(.easeOut(duration: 0.16), value: pinned)
             }
         }
     }
