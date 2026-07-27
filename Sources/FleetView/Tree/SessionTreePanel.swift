@@ -9,7 +9,36 @@ struct SessionTreePanel: View {
     @ObservedObject var model: SessionTreeModel
 
     @State private var copiedSid = false
+    @State private var copiedTid = false
     @FocusState private var searchFocused: Bool
+
+    /// A click-to-copy id card. Session and terminal ids sit side by side so it is always clear
+    /// WHICH conversation and WHICH terminal this tree belongs to.
+    private func idChip(label: String, value: String, copied: Binding<Bool>, tint: Color) -> some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(value, forType: .string)
+            withAnimation(.easeOut(duration: 0.12)) { copied.wrappedValue = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                withAnimation { copied.wrappedValue = false }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Circle().fill(tint).frame(width: 5, height: 5)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(label).font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(Theme.subtext.opacity(0.8)).lineLimit(1)
+                    Text(copied.wrappedValue ? "copied" : String(value.prefix(8)))
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundColor(copied.wrappedValue ? Theme.green : Theme.text)
+                }
+            }
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.stroke, lineWidth: 1))
+        }
+        .buttonStyle(.plain).help("点击复制完整 id")
+    }
 
     private var boundTerminal: TerminalSession? {
         state.terminals.first { $0.id == state.treePanelTerminalId }
@@ -26,8 +55,6 @@ struct SessionTreePanel: View {
             } else {
                 searchField
                 treeList
-                Divider().overlay(Theme.stroke)
-                DetailPane(model: model)
             }
         }
         .background(Theme.panel)
@@ -52,21 +79,11 @@ struct SessionTreePanel: View {
                     .font(.system(size: 13, weight: .bold)).foregroundColor(Theme.accent)
                 Text("会话树").font(.system(size: 14, weight: .semibold)).foregroundColor(Theme.text)
                 if let sid = model.boundSessionId {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(sid, forType: .string)
-                        withAnimation(.easeOut(duration: 0.12)) { copiedSid = true }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            withAnimation { copiedSid = false }
-                        }
-                    } label: {
-                        Text(copiedSid ? "copied" : String(sid.prefix(8)))
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(copiedSid ? Theme.green : Theme.subtext)
-                            .padding(.horizontal, 7).padding(.vertical, 2)
-                            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 5))
-                    }
-                    .buttonStyle(.plain).help("复制会话 id")
+                    idChip(label: "session", value: sid, copied: $copiedSid, tint: Theme.subtext)
+                }
+                if let t = boundTerminal {
+                    idChip(label: t.name, value: t.id.uuidString.lowercased(),
+                           copied: $copiedTid, tint: Theme.statusColor(t.status))
                 }
                 Spacer()
                 Button { state.closeSessionTree() } label: {
@@ -77,15 +94,6 @@ struct SessionTreePanel: View {
             }
             if model.emptyReason == nil {
                 HStack(spacing: 6) {
-                    ForEach(attachedChips, id: \.name) { chip in
-                        HStack(spacing: 4) {
-                            Circle().fill(Theme.statusColor(chip.status)).frame(width: 6, height: 6)
-                            Text(chip.name).font(.system(size: 9.5, weight: .semibold))
-                                .foregroundColor(Theme.text).lineLimit(1)
-                        }
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(Theme.card).clipShape(Capsule())
-                    }
                     Text("⑂ \(model.tree.branchPoints) · \(model.tree.nodeCount) 节点")
                         .font(.system(size: 10)).foregroundColor(Theme.subtext)
                     Spacer()
@@ -94,17 +102,6 @@ struct SessionTreePanel: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 11)
-    }
-
-    /// Terminals attached to any session in this tree (deduped by name for the header).
-    private var attachedChips: [(name: String, status: TermStatus)] {
-        var seen = Set<String>(), out: [(String, TermStatus)] = []
-        for list in model.chips.values {
-            for c in list where !seen.contains(c.name) {
-                seen.insert(c.name); out.append(c)
-            }
-        }
-        return out.sorted { $0.0 < $1.0 }
     }
 
     // MARK: Search
@@ -282,6 +279,11 @@ struct TreeRowView: View {
         }
         .contentShape(Rectangle())
         .opacity(dimmedBySearch ? 0.32 : 1)
+        .background(GeometryReader { g in
+            Color.clear.onChange(of: hover) { _, h in
+                if h { model.focusY = g.frame(in: .named("fleet")).midY }
+            }
+        })
         .onHover { h in
             hover = h
             if h { model.hovered = row.nodeUuid } else if model.hovered == row.nodeUuid { model.hovered = nil }
@@ -414,92 +416,94 @@ struct LeafPulse: View {
     }
 }
 
-// MARK: - Detail pane
+// MARK: - Floating detail card
 
-struct DetailPane: View {
-    @EnvironmentObject var state: AppState
+/// The node inspector: a frosted card that floats to the LEFT of the tree so it never covers it.
+/// Hovering a turn shows a clipped preview; clicking one pins it and reveals the full prompt and
+/// the full reply.
+struct TreeDetailCard: View {
     @ObservedObject var model: SessionTreeModel
-    @State private var copiedPrompt = false
+
+    private var pinned: Bool { model.selected != nil }
+    private var turn: TreeTurn? { model.detailNode }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let node = model.detailNode {
-                HStack(spacing: 6) {
-                    Text(model.selected != nil ? "节点详情 · 已钉住" : "节点详情")
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundColor(Theme.subtext).textCase(.uppercase).kerning(0.5)
-                    Spacer()
-                    if node.nativeSessionId != nil {
-                        Label("native", systemImage: "bolt.fill")
-                            .font(.system(size: 9, weight: .semibold)).foregroundColor(Theme.green)
-                            .help("已有会话的 leaf 正好在此 — fork 无需写文件")
-                    }
-                    Text(absoluteTime(node.ts)).font(.system(size: 9.5)).foregroundColor(Theme.subtext)
-                }
-                ScrollView {
-                    Text(node.text)
-                        .font(.system(size: 12)).foregroundColor(Theme.text)
+        if let turn {
+            VStack(alignment: .leading, spacing: 9) {
+                header(turn)
+                content(turn)
+            }
+            .padding(13)
+            .frame(width: 380, alignment: .leading)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13)
+                .stroke(pinned ? Theme.accent.opacity(0.5) : Color.white.opacity(0.12), lineWidth: 1))
+            .shadow(color: .black.opacity(0.45), radius: 22, y: 10)
+            // A hover preview must not eat clicks meant for the tree; a pinned card is scrollable.
+            .allowsHitTesting(pinned)
+            .transition(.opacity.combined(with: .move(edge: .trailing)))
+        }
+    }
+
+    private func header(_ turn: TreeTurn) -> some View {
+        HStack(spacing: 6) {
+            Text(pinned ? "完整对话" : "预览")
+                .font(.system(size: 9, weight: .bold)).foregroundColor(Theme.accent)
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(Theme.accent.opacity(0.15)).clipShape(Capsule())
+            if turn.nativeSessionId != nil {
+                Image(systemName: "bolt.fill").font(.system(size: 8)).foregroundColor(Theme.green)
+                    .help("已有会话的 leaf 正好在此 — fork 无需写文件")
+            }
+            Spacer()
+            Text(absoluteTime(turn.ts)).font(.system(size: 9.5)).foregroundColor(Theme.subtext)
+            if pinned {
+                Button { model.selected = nil } label: {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                        .foregroundColor(Theme.subtext)
+                }.buttonStyle(.plain).help("收起")
+            }
+        }
+    }
+
+    @ViewBuilder private func content(_ turn: TreeTurn) -> some View {
+        if pinned {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(turn.text).font(.system(size: 12)).foregroundColor(Theme.text)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 96)
-                if !node.answer.isEmpty {
-                    ScrollView {
-                        Text(node.answer)
-                            .font(.system(size: 10.5, design: .monospaced))
+                    if !turn.answer.isEmpty {
+                        Divider().overlay(Theme.stroke)
+                        Text(turn.answer)
+                            .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(Theme.subtext)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxHeight: 84)
-                    .padding(8).background(Theme.bg)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                HStack(spacing: 8) {
-                    Button {
-                        state.forkOpenNode(nodeUuid: node.uuid, nativeSid: node.nativeSessionId,
-                                           prompt: node.text, joinClusterOf: nil)
-                    } label: {
-                        Label("以此节点开新终端", systemImage: "arrow.triangle.branch")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 11).padding(.vertical, 6)
-                            .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 7))
-                    }
-                    .buttonStyle(.plain)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(node.text, forType: .string)
-                        withAnimation(.easeOut(duration: 0.12)) { copiedPrompt = true }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            withAnimation { copiedPrompt = false }
-                        }
-                    } label: {
-                        Text(copiedPrompt ? "已复制" : "复制 prompt")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundColor(copiedPrompt ? Theme.green : Theme.text)
-                            .padding(.horizontal, 11).padding(.vertical, 6)
-                            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 7))
-                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Theme.stroke, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                    Spacer()
+            }
+            .frame(maxHeight: 420)
+        } else {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(turn.text).font(.system(size: 12)).foregroundColor(Theme.text)
+                    .lineLimit(4)
+                if !turn.answer.isEmpty {
+                    Text(turn.answer)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(Theme.subtext)
+                        .lineLimit(5)
                 }
-            } else {
-                Text("悬停或点击一个节点查看上下文")
-                    .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.6))
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 18)
+                Text("点击该节点查看完整内容 · 拖动它可开新终端")
+                    .font(.system(size: 9.5)).foregroundColor(Theme.subtext.opacity(0.7))
+                    .padding(.top, 1)
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(Theme.panel)
     }
 
     private func absoluteTime(_ ts: String) -> String {
         guard let d = TreeTime.parse(ts) else { return "" }
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd HH:mm"
+        let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm"
         return f.string(from: d)
     }
 }

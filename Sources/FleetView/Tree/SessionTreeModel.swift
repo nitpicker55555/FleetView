@@ -8,8 +8,11 @@ final class SessionTreeModel: ObservableObject {
     @Published private(set) var rows: [TreeRow] = []
     @Published private(set) var loading = false
     @Published private(set) var emptyReason: String?
-    @Published var selected: String?          // pinned node
-    @Published var hovered: String?           // transient preview
+    @Published var selected: String?          // clicked → full prompt + full reply
+    @Published var hovered: String?           // transient preview → clipped
+    /// Vertical center of the hovered/selected row in "fleet" space, so the floating detail card
+    /// can line up with the row it describes.
+    @Published var focusY: CGFloat?
     @Published var query = ""
 
     /// nodeUuid → chips for terminals whose current session leaf sits on that node.

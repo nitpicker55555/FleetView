@@ -47,6 +47,18 @@ struct DashboardView: View {
                         .position(x: state.dragLocation.x, y: state.dragLocation.y - 16)
                 }
             }
+            if state.treePanelTerminalId != nil, state.treeDrag == nil,
+               state.treeModel.detailNode != nil, state.boardFrame != .zero {
+                let cardW: CGFloat = 380, cardH: CGFloat = state.treeModel.selected != nil ? 470 : 190
+                TreeDetailCard(model: state.treeModel)
+                    .position(x: max(state.boardFrame.minX + cardW / 2 + 8,
+                                     state.boardFrame.maxX - cardW / 2 - 14),
+                              y: min(max(state.treeModel.focusY ?? state.boardFrame.midY,
+                                         state.boardFrame.minY + cardH / 2 + 8),
+                                     state.boardFrame.maxY - cardH / 2 - 8))
+                    .animation(.easeOut(duration: 0.14), value: state.treeModel.focusY)
+                    .animation(.easeOut(duration: 0.16), value: state.treeModel.selected)
+            }
             if let d = state.treeDrag {
                 // Board glow: release here → fork-open the node standalone.
                 if state.treeBoardHot {
@@ -57,17 +69,10 @@ struct DashboardView: View {
                                height: max(0, state.boardFrame.height - 14))
                         .position(x: state.boardFrame.midX, y: state.boardFrame.midY)
                 }
-                Text(state.treeDropCardId != nil ? "松开：开新终端并加入该 cluster"
-                     : (state.treeBoardHot ? "松开：以此节点开新终端" : "拖到 fleet 面板打开这个节点"))
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Theme.accent)
-                    .padding(.horizontal, 13).padding(.vertical, 6)
-                    .background(Theme.panel.opacity(0.95))
-                    .clipShape(Capsule())
-                    .overlay(Capsule().stroke(Theme.accent.opacity(0.45), lineWidth: 1))
-                    .position(x: state.boardFrame.midX, y: state.boardFrame.minY + 30)
-                TreeDragChip(prompt: d.prompt)
-                    .position(x: d.location.x, y: d.location.y - 20)
+                // The only hint is on the chip itself, and it names what THIS spot will do.
+                TreeDragChip(prompt: d.prompt, action: state.treeDropCardId != nil ? .joinCluster
+                                                     : (state.treeBoardHot ? .newTerminal : .none))
+                    .position(x: d.location.x, y: d.location.y - 22)
             }
         }
         .allowsHitTesting(false)   // purely visual; the drag is driven by the card gesture
@@ -651,21 +656,40 @@ struct CardFramesKey: PreferenceKey {
     }
 }
 
-/// The floating chip that follows the cursor while dragging a tree node.
+/// The chip that follows the cursor while dragging a tree node. Its second line is the whole
+/// hint system: it names what releasing HERE will do, and says nothing when there's no target.
 struct TreeDragChip: View {
+    enum Action { case none, newTerminal, joinCluster
+        var label: String? {
+            switch self {
+            case .none:        return nil
+            case .newTerminal: return "松开：以此节点开新终端"
+            case .joinCluster: return "松开：开新终端并加入该 cluster"
+            }
+        }
+    }
     let prompt: String
+    let action: Action
+
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.triangle.branch")
-                .font(.system(size: 11, weight: .bold)).foregroundColor(Theme.accent)
-            Text(prompt.replacingOccurrences(of: "\n", with: " ").prefix(24))
-                .font(.system(size: 12.5, weight: .semibold)).foregroundColor(Theme.text)
-                .lineLimit(1)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 11, weight: .bold)).foregroundColor(Theme.accent)
+                Text(prompt.replacingOccurrences(of: "\n", with: " ").prefix(24))
+                    .font(.system(size: 12.5, weight: .semibold)).foregroundColor(Theme.text)
+                    .lineLimit(1)
+            }
+            if let label = action.label {
+                Text(label).font(.system(size: 10, weight: .semibold)).foregroundColor(Theme.accent)
+            }
         }
         .padding(.horizontal, 11).padding(.vertical, 7)
         .background(Theme.card)
         .clipShape(RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.accent, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 9)
+            .stroke(action.label == nil ? Theme.stroke : Theme.accent, lineWidth: 1))
         .shadow(color: .black.opacity(0.5), radius: 12, y: 6)
+        .animation(.easeOut(duration: 0.1), value: action.label)
     }
 }
