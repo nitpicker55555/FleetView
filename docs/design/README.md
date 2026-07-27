@@ -27,4 +27,5 @@ YYYY-MM-DD-<主题>.md
 
 | 日期 | 文档 | 状态 | 摘要 |
 |---|---|---|---|
-| 2026-07-27 | [审计日志规范 v1](2026-07-27-audit-logging-spec.md) | 草案 | 结构化 JSONL 审计日志：终端/集群/项目生命周期、shell 命令、Agent 会话（只存 transcript 指针）、Web 访问与地理位置、UI 点击、Panel 版本归档 |
+| 2026-07-27 | [审计日志规范 v1](2026-07-27-audit-logging-spec.md) | 实现中 | 结构化 JSONL 审计日志：终端/集群/项目生命周期、shell 命令、Agent 会话（只存 transcript 指针）、Web 访问与地理位置、UI 点击、Panel 版本归档 |
+| 2026-07-28 | [审计日志实施：分层拦截架构](2026-07-28-audit-logging-implementation.md) | 实现中 | 意图 + 状态 diff 双层拦截，视图层零打点；模块划分、测试策略、已完成/未完成 |

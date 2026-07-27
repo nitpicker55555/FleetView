@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         state.load()
+        // Start auditing right after load, before anything can mutate state: the first snapshot is
+        // the baseline every later diff is measured against.
+        AppAudit.shared.start(state)
         setupMenu()
 
         // Live status via Claude Code hooks (reversible; no-ops for terminals FleetView didn't launch).
@@ -49,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         state.web.stop()
         state.remote.stopAll()
+        AppAudit.shared.stop(reason: "quit")   // flushes the buffer before the process goes away
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

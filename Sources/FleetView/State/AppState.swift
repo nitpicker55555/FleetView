@@ -1,4 +1,5 @@
 import AppKit
+import FleetViewAudit
 import SwiftUI
 
 /// Single source of truth for the dashboard. Owns terminal window controllers (runtime,
@@ -317,15 +318,23 @@ final class AppState: ObservableObject {
     @discardableResult
     func newTerminal(projectId: UUID, name: String? = nil, clusterId: UUID? = nil,
                      autoRunClaude: Bool = false) -> TerminalSession? {
-        guard let proj = project(projectId) else { return nil }
-        var t = TerminalSession(projectId: projectId,
-                                name: name ?? defaultTerminalName(for: proj),
-                                clusterId: clusterId, cwd: proj.path, autoRunClaude: autoRunClaude)
-        t.status = .shell
-        terminals.append(t)
-        openWindow(for: t)
-        save()
-        return t
+        guard let proj = project(projectId) else {
+            audit.failure("fleetview.terminal.create_failed", reason: "unknown project",
+                          categories: ["process"],
+                          data: ["project.id": .string(projectId.uuidString)])
+            return nil
+        }
+        return audited(AuditIntent("terminal.create",
+                                   data: ["name_source": .string(name == nil ? "auto" : "user")])) {
+            var t = TerminalSession(projectId: projectId,
+                                    name: name ?? defaultTerminalName(for: proj),
+                                    clusterId: clusterId, cwd: proj.path, autoRunClaude: autoRunClaude)
+            t.status = .shell
+            terminals.append(t)
+            openWindow(for: t)
+            save()
+            return t
+        }
     }
 
     func reopenTerminal(_ id: UUID) {
@@ -401,10 +410,24 @@ final class AppState: ObservableObject {
     }
 
     func raiseTerminal(_ id: UUID) {
-        if let c = controllers[id] { c.raise() } else { reopenTerminal(id) }
+        // Raising changes no model state, so the audit diff cannot see it — clicking a card would
+        // vanish from the log without this declared intent.
+        let wasOpen = controllers[id] != nil
+        audited(AuditIntent("terminal.raise",
+                            event: "fleetview.terminal.raised",
+                            categories: ["process"],
+                            target: auditTarget(terminal: id),
+                            data: ["was_open": .bool(wasOpen)],
+                            message: "raised \(terminals.first { $0.id == id }?.name ?? "terminal")")) {
+            if let c = controllers[id] { c.raise() } else { reopenTerminal(id) }
+        }
     }
 
     func removeTerminal(_ id: UUID) {
+        audited(AuditIntent("terminal.remove")) { removeTerminalUnaudited(id) }
+    }
+
+    private func removeTerminalUnaudited(_ id: UUID) {
         if treePanelTerminalId == id { closeSessionTree() }
         controllers[id]?.closeWindow()
         controllers[id] = nil
@@ -418,10 +441,12 @@ final class AppState: ObservableObject {
     }
 
     func renameTerminal(_ id: UUID, to name: String) {
-        guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
-        terminals[idx].name = name
-        controllers[id]?.setTitle(name)
-        save()
+        audited(AuditIntent("terminal.rename")) {
+            guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+            terminals[idx].name = name
+            controllers[id]?.setTitle(name)
+            save()
+        }
     }
 
     func toggleSubtaskDone(_ id: UUID) {
@@ -543,7 +568,14 @@ final class AppState: ObservableObject {
 
     func openInFinder(_ projectId: UUID) {
         guard let p = project(projectId) else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: p.path))
+        audited(AuditIntent("project.reveal",
+                            event: "fleetview.project.revealed",
+                            categories: ["configuration"],
+                            target: AuditTarget(kind: "project", id: p.id.uuidString, name: p.name,
+                                                fields: ["project.path": .string(p.path)]),
+                            message: "revealed \(p.name) in Finder")) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: p.path))
+        }
     }
 
     // MARK: - Name sheet (create / rename)

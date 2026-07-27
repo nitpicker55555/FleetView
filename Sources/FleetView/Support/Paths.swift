@@ -21,6 +21,21 @@ enum FV {
     static var panelHTML: URL { uiDir.appendingPathComponent("panel.html") }
     static var panelJSON: URL { uiDir.appendingPathComponent("panel.json") }
 
+    /// Structured audit log (one JSON object per line, rotated daily). Distinct from `logFile`,
+    /// which stays a free-form debug scratchpad for tuning status heuristics.
+    static var logsDir: URL { supportDir.appendingPathComponent("logs", isDirectory: true) }
+
+    /// Shown in every audit line so an archived log says which build produced it.
+    static var version: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        switch (short, build) {
+        case let (s?, b?): return "\(s) (\(b))"
+        case let (s?, nil): return s
+        default: return "dev"
+        }
+    }
+
     static func ensureSupportDir() {
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
     }
