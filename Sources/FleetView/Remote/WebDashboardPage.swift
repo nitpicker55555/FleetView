@@ -132,15 +132,15 @@ enum WebDashboardPage {
     pointer-events:none}
   #stickyq .sq{max-width:760px;margin:0 auto}
   #stickyq.on{display:block}
-  /* It floats over live text, so it needs to read as a separate layer. The blur does that work on
-     its own — plain translucent black, no tint and no coloured edge, so it stays a quotation of the
-     conversation rather than a control. */
+  /* It floats over live text, so it needs to read as a separate layer — and on a dark page the
+     cleanest way to say "this is on top" is to invert it: white glass, dark text. No tint and no
+     coloured edge, so it stays a quotation of the conversation rather than a control. */
   #stickyq .sq{position:relative;padding:13px 16px;border-radius:12px;
-    font-size:14px;line-height:1.5;font-weight:500;color:var(--text);
-    background:rgba(34,38,44,.55);
-    -webkit-backdrop-filter:blur(28px) saturate(125%);backdrop-filter:blur(28px) saturate(125%);
-    border:1px solid rgba(255,255,255,.11);
-    box-shadow:0 12px 30px rgba(0,0,0,.38);
+    font-size:14px;line-height:1.5;font-weight:500;color:#15181d;
+    background:rgba(255,255,255,.80);
+    -webkit-backdrop-filter:blur(30px) saturate(140%);backdrop-filter:blur(30px) saturate(140%);
+    border:1px solid rgba(255,255,255,.6);
+    box-shadow:0 12px 30px rgba(0,0,0,.45);
     display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .msg .mtext{white-space:pre-wrap;word-break:break-word}
   .msg.user{margin-top:26px}                 /* a new question needs a visible break before it */
