@@ -30,7 +30,10 @@ enum WebDashboardPage {
   #panel.show{display:block}
   #panelframe{width:100%;height:240px;border:0;display:block;background:var(--bg)}
   #panel.min #panelframe{height:0}
-  #panel .pcollapse{position:absolute;right:8px;top:6px;z-index:2;background:var(--card);color:var(--sub);
+  /* Collapsing zeroed the iframe, the panel box collapsed with it, and the sticky header (z-index 5)
+     painted over the absolutely-positioned toggle — so "hide" could never be undone. */
+  #panel.min{min-height:30px}
+  #panel .pcollapse{position:absolute;right:8px;top:6px;z-index:6;background:var(--card);color:var(--sub);
     border:1px solid var(--stroke);border-radius:6px;font-size:11px;padding:2px 8px;cursor:pointer}
   header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
     padding:12px 16px;background:rgba(28,31,37,.92);backdrop-filter:blur(8px);
@@ -53,7 +56,12 @@ enum WebDashboardPage {
   .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
   .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:13px 14px;
     display:flex;flex-direction:column;gap:9px;transition:transform .1s,background .12s;cursor:pointer;
-    position:relative;touch-action:none;user-select:none;-webkit-user-select:none}
+    position:relative;user-select:none;-webkit-user-select:none}
+  /* touch-action is NOT inherited: with it only on .card, a finger landing on the card's text hit
+     an `auto` element and the browser scrolled instead. pan-y keeps the list scrollable; a press
+     and hold claims the gesture for dragging (see onDown). */
+  .card, .card *{touch-action:pan-y}
+  .card.armed{transform:scale(1.03);box-shadow:0 10px 26px rgba(0,0,0,.5);border-color:var(--accent)}
   .card:hover{background:var(--cardHover)}
   .card.locked{cursor:default;opacity:.6}
   .card.done{background:#101c13;border-color:rgba(92,209,140,.4)}
@@ -106,9 +114,14 @@ enum WebDashboardPage {
     padding:12px;display:none;overscroll-behavior:contain}
   #chat.on{display:block}
   .msg{margin:0 0 10px;font-size:13px;line-height:1.5}
+  /* A prompt scrolled out of view floats at the top of the chat so you always know which question
+     the answers below belong to; scrolling back to it puts it down again. Pure sticky — the next
+     prompt pushes the previous one out on its own. */
+  .msg.user{position:sticky;top:-2px;z-index:3}
   .msg .mtext{white-space:pre-wrap;word-break:break-word}
-  .msg.user .mtext{background:rgba(122,158,255,.13);border-left:3px solid var(--accent);
-    padding:9px 11px;border-radius:0 10px 10px 0}
+  .msg.user .mtext{background:#1d2431;border-left:3px solid var(--accent);
+    padding:9px 11px;border-radius:0 10px 10px 0;
+    box-shadow:0 6px 16px rgba(0,0,0,.32)}   /* opaque: it floats over the messages below */
   .msg.asst .mtext{color:var(--text);padding:2px 2px 2px 3px}
   .msg.sub{opacity:.72}
   .msg .tag{font-size:9px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:2px}
@@ -752,7 +765,17 @@ async function doAction(id,act,extra){
 }
 
 // ---------- drag-to-act ----------
-let drag={id:null,name:null,cluster:false,x:0,y:0,sx:0,sy:0,active:false};
+let drag={id:null,name:null,cluster:false,x:0,y:0,sx:0,sy:0,active:false,
+          touch:false,armed:false,holdTimer:0};
+function endDrag(){
+  clearTimeout(drag.holdTimer);
+  window.removeEventListener('pointermove',onMove);
+  window.removeEventListener('pointerup',onUp);
+  if(drag.card)drag.card.classList.remove('armed');
+  drag.active=false;drag.armed=false;dragging=false;
+  document.getElementById('chip').style.display='none';
+  document.getElementById('dock').style.display='none';
+}
 function zonesFor(cluster,done){
   const z=[{k:'done',t:done?'Undone':'✓ Done'},{k:'duplicate',t:'⧉ Duplicate'},{k:'rename',t:'✎ Rename'}];
   if(cluster)z.push({k:'leaveCluster',t:'⇤ Leave'});
@@ -774,11 +797,28 @@ function onDown(e){
   drag.id=card.dataset.id;drag.name=card.dataset.name;drag.cluster=card.dataset.cluster==='1';
   drag.done=card.dataset.done==='1';drag.canopen=card.dataset.canopen==='1';drag.card=card;
   drag.sx=e.clientX;drag.sy=e.clientY;drag.active=false;
+  // A finger can't both scroll the list and drag a card, so touch has to say which it means:
+  // hold still for a moment and the card arms for dragging, otherwise the swipe stays a scroll.
+  drag.touch=e.pointerType==='touch';
+  drag.armed=!drag.touch;
+  clearTimeout(drag.holdTimer);
+  if(drag.touch){
+    drag.holdTimer=setTimeout(()=>{
+      drag.armed=true;
+      if(drag.card)drag.card.classList.add('armed');
+      if(navigator.vibrate)navigator.vibrate(8);
+    },220);
+  }
   window.addEventListener('pointermove',onMove);
   window.addEventListener('pointerup',onUp);
 }
 function onMove(e){
   const dx=e.clientX-drag.sx,dy=e.clientY-drag.sy;
+  // Moved before the hold completed → the user is scrolling; let the browser have the gesture.
+  if(!drag.armed){
+    if(Math.hypot(dx,dy)>12){ clearTimeout(drag.holdTimer); endDrag(); }
+    return;
+  }
   if(!drag.active&&Math.hypot(dx,dy)<9)return;
   if(!drag.active){
     drag.active=true;dragging=true;drag.card.classList.add('dragging');
@@ -793,8 +833,10 @@ function onMove(e){
   if(hot)hot.classList.add('hot');
 }
 function onUp(e){
+  clearTimeout(drag.holdTimer);
   window.removeEventListener('pointermove',onMove);
   window.removeEventListener('pointerup',onUp);
+  if(drag.card)drag.card.classList.remove('armed');
   const wasActive=drag.active;
   const act=wasActive?drag.hotAct:null;   // captured during onMove, while zones still had layout
   document.getElementById('chip').style.display='none';
@@ -810,6 +852,10 @@ function onUp(e){
   else doAction(drag.id,act);
 }
 document.getElementById('root').addEventListener('pointerdown',onDown);
+// Non-passive: touch-action is evaluated when the gesture begins, so the only way to stop a scroll
+// that a long press has turned into a drag is to cancel the touch moves themselves.
+document.addEventListener('touchmove',e=>{ if(drag.armed&&drag.active)e.preventDefault(); },
+                          {passive:false});
 
 let toastT=null;
 function toast(msg){
