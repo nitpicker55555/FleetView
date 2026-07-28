@@ -179,6 +179,20 @@ enum WebDashboardPage {
   .msg.think .mtext{display:none}
   .msg.think.open .mtext{display:block;margin-top:7px;font-size:12px}
   #chatnote{color:var(--sub);text-align:center;padding:30px 16px;font-size:12px}
+  /* Opening a terminal used to leave the previous conversation on screen until the fetch came back,
+     which read as the wrong session rather than as loading. A skeleton of the shape that is coming
+     says "this is being fetched" without pretending to be content. */
+  .skel{max-width:760px;margin:0 auto}
+  .skel .sk-user{margin:26px 0 16px}
+  .skel .sk-asst{margin:0 0 26px;padding:0 2px}
+  .skel .row{height:12px;border-radius:7px;margin-bottom:8px;
+    background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.11),rgba(255,255,255,.05));
+    background-size:220% 100%;animation:shim 1.2s linear infinite}
+  .skel .sk-user .row{height:44px;border-radius:12px;
+    background:linear-gradient(90deg,rgba(255,255,255,.10),rgba(255,255,255,.20),rgba(255,255,255,.10));
+    background-size:220% 100%}
+  @keyframes shim{0%{background-position:220% 0}100%{background-position:-120% 0}}
+  @media (prefers-reduced-motion:reduce){ .skel .row{animation:none} }
   @media (max-width:520px){
     #chat{padding:14px 13px 22px}
     #sinfo{padding:6px 13px}
@@ -401,8 +415,65 @@ function beaconSelect(id,view){
   try{ fetch('/select?id='+encodeURIComponent(id||'')+'&view='+encodeURIComponent(view||''),
              {cache:'no-store',keepalive:true}); }catch(e){}
 }
+function skeletonHTML(){
+  const row=w=>'<div class="row" style="width:'+w+'"></div>';
+  let h='<div class="skel">';
+  for(let i=0;i<3;i++) h+='<div class="sk-user">'+row('62%')+'</div>'+
+    '<div class="sk-asst">'+row('95%')+row('88%')+row('54%')+'</div>';
+  return h+'</div>';
+}
+function showSkeleton(){
+  const el=document.getElementById('chat');
+  el.dataset.sig='';                  // nothing on screen belongs to the new terminal
+  el.innerHTML=skeletonHTML();
+  el.scrollTop=0;
+  stickBottom=true;                   // the skeleton is tall; land at the latest, not at the top
+  document.getElementById('sinfo').innerHTML='';
+  document.getElementById('stickyq').classList.remove('on');
+  document.getElementById('perm').classList.remove('on');
+  sentGhost=null; curInfo={};
+}
+/* Conversations are re-read from disk on every open, which is a visible wait on a phone. Keep the
+   last few on the device and put one straight on screen, then let the poll bring it up to date —
+   the skeleton is then only for terminals this device has never opened. */
+const CACHE_MAX=8, CACHE_BYTES=300000;
+const ckey=id=>'fv_conv_'+id;
+function cacheIndex(){ try{ return JSON.parse(localStorage.getItem('fv_conv_ix')||'[]'); }catch(e){ return []; } }
+function cacheTouch(id){
+  const ix=cacheIndex().filter(x=>x!==id); ix.unshift(id);
+  while(ix.length>CACHE_MAX){ try{ localStorage.removeItem(ckey(ix.pop())); }catch(e){} }
+  try{ localStorage.setItem('fv_conv_ix',JSON.stringify(ix)); }catch(e){}
+}
+function cacheGet(id){
+  try{ const s=localStorage.getItem(ckey(id)); return s?JSON.parse(s):null; }catch(e){ return null; }
+}
+function cachePut(id,j){
+  const body=JSON.stringify({t:Date.now(),messages:j.messages||[],info:j.info||{},note:j.note||''});
+  if(body.length>CACHE_BYTES) return;          // a huge transcript is not worth the quota
+  try{ localStorage.setItem(ckey(id),body); cacheTouch(id); }
+  catch(e){                                    // out of quota: drop the coldest one and try once more
+    const ix=cacheIndex();
+    if(!ix.length) return;
+    try{ localStorage.removeItem(ckey(ix[ix.length-1]));
+         localStorage.setItem(ckey(id),body); cacheTouch(id); }catch(e2){}
+  }
+}
+/* What is cached is the conversation, not what the agent is doing right now — status comes back on
+   the first live payload rather than being restored stale. */
+function showCached(c){
+  const el=document.getElementById('chat');
+  el.dataset.sig=''; el.scrollTop=0;
+  sentGhost=null; stickBottom=true;
+  curInfo=Object.assign({},c.info,{status:'',pendingTool:'',pendingText:''});
+  document.getElementById('stickyq').classList.remove('on');
+  document.getElementById('perm').classList.remove('on');
+  renderChat(c.messages,c.note);
+  renderInfo(curInfo);
+}
 function openTerm(id,name){
   curId=id;curUrl='';termLoaded=false;
+  const cached=cacheGet(id);
+  if(cached&&cached.messages&&cached.messages.length) showCached(cached); else showSkeleton();
   document.getElementById('termname').textContent=name;
   document.getElementById('termframe').src='about:blank';
   document.getElementById('term').classList.add('show');
@@ -454,8 +525,10 @@ function startChatPoll(){stopChatPoll();chatTimer=setInterval(loadChat,3000);}
 function stopChatPoll(){if(chatTimer){clearInterval(chatTimer);chatTimer=null;}}
 async function loadChat(){
   if(!curId)return;
+  const want=curId;
   try{
-    const j=await(await fetch('/conversation?id='+encodeURIComponent(curId)+'&limit=150',{cache:'no-store'})).json();
+    const j=await(await fetch('/conversation?id='+encodeURIComponent(want)+'&limit=150',{cache:'no-store'})).json();
+    if(want!==curId)return;           // you switched terminals while this was in flight
     curInfo=j.info||{};
     if(sentAt){                       // hold 'running' until the hook catches up, then let go
       if(performance.now()-sentAt>4000||curInfo.status!=='idle') sentAt=0;
@@ -464,7 +537,7 @@ async function loadChat(){
     // A plain shell has no conversation — show its scrollback instead, which is the thing you
     // actually want to read remotely (and unlike the terminal mirror, this scrolls on touch).
     if(curInfo.shell) await renderShell();
-    else renderChat(j.messages||[],j.note);
+    else { renderChat(j.messages||[],j.note); cachePut(want,j); }
     renderInfo(curInfo);
     renderPerm(curInfo);
     syncSendBtn();
@@ -537,8 +610,10 @@ document.getElementById('inputtext').addEventListener('blur',()=>{
 /* Shell terminal: the pane's scrollback, wrapped and natively scrollable. */
 async function renderShell(){
   const el=document.getElementById('chat');
+  const want=curId;
   let txt='';
-  try{ txt=await(await fetch('/capture?id='+encodeURIComponent(curId)+'&lines=1500',{cache:'no-store'})).text(); }catch(e){ return; }
+  try{ txt=await(await fetch('/capture?id='+encodeURIComponent(want)+'&lines=1500',{cache:'no-store'})).text(); }catch(e){ return; }
+  if(want!==curId)return;
   txt=txt.replace(/\s+$/,'');
   const sig='sh'+txt.length+':'+txt.slice(-80);
   if(el.dataset.sig===sig)return;
