@@ -94,15 +94,19 @@ enum WebDashboardPage {
   .zone.danger{color:var(--red);border-color:rgba(217,107,115,.4)}
   .zone.danger.hot{background:var(--red);color:#fff}
   /* terminal overlay */
-  /* 100dvh, not 100%: mobile browser chrome changes the viewport height, and a fixed inset:0
-     overlay ends up short — which is the strip of the page you could see under the composer. */
-  #term{position:fixed;inset:0;height:100vh;height:100dvh;z-index:50;background:var(--bg);
+  /* Sizing this to the visible viewport is what left a gap: the value comes from JS, and whenever it
+     lagged the browser chrome the overlay was short and you could see — and scroll — the dashboard
+     underneath. It now always spans the layout viewport, and syncViewport pads the band the chrome
+     and keyboard occupy, so the background covers the screen no matter what the measurement says. */
+  #term{position:fixed;inset:0;z-index:50;background:var(--bg);
     display:none;flex-direction:column;overscroll-behavior:none}
   /* The JS height comes from visualViewport; if that is ever stale the overlay is short and the
      page shows through underneath, so paint the same background behind it as well. */
   body.locked{background:var(--bg)}
   #term.show{display:flex}
-  body.locked{overflow:hidden;position:fixed;width:100%}
+  /* inset:0 rather than width alone: a body left at its scrolled offset is another way the page
+     underneath ends up visible at an edge. overscroll-behavior kills the rubber-band with it. */
+  body.locked{overflow:hidden;position:fixed;inset:0;width:100%;overscroll-behavior:none}
   #termbar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--panel);
     border-bottom:1px solid var(--stroke);padding-top:max(10px,env(safe-area-inset-top))}
   #termbar button{background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer}
@@ -133,10 +137,10 @@ enum WebDashboardPage {
      conversation rather than a control. */
   #stickyq .sq{position:relative;padding:13px 16px;border-radius:12px;
     font-size:14px;line-height:1.5;font-weight:500;color:var(--text);
-    background:rgba(12,14,17,.72);
-    -webkit-backdrop-filter:blur(22px) saturate(115%);backdrop-filter:blur(22px) saturate(115%);
-    border:1px solid rgba(255,255,255,.07);
-    box-shadow:0 14px 34px rgba(0,0,0,.5);
+    background:rgba(34,38,44,.55);
+    -webkit-backdrop-filter:blur(28px) saturate(125%);backdrop-filter:blur(28px) saturate(125%);
+    border:1px solid rgba(255,255,255,.11);
+    box-shadow:0 12px 30px rgba(0,0,0,.38);
     display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .msg .mtext{white-space:pre-wrap;word-break:break-word}
   .msg.user{margin-top:26px}                 /* a new question needs a visible break before it */
@@ -436,10 +440,18 @@ async function loadChat(){
    so the composer rides above it and everything lands back when it closes. */
 function syncViewport(){
   const t=document.getElementById('term'), vv=window.visualViewport;
-  if(!t.classList.contains('show')){ t.style.height=''; t.style.transform=''; return; }
+  if(!t.classList.contains('show')){
+    t.style.paddingTop=t.style.paddingBottom=t.style.height=t.style.transform='';
+    document.getElementById('jump').style.bottom=''; return;
+  }
   if(!vv) return;
-  t.style.height=vv.height+'px';
-  t.style.transform='translateY('+vv.offsetTop+'px)';
+  t.style.height='';t.style.transform='';        // the box stays inset:0; only the padding moves
+  const H=t.offsetHeight||window.innerHeight;    // border-box, so this is the full layout viewport
+  const top=Math.max(0,Math.round(vv.offsetTop));
+  const bottom=Math.max(0,Math.round(H-vv.height-vv.offsetTop));
+  t.style.paddingTop=top+'px';
+  t.style.paddingBottom=bottom+'px';
+  document.getElementById('jump').style.bottom=(96+bottom)+'px';   // it sits above the composer
 }
 if(window.visualViewport){
   visualViewport.addEventListener('resize',syncViewport);
@@ -764,7 +776,7 @@ function msgHTML(m){
   return '<div class="msg '+(m.role==='user'?'user':'asst')+(m.sub?' sub':'')+(m.queued?' queued':'')+'">'+
     '<span class="cp" data-copy="1">copy</span>'+
     (m.sub?'<div class="tag">subagent</div>':'')+
-    (m.queued?'<div class="qtag">追问 · 回合进行中</div>':'')+
+    (m.queued?'<div class="qtag">追问 · 上一回合进行时输入</div>':'')+
     (m.ts?'<span class="when">'+hhmm(m.ts)+'</span>':'')+
     '<div class="mtext md">'+md(m.text)+'</div></div>';
 }
