@@ -117,13 +117,22 @@ enum WebDashboardPage {
   /* One floating bar carries the prompt currently being answered. Making each prompt sticky piled
      every past one at the top instead of replacing it, so a single element is kept and its text
      swapped as you scroll. */
-  #stickyq{position:absolute;left:0;right:0;z-index:4;display:none;padding:8px 12px 0;
+  #stickyq{position:absolute;left:0;right:0;z-index:4;display:none;padding:10px 12px 0;
     pointer-events:none}
   #stickyq.on{display:block}
-  #stickyq .sq{background:#1d2431;border-left:3px solid var(--accent);padding:8px 11px;
-    border-radius:0 10px 10px 0;font-size:12.5px;line-height:1.45;color:var(--text);
-    box-shadow:0 10px 22px rgba(0,0,0,.5);
-    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  /* It floats over live text, so it needs to read as a separate layer: frosted, tinted toward the
+     accent, and lit along its leading edge. The blur is what separates it from whatever scrolls
+     underneath — a flat fill at this size just looks like another message. */
+  #stickyq .sq{position:relative;padding:13px 15px 13px 17px;border-radius:4px 14px 14px 4px;
+    font-size:14px;line-height:1.5;font-weight:500;color:var(--text);
+    background:linear-gradient(135deg, rgba(45,55,78,.90), rgba(30,36,50,.86));
+    -webkit-backdrop-filter:blur(18px) saturate(160%);backdrop-filter:blur(18px) saturate(160%);
+    border:1px solid rgba(122,158,255,.28);
+    box-shadow:0 14px 34px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.07);
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  /* the accent edge, drawn inside the rounded corner so it doesn't square off the card */
+  #stickyq .sq::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+    border-radius:4px 0 0 4px;background:linear-gradient(var(--accent), rgba(122,158,255,.45))}
   .msg .mtext{white-space:pre-wrap;word-break:break-word}
   .msg.user .mtext{background:#1d2431;border-left:3px solid var(--accent);
     padding:9px 11px;border-radius:0 10px 10px 0;
@@ -339,6 +348,7 @@ function openTerm(id,name){
   document.getElementById('termframe').src='about:blank';
   document.getElementById('term').classList.add('show');
   document.body.classList.add('locked');   // stop the page scrolling behind the overlay
+  syncViewport();
   renderPresets();          // latest Notes as quick-commands
   beaconSelect(id,'chat');
   setView('chat');          // reading history is the common remote case
@@ -346,6 +356,8 @@ function openTerm(id,name){
 function closeTerm(){
   document.getElementById('term').classList.remove('show');
   document.body.classList.remove('locked');
+  window.scrollTo(0,0);
+  syncViewport();                          // drop the keyboard-era height/offset
   document.getElementById('termframe').src='about:blank';
   curId='';termLoaded=false;stopChatPoll();
   beaconSelect('','');
@@ -392,6 +404,27 @@ async function loadChat(){
     syncSendBtn();
   }catch(e){}
 }
+/* iOS/iPadOS scrolls the whole document to reveal a focused field and doesn't undo it when the
+   keyboard goes away, which left the overlay shifted up with a gap beneath. Track the visual
+   viewport instead: the overlay is sized and offset to exactly the area the keyboard leaves,
+   so the composer rides above it and everything lands back when it closes. */
+function syncViewport(){
+  const t=document.getElementById('term'), vv=window.visualViewport;
+  if(!t.classList.contains('show')){ t.style.height=''; t.style.transform=''; return; }
+  if(!vv) return;
+  t.style.height=vv.height+'px';
+  t.style.transform='translateY('+vv.offsetTop+'px)';
+}
+if(window.visualViewport){
+  visualViewport.addEventListener('resize',syncViewport);
+  visualViewport.addEventListener('scroll',syncViewport);
+}
+/* Belt and braces: if the document itself got scrolled while a field had focus, put it back. */
+document.getElementById('inputtext').addEventListener('blur',()=>{
+  window.scrollTo(0,0);
+  setTimeout(syncViewport,50);
+});
+
 /* Shell terminal: the pane's scrollback, wrapped and natively scrollable. */
 async function renderShell(){
   const el=document.getElementById('chat');
