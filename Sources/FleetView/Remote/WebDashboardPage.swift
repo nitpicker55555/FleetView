@@ -488,8 +488,16 @@ function syncViewport(){
   // distance from the bottom first and restore it after, so the line above the composer stays
   // above the composer and the conversation rides up with the input.
   const H=t.offsetHeight||window.innerHeight;    // border-box, so this is the full layout viewport
-  const top=Math.max(0,Math.round(vv.offsetTop));
-  const bottom=Math.max(0,Math.round(H-vv.height-vv.offsetTop));
+  // Only a keyboard gets padded off. visualViewport is not trustworthy on its own here: iPadOS can
+  // leave its height at the keyboard-era value after the keyboard is gone, and that stale number
+  // was the strip of dead space under the composer that never went away. So the measurement has to
+  // agree with two other things — that a field is actually focused, and that the shortfall is big
+  // enough to be a keyboard rather than browser chrome (which inset:0 already accounts for).
+  const a=document.activeElement, ta=document.getElementById('inputtext');
+  const typing=a===ta||a===document.getElementById('pfind');
+  const short=Math.max(0,Math.round(H-vv.height-vv.offsetTop));
+  const bottom=(typing&&short>=120)?short:0;
+  const top=bottom?Math.max(0,Math.round(vv.offsetTop)):0;
   // Nothing moved: leave the styles and, above all, the scroll position alone. Without this the
   // poll below would fight a flick-scroll every time it ran.
   if(top+':'+bottom===lastBand) return;
@@ -516,8 +524,10 @@ window.addEventListener('orientationchange',()=>setTimeout(syncViewport,120));
    composer that never goes away. Re-measure on a slow tick; it's a no-op unless the band moved. */
 setInterval(syncViewport,400);
 document.getElementById('inputtext').addEventListener('focusout',()=>{
-  setTimeout(syncViewport,60); setTimeout(syncViewport,400);
+  lastBand='';                     // force the next measurement through, focus has changed
+  syncViewport(); setTimeout(syncViewport,60); setTimeout(syncViewport,400);
 });
+document.getElementById('inputtext').addEventListener('focus',()=>{ lastBand=''; });
 /* Belt and braces: if the document itself got scrolled while a field had focus, put it back. */
 document.getElementById('inputtext').addEventListener('blur',()=>{
   window.scrollTo(0,0);
