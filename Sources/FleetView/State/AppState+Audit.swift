@@ -85,6 +85,11 @@ final class AppAudit {
         let now = state.auditSnapshot()
         auditor.record(from: baseline, to: now, intent: intent)
         baseline = now
+        // The web layer only ever sees uuids in query strings; this is the one place that knows
+        // what they are called.
+        WebAudit.shared.updateTerminalNames(
+            Dictionary(state.terminals.map { ($0.id.uuidString, $0.name) },
+                       uniquingKeysWith: { a, _ in a }))
     }
 
     private func scheduleSweep(_ state: AppState) {

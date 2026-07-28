@@ -32,6 +32,10 @@ final class WebAudit: @unchecked Sendable {
     private let lock = NSLock()
     private var auditorRef: Auditor = .disabled
     private var timer: DispatchSourceTimer?
+    /// Terminal uuid → name. The request handler only ever sees a uuid in the query string, and a
+    /// log that says "sent 40 characters to 3F2A9C4E" is a log nobody reads. Refreshed by the state
+    /// layer, which is the only place that knows the names.
+    private var terminalNames: [String: String] = [:]
     private let queue = DispatchQueue(label: "ai.eigent.fleetview.webaudit", qos: .utility)
 
     static let cookieName = "fv_ws"
@@ -39,6 +43,20 @@ final class WebAudit: @unchecked Sendable {
     private var auditor: Auditor {
         lock.lock(); defer { lock.unlock() }
         return auditorRef
+    }
+
+    func updateTerminalNames(_ names: [String: String]) {
+        lock.lock(); defer { lock.unlock() }
+        terminalNames = names
+    }
+
+    /// A named target for a terminal uuid taken from a query string.
+    private func target(forTerminal id: String?) -> AuditTarget? {
+        guard let id else { return nil }
+        lock.lock()
+        let name = terminalNames[id]
+        lock.unlock()
+        return AuditTarget(kind: "terminal", id: id, name: name)
     }
 
     /// Called once at launch, from the main actor.
@@ -153,17 +171,20 @@ final class WebAudit: @unchecked Sendable {
     private func requestEvent(_ scope: Scope, query: [String: String], duration: Int) -> AuditEvent? {
         let config = AuditConfig.current
 
+        let terminal = target(forTerminal: query["id"])
+        let named = terminal?.name.map { " \"\($0)\"" } ?? ""
+
         func event(_ name: String, _ message: String, _ data: [String: AuditValue],
                    categories: [String] = ["web"]) -> AuditEvent {
             AuditEvent(name: name, categories: categories, message: message,
-                       actor: scope.actor, trace: scope.trace, data: data, durationNanos: duration)
+                       actor: scope.actor, target: terminal, trace: scope.trace,
+                       data: data, durationNanos: duration)
         }
 
         switch scope.path {
         case "/open":
-            return event("fleetview.web.terminal_attached", "attached to a terminal",
-                         AuditValue.compact(["terminal.id": query["id"].map { .string($0) }]),
-                         categories: ["session"])
+            return event("fleetview.web.terminal_attached", "attached to\(named)",
+                         [:], categories: ["session"])
 
         case "/type":
             let text = query["text"] ?? ""
@@ -172,38 +193,40 @@ final class WebAudit: @unchecked Sendable {
                 "text.sha256": .string(AuditDigest.short(text)),
                 "enter": .bool(query["enter"] == "1"),
             ]
-            if let id = query["id"] { data["terminal.id"] = .string(id) }
             // The text ends up in the agent's transcript anyway; a preview here is convenience,
             // and off by default.
             if config.webInputPreview, !text.isEmpty {
                 data["text.preview"] = .string(String(text.prefix(config.promptPreviewChars)))
             }
-            return event("fleetview.web.input_sent", "sent \(text.count) characters", data)
+            return event("fleetview.web.input_sent", "sent \(text.count) characters to\(named)", data)
 
         case "/key":
-            return event("fleetview.web.key_sent", "sent key \(query["k"] ?? "?")",
-                         AuditValue.compact(["key": query["k"].map { .string($0) },
-                                             "terminal.id": query["id"].map { .string($0) }]))
+            return event("fleetview.web.key_sent", "sent key \(query["k"] ?? "?") to\(named)",
+                         AuditValue.compact(["key": query["k"].map { .string($0) }]))
 
         case "/scroll":
-            return event("fleetview.web.scrolled", "scrolled \(query["dir"] ?? "up")",
-                         AuditValue.compact(["dir": query["dir"].map { .string($0) },
-                                             "terminal.id": query["id"].map { .string($0) }]))
+            return event("fleetview.web.scrolled", "scrolled \(query["dir"] ?? "up")\(named)",
+                         AuditValue.compact(["dir": query["dir"].map { .string($0) }]))
 
         case "/select":
-            let terminal = query["id"].flatMap { $0.isEmpty ? nil : $0 }
-            let previous = registry.setSelection(terminal, for: scope.sessionID)
-            guard previous != terminal else { return nil }     // re-selecting the same thing is not news
-            if let terminal {
-                return event("fleetview.web.terminal_selected", "opened a terminal",
-                             AuditValue.compact(["terminal.id": .string(terminal),
-                                                 "selection.from": previous.map { .string($0) },
+            let selected = query["id"].flatMap { $0.isEmpty ? nil : $0 }
+            let previous = registry.setSelection(selected, for: scope.sessionID)
+            guard previous != selected else { return nil }     // re-selecting the same thing is not news
+            if selected != nil {
+                return event("fleetview.web.terminal_selected", "opened\(named)",
+                             AuditValue.compact(["selection.from": previous.map { .string($0) },
                                                  "view": query["view"].map { .string($0) }]),
                              categories: ["session"])
             }
-            return event("fleetview.web.terminal_deselected", "closed the terminal view",
-                         AuditValue.compact(["selection.from": previous.map { .string($0) }]),
-                         categories: ["session"])
+            let leaving = target(forTerminal: previous)?.name.map { " \"\($0)\"" } ?? ""
+            return AuditEvent(name: "fleetview.web.terminal_deselected",
+                              categories: ["session"],
+                              message: "closed the view of\(leaving)",
+                              actor: scope.actor,
+                              target: target(forTerminal: previous),
+                              trace: scope.trace,
+                              data: AuditValue.compact(["selection.from": previous.map { .string($0) }]),
+                              durationNanos: duration)
 
         case "/ask":
             // A side query never reaches the transcript, so if it is not recorded here it is
@@ -213,11 +236,11 @@ final class WebAudit: @unchecked Sendable {
                 "question.chars": .int(question.count),
                 "question.sha256": .string(AuditDigest.short(question)),
             ]
-            if let id = query["id"] { data["terminal.id"] = .string(id) }
             if config.promptPreview, !question.isEmpty {
                 data["question.preview"] = .string(String(question.prefix(config.promptPreviewChars)))
             }
-            return event("fleetview.web.ask", "asked a side question", data, categories: ["session"])
+            return event("fleetview.web.ask", "asked\(named) a side question", data,
+                         categories: ["session"])
 
         default:
             // Endpoints that mutate state (/action, /new, /note) are covered by the diff.
