@@ -32,6 +32,7 @@ struct WebSnapshot: Codable {
     let needs: Int
     let remoteOK: Bool            // tmux + ttyd present → terminals are interactive
     let remoteHint: String        // install hint when they're not
+    let askGeo: Bool              // whether the page should ask the device for its position
 }
 
 /// A tiny, dependency-free HTTP/1.1 server (Network.framework) that serves the web dashboard.

@@ -17,6 +17,11 @@ struct AuditConfig: Codable {
     var geoProvider = "none"          // none | ipapi
     var geoPrecisionDecimals = 2      // ≈1 km, so a coordinate is a neighbourhood, not an address
 
+    /// Ask the browser for the device's own position. Costs nothing and sends nothing outward —
+    /// the answer comes from the device — but it does put a permission prompt in front of whoever
+    /// opens the dashboard, and it only works at all over HTTPS.
+    var askBrowserLocation = true
+
     var promptPreview = true
     var promptPreviewChars = 120
     var webInputPreview = false
@@ -38,5 +43,6 @@ struct AuditConfig: Codable {
     }
 
     var wantsGeo: Bool { geo != "off" }
+    var wantsBrowserLocation: Bool { wantsGeo && askBrowserLocation }
     var wantsPublicGeoLookup: Bool { geo == "city" && geoProvider != "none" }
 }

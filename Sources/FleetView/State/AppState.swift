@@ -1166,7 +1166,8 @@ final class AppState: ObservableObject {
             working: terminals.filter { $0.status == .working }.count,
             needs: terminals.filter { $0.status == .needsYou }.count,
             remoteOK: remote.available,
-            remoteHint: remote.unavailableReason)
+            remoteHint: remote.unavailableReason,
+            askGeo: AuditConfig.current.wantsBrowserLocation)
     }
 
     /// Start (or reuse) a web terminal for an open session and return its URL (nil if not attachable).

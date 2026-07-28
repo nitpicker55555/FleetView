@@ -228,6 +228,31 @@ final class WebAudit: @unchecked Sendable {
                               data: AuditValue.compact(["selection.from": previous.map { .string($0) }]),
                               durationNanos: duration)
 
+        case "/geo":
+            // A location the *device* reported, not one inferred from an address. Rounded before it
+            // is stored: a neighbourhood answers "where was this", and an exact fix in a log file
+            // is a liability.
+            let consent = query["consent"] ?? "unknown"
+            var data: [String: AuditValue] = ["consent": .string(consent)]
+            if let reason = query["reason"] { data["reason"] = .string(reason) }
+
+            if consent == "granted", let lat = Double(query["lat"] ?? ""), let lon = Double(query["lon"] ?? "") {
+                let decimals = config.geoPrecisionDecimals
+                let rounded = AuditValue.object(["lat": .double(Self.round(lat, decimals)),
+                                                 "lon": .double(Self.round(lon, decimals))])
+                data["client.geo.location"] = rounded
+                if let accuracy = Int(query["acc"] ?? "") { data["accuracy_m"] = .int(accuracy) }
+                // Carried by every later event from this session, so the whole visit is placed.
+                var geo = registry.session(scope.sessionID)?.geo ?? [:]
+                geo["client.geo.location"] = rounded
+                geo["client.geo.source"] = .string("device")
+                registry.setGeo(geo, for: scope.sessionID)
+                return event("fleetview.web.session_geo", "device reported its location", data)
+            }
+            // Recorded too: "we have no fix, and here is why" beats an unexplained absence.
+            return event("fleetview.web.session_geo",
+                         "no device location (\(consent))", data)
+
         case "/ask":
             // A side query never reaches the transcript, so if it is not recorded here it is
             // recorded nowhere.
@@ -296,6 +321,11 @@ final class WebAudit: @unchecked Sendable {
         for session in registry.expire(now: now) {
             emitSessionEnded(session, reason: "idle_timeout")
         }
+    }
+
+    private static func round(_ value: Double, _ decimals: Int) -> Double {
+        let factor = pow(10.0, Double(max(0, decimals)))
+        return (value * factor).rounded() / factor
     }
 
     private static func cookieHeader(_ id: String) -> String {

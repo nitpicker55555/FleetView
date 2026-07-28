@@ -148,6 +148,16 @@ enum WebDashboardPage {
     padding:12px 15px;border-radius:12px;font-size:14px;line-height:1.55;
     border:1px solid rgba(255,255,255,.6);box-shadow:0 6px 16px rgba(0,0,0,.32)}
   .msg.user .mtext code{background:rgba(0,0,0,.07);color:#12151a}
+  /* Sending should feel like the card is pushed up out of the composer, so it starts squashed
+     against the bottom edge and settles with a slight overshoot. */
+  @keyframes extrude{
+    0%  {transform:translateY(16px) scaleY(.5) scaleX(.94);opacity:0}
+    55% {transform:translateY(0) scaleY(1.05) scaleX(1.01);opacity:1}
+    100%{transform:none;opacity:1}
+  }
+  .msg.user.sending .mtext{transform-origin:bottom center;
+    animation:extrude .34s cubic-bezier(.2,.9,.25,1.2) both}
+  @media (prefers-reduced-motion:reduce){ .msg.user.sending .mtext{animation:none} }
   .msg.user .mtext a{color:#1b4bd0}
   .msg.asst .mtext{color:var(--text);padding:0 2px}
   .msg.sub{opacity:.72}
@@ -357,6 +367,33 @@ function esc(s){const d=document.createElement('div');d.textContent=s||'';return
 function termOpen(){return document.getElementById('term').classList.contains('show');}
 
 // ---------- terminal open / input ----------
+/* Ask the device where it is, rather than guessing from its address.
+   navigator.geolocation is gated on a secure context, so over plain http://<lan-ip> the browser
+   refuses before it even prompts — that fact is reported once so the log explains its own gap
+   instead of just lacking a coordinate. Serve the dashboard over HTTPS (tailscale serve) and the
+   same code starts returning a real fix. */
+let geoDone=false;
+function reportLocation(state){
+  if(geoDone||!state||!state.askGeo) return;
+  const prior=localStorage.getItem('fv_geo');
+  const secure=window.isSecureContext&&navigator.geolocation;
+  if(!secure){
+    if(prior!=='insecure'){ localStorage.setItem('fv_geo','insecure');
+      fetch('/geo?consent=unavailable&reason=insecure_context',{cache:'no-store'}).catch(()=>{}); }
+    return;                       // nothing to ask for until the page is served over HTTPS
+  }
+  if(prior==='denied') return;    // asked and refused once — do not nag on every reload
+  geoDone=true;
+  navigator.geolocation.getCurrentPosition(
+    p=>{ localStorage.setItem('fv_geo','granted');
+         fetch('/geo?consent=granted&lat='+p.coords.latitude+'&lon='+p.coords.longitude
+               +'&acc='+Math.round(p.coords.accuracy||0),{cache:'no-store'}).catch(()=>{}); },
+    e=>{ localStorage.setItem('fv_geo','denied');
+         fetch('/geo?consent=denied&reason='+encodeURIComponent((e&&e.message)||'denied'),
+               {cache:'no-store'}).catch(()=>{}); },
+    {enableHighAccuracy:false,timeout:10000,maximumAge:600000});
+}
+
 /* Tell the server which terminal is on screen. Opening one is pure client-side state, so without
    this beacon "what was being watched, and for how long" would have to be inferred from a polling
    endpoint — whose meaning would drift the moment the poll interval changed. */
@@ -437,23 +474,29 @@ async function loadChat(){
    keyboard goes away, which left the overlay shifted up with a gap beneath. Track the visual
    viewport instead: the overlay is sized and offset to exactly the area the keyboard leaves,
    so the composer rides above it and everything lands back when it closes. */
+let lastBand='';
 function syncViewport(){
   const t=document.getElementById('term'), vv=window.visualViewport;
   if(!t.classList.contains('show')){
+    if(lastBand===''){ return; }
     t.style.paddingTop=t.style.paddingBottom=t.style.height=t.style.transform='';
-    document.getElementById('jump').style.bottom=''; return;
+    document.getElementById('jump').style.bottom=''; lastBand=''; return;
   }
   if(!vv) return;
   // The keyboard shortens the band, which shortens the chat — and a scroll box that keeps its
   // scrollTop while it shrinks pushes whatever you were reading below the fold. Measure the
   // distance from the bottom first and restore it after, so the line above the composer stays
   // above the composer and the conversation rides up with the input.
-  const chat=document.getElementById('chat');
-  const gap=Math.max(0,chat.scrollHeight-chat.scrollTop-chat.clientHeight);
-  t.style.height='';t.style.transform='';        // the box stays inset:0; only the padding moves
   const H=t.offsetHeight||window.innerHeight;    // border-box, so this is the full layout viewport
   const top=Math.max(0,Math.round(vv.offsetTop));
   const bottom=Math.max(0,Math.round(H-vv.height-vv.offsetTop));
+  // Nothing moved: leave the styles and, above all, the scroll position alone. Without this the
+  // poll below would fight a flick-scroll every time it ran.
+  if(top+':'+bottom===lastBand) return;
+  lastBand=top+':'+bottom;
+  const chat=document.getElementById('chat');
+  const gap=Math.max(0,chat.scrollHeight-chat.scrollTop-chat.clientHeight);
+  t.style.height='';t.style.transform='';        // the box stays inset:0; only the padding moves
   t.style.paddingTop=top+'px';
   t.style.paddingBottom=bottom+'px';
   document.getElementById('jump').style.bottom=(96+bottom)+'px';   // it sits above the composer
@@ -468,6 +511,13 @@ if(window.visualViewport){
    during openTerm can predate the lock, so re-measure on the next frame too. */
 window.addEventListener('resize',syncViewport);
 window.addEventListener('orientationchange',()=>setTimeout(syncViewport,120));
+/* Dismissing the keyboard doesn't always end with a visualViewport event — iPadOS can leave the
+   last one from mid-animation, and the band stays keyboard-sized: a strip of empty page under the
+   composer that never goes away. Re-measure on a slow tick; it's a no-op unless the band moved. */
+setInterval(syncViewport,400);
+document.getElementById('inputtext').addEventListener('focusout',()=>{
+  setTimeout(syncViewport,60); setTimeout(syncViewport,400);
+});
 /* Belt and braces: if the document itself got scrolled while a field had focus, put it back. */
 document.getElementById('inputtext').addEventListener('blur',()=>{
   window.scrollTo(0,0);
@@ -818,6 +868,7 @@ function renderChat(msgs,note){
   if(open.size) Array.prototype.forEach.call(el.querySelectorAll('.msg'),n=>{
     if(n.dataset.k&&open.has(n.dataset.k)) n.classList.add('open');
   });
+  reconcileSent(el);
   if(nearBottom){el.scrollTop=el.scrollHeight;stickBottom=false;}
   updateStickyPrompt();
 }
@@ -860,11 +911,41 @@ async function sendText(){
      message interrupted the turn instead of sending — so it took two taps. */
   if(!t){ key(document.getElementById('sendbtn').dataset.stop?'Escape':'Enter'); return; }
   ta.value='';ta.style.height='auto';
+  showSent(t);                       // don't wait a round trip to acknowledge the send
   stickBottom=true; jumpLatest();    // follow your own message down, wherever you were reading
   markSent();                       // the hook is a beat behind; don't sit on 'idle' meanwhile
   try{ await fetch('/type?id='+encodeURIComponent(curId)+'&enter=1&text='+encodeURIComponent(t)); }
-  catch(e){ ta.value=t; sentAt=0; renderInfo(curInfo); }
+  catch(e){ ta.value=t; sentAt=0; renderInfo(curInfo);
+            if(sentGhost){ sentGhost.node.remove(); sentGhost=null; } }
   setTimeout(loadChat,400);
+}
+/* The message needs a beat or two to reach the transcript, and a send that shows nothing reads as a
+   send that failed. Put the card on screen immediately and keep it until the real one turns up. */
+let sentGhost=null;
+const flatText=s=>s.replace(/\s+/g,' ').trim();
+function showSent(text){
+  const el=document.getElementById('chat');
+  if(!el.classList.contains('on'))return;
+  const d=document.createElement('div');
+  d.className='msg user sending';
+  d.innerHTML='<div class="mtext md">'+md(text)+'</div>';
+  const bar=el.querySelector('.runbar');
+  bar?el.insertBefore(d,bar):el.appendChild(d);
+  sentGhost={text:flatText(text),node:d};
+}
+/* Called after every rebuild: hand the animation over to the real card once it exists, and keep the
+   stand-in on screen until then. */
+function reconcileSent(el){
+  if(!sentGhost)return;
+  const users=el.querySelectorAll('.msg.user .mtext');
+  const last=users.length?users[users.length-1]:null;
+  if(last&&flatText(last.innerText||last.textContent||'')===sentGhost.text){
+    last.parentNode.classList.add('sending');
+    sentGhost=null;
+    return;
+  }
+  const bar=el.querySelector('.runbar');
+  bar?el.insertBefore(sentGhost.node,bar):el.appendChild(sentGhost.node);
 }
 /* Show 'running' the moment a prompt goes out, and hold it briefly: the status comes from a hook
    that fires a little after the keystrokes land, so an immediate poll still reports idle. */
@@ -1046,6 +1127,7 @@ async function tick(){
   if(dragging||termOpen())return;
   try{
     const r=await fetch('/state',{cache:'no-store'});state=await r.json();render(state);
+    reportLocation(state);   // once per browser; no-op until the page is served over HTTPS
     document.getElementById('refresh').textContent='updated '+new Date().toLocaleTimeString();
   }catch(e){document.getElementById('refresh').textContent='offline — retrying…';}
 }
