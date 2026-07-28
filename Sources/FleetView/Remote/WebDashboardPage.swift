@@ -444,6 +444,12 @@ function syncViewport(){
     document.getElementById('jump').style.bottom=''; return;
   }
   if(!vv) return;
+  // The keyboard shortens the band, which shortens the chat — and a scroll box that keeps its
+  // scrollTop while it shrinks pushes whatever you were reading below the fold. Measure the
+  // distance from the bottom first and restore it after, so the line above the composer stays
+  // above the composer and the conversation rides up with the input.
+  const chat=document.getElementById('chat');
+  const gap=Math.max(0,chat.scrollHeight-chat.scrollTop-chat.clientHeight);
   t.style.height='';t.style.transform='';        // the box stays inset:0; only the padding moves
   const H=t.offsetHeight||window.innerHeight;    // border-box, so this is the full layout viewport
   const top=Math.max(0,Math.round(vv.offsetTop));
@@ -451,6 +457,8 @@ function syncViewport(){
   t.style.paddingTop=top+'px';
   t.style.paddingBottom=bottom+'px';
   document.getElementById('jump').style.bottom=(96+bottom)+'px';   // it sits above the composer
+  chat.scrollTop=Math.max(0,chat.scrollHeight-chat.clientHeight-gap);
+  updateStickyPrompt();                          // the pane moved; the floating bar follows it
 }
 if(window.visualViewport){
   visualViewport.addEventListener('resize',syncViewport);
