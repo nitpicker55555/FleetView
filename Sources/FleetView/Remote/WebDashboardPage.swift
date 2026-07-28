@@ -337,7 +337,7 @@ enum WebDashboardPage {
     </div>
     <div id="sendrow">
       <textarea id="inputtext" rows="1" placeholder="Type here (中文 OK) — Enter to send, Shift+Enter for newline"></textarea>
-      <button id="sendbtn" onclick="sendText()">Send</button>
+      <button id="sendbtn">Send</button>
     </div>
   </div>
 </div>
@@ -345,7 +345,7 @@ enum WebDashboardPage {
 <script>
 const COLORS={working:'var(--green)',shell:'var(--teal)',idle:'var(--gray)',
   needsYou:'var(--amber)',exited:'var(--red)',closed:'rgba(255,255,255,.22)'};
-let curUrl='',curId='',state=null,dragging=false,curView='chat',chatTimer=null,termLoaded=false,curInfo={};
+let curUrl='',curId='',state=null,dragging=false,curView='chat',chatTimer=null,termLoaded=false,curInfo={},sentAt=0;
 
 function short(n){if(n<1000)return ''+n;if(n<1000000)return (n/1000).toFixed(n<10000?1:0)+'k';return (n/1000000).toFixed(1)+'M';}
 function ago(sec){if(sec<0)return '';if(sec<5)return 'just now';if(sec<60)return sec+'s ago';
@@ -417,6 +417,10 @@ async function loadChat(){
   try{
     const j=await(await fetch('/conversation?id='+encodeURIComponent(curId)+'&limit=150',{cache:'no-store'})).json();
     curInfo=j.info||{};
+    if(sentAt){                       // hold 'running' until the hook catches up, then let go
+      if(performance.now()-sentAt>4000||curInfo.status!=='idle') sentAt=0;
+      else curInfo.status='working';
+    }
     // A plain shell has no conversation — show its scrollback instead, which is the thing you
     // actually want to read remotely (and unlike the terminal mirror, this scrolls on touch).
     if(curInfo.shell) await renderShell();
@@ -832,10 +836,33 @@ renderPresets();
 async function sendText(){
   if(!curId)return;
   const ta=document.getElementById('inputtext');const t=ta.value;
-  if(document.getElementById('sendbtn').dataset.stop){ key('Escape'); return; }   // empty + working → Stop
-  if(!t){key('Enter');return;}
-  try{await fetch('/type?id='+curId+'&enter=1&text='+encodeURIComponent(t));ta.value='';ta.style.height='auto';}catch(e){}
+  /* An empty box while the agent works means Stop; anything you typed is a message, always. The
+     button label can be a poll behind the terminal, and letting it decide here meant a typed
+     message interrupted the turn instead of sending — so it took two taps. */
+  if(!t){ key(document.getElementById('sendbtn').dataset.stop?'Escape':'Enter'); return; }
+  ta.value='';ta.style.height='auto';
+  markSent();                       // the hook is a beat behind; don't sit on 'idle' meanwhile
+  try{ await fetch('/type?id='+encodeURIComponent(curId)+'&enter=1&text='+encodeURIComponent(t)); }
+  catch(e){ ta.value=t; sentAt=0; renderInfo(curInfo); }
+  setTimeout(loadChat,400);
 }
+/* Show 'running' the moment a prompt goes out, and hold it briefly: the status comes from a hook
+   that fires a little after the keystrokes land, so an immediate poll still reports idle. */
+function markSent(){ sentAt=performance.now(); curInfo.status='working'; renderInfo(curInfo); syncSendBtn(); }
+/* Tapping Send blurs the textarea; the keyboard collapses, the bar moves out from under the finger
+   and the tap lands on nothing. Fire on the press instead, and swallow the click that follows. */
+(function(){
+  const sb=document.getElementById('sendbtn');
+  /* Swallow the one click paired with a press we already handled — a time window would let a long
+     press through, since its click arrives whenever the finger lifts. Expires so a press that never
+     produces a click (dragged off the button) can't eat a later one. */
+  let armed=0;
+  sb.addEventListener('pointerdown',e=>{ if(e.button&&e.button!==0) return;
+    e.preventDefault(); armed=performance.now(); sendText(); });
+  sb.addEventListener('click',e=>{ e.preventDefault();
+    if(armed&&performance.now()-armed<4000){ armed=0; return; }
+    sendText(); });
+})();
 document.getElementById('inputtext').addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendText();}
 });
