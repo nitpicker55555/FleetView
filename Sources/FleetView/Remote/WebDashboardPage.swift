@@ -80,9 +80,6 @@ enum WebDashboardPage {
   .cluster .cname{font-weight:600;font-size:14px}
   .banner{background:rgba(250,184,82,.13);border:1px solid rgba(250,184,82,.3);color:var(--amber);padding:10px 12px;border-radius:10px;font-size:12px;margin-bottom:16px}
   .empty{color:var(--sub);text-align:center;padding:60px 20px}
-  body.locked .hintbar{display:none}
-  .hintbar{position:fixed;left:0;right:0;bottom:0;z-index:3;text-align:center;font-size:11px;color:var(--sub);
-    padding:8px;padding-bottom:max(8px,env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--bg) 40%)}
   /* drag chip + action dock */
   #chip{position:fixed;z-index:60;pointer-events:none;display:none;background:var(--card);border:1px solid var(--accent);
     border-radius:9px;padding:7px 11px;font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.5);transform:translate(-50%,-140%)}
@@ -308,7 +305,6 @@ enum WebDashboardPage {
   <span class="refresh" id="refresh"></span>
 </header>
 <main id="root"><div class="empty">Loading…</div></main>
-<div class="hintbar">Tap a terminal to open · drag a card for actions</div>
 
 <div id="chip"></div>
 <div id="dock"></div>
