@@ -80,6 +80,7 @@ enum WebDashboardPage {
   .cluster .cname{font-weight:600;font-size:14px}
   .banner{background:rgba(250,184,82,.13);border:1px solid rgba(250,184,82,.3);color:var(--amber);padding:10px 12px;border-radius:10px;font-size:12px;margin-bottom:16px}
   .empty{color:var(--sub);text-align:center;padding:60px 20px}
+  body.locked .hintbar{display:none}
   .hintbar{position:fixed;left:0;right:0;bottom:0;z-index:3;text-align:center;font-size:11px;color:var(--sub);
     padding:8px;padding-bottom:max(8px,env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--bg) 40%)}
   /* drag chip + action dock */
@@ -97,6 +98,9 @@ enum WebDashboardPage {
      overlay ends up short — which is the strip of the page you could see under the composer. */
   #term{position:fixed;inset:0;height:100vh;height:100dvh;z-index:50;background:var(--bg);
     display:none;flex-direction:column;overscroll-behavior:none}
+  /* The JS height comes from visualViewport; if that is ever stale the overlay is short and the
+     page shows through underneath, so paint the same background behind it as well. */
+  body.locked{background:var(--bg)}
   #term.show{display:flex}
   body.locked{overflow:hidden;position:fixed;width:100%}
   #termbar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--panel);
@@ -110,38 +114,45 @@ enum WebDashboardPage {
   #tabs button{background:transparent;border:0;color:var(--sub);border-radius:6px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer}
   #tabs button.on{background:var(--accent);color:#0b1020}
   /* conversation pane — plain scrollable chat, the reliable way to read history on a phone */
-  #chat{flex:1;min-height:0;position:relative;overflow-y:auto;-webkit-overflow-scrolling:touch;background:var(--bg);
-    padding:12px;display:none;overscroll-behavior:contain}
+  #chat{flex:1;min-height:0;position:relative;overflow-y:auto;-webkit-overflow-scrolling:touch;
+    background:var(--bg);padding:18px 20px 26px;display:none;overscroll-behavior:contain}
+  /* Hold the text to a comfortable measure on a wide screen instead of letting lines run the
+     full width of a desktop browser. */
+  #chat > *{max-width:760px;margin-left:auto;margin-right:auto}
   #chat.on{display:block}
-  .msg{margin:0 0 10px;font-size:13px;line-height:1.5}
+  .msg{margin:0 0 16px;font-size:13.5px;line-height:1.62}
   /* One floating bar carries the prompt currently being answered. Making each prompt sticky piled
      every past one at the top instead of replacing it, so a single element is kept and its text
      swapped as you scroll. */
-  #stickyq{position:absolute;left:0;right:0;z-index:4;display:none;padding:10px 12px 0;
+  #stickyq{position:absolute;left:0;right:0;z-index:4;display:none;padding:12px 20px 0;
     pointer-events:none}
+  #stickyq .sq{max-width:760px;margin:0 auto}
   #stickyq.on{display:block}
-  /* It floats over live text, so it needs to read as a separate layer: frosted, tinted toward the
-     accent, and lit along its leading edge. The blur is what separates it from whatever scrolls
-     underneath — a flat fill at this size just looks like another message. */
-  #stickyq .sq{position:relative;padding:13px 15px 13px 17px;border-radius:4px 14px 14px 4px;
+  /* It floats over live text, so it needs to read as a separate layer. The blur does that work on
+     its own — plain translucent black, no tint and no coloured edge, so it stays a quotation of the
+     conversation rather than a control. */
+  #stickyq .sq{position:relative;padding:13px 16px;border-radius:12px;
     font-size:14px;line-height:1.5;font-weight:500;color:var(--text);
-    background:linear-gradient(135deg, rgba(45,55,78,.90), rgba(30,36,50,.86));
-    -webkit-backdrop-filter:blur(18px) saturate(160%);backdrop-filter:blur(18px) saturate(160%);
-    border:1px solid rgba(122,158,255,.28);
-    box-shadow:0 14px 34px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.07);
+    background:rgba(12,14,17,.72);
+    -webkit-backdrop-filter:blur(22px) saturate(115%);backdrop-filter:blur(22px) saturate(115%);
+    border:1px solid rgba(255,255,255,.07);
+    box-shadow:0 14px 34px rgba(0,0,0,.5);
     display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-  /* the accent edge, drawn inside the rounded corner so it doesn't square off the card */
-  #stickyq .sq::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
-    border-radius:4px 0 0 4px;background:linear-gradient(var(--accent), rgba(122,158,255,.45))}
   .msg .mtext{white-space:pre-wrap;word-break:break-word}
+  .msg.user{margin-top:26px}                 /* a new question needs a visible break before it */
+  .msg.user:first-child{margin-top:0}
   .msg.user .mtext{background:#1d2431;border-left:3px solid var(--accent);
-    padding:9px 11px;border-radius:0 10px 10px 0;
+    padding:12px 15px;border-radius:3px 12px 12px 3px;font-size:14px;line-height:1.55;
     box-shadow:0 6px 16px rgba(0,0,0,.32)}   /* opaque: it floats over the messages below */
-  .msg.asst .mtext{color:var(--text);padding:2px 2px 2px 3px}
+  .msg.asst .mtext{color:var(--text);padding:0 2px}
   .msg.sub{opacity:.72}
   .msg .tag{font-size:9px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:2px}
-  .msg.think,.msg.tool{background:var(--card);border:1px solid var(--stroke);border-radius:9px;
-    padding:8px 10px;cursor:pointer}
+  /* typed while the agent was working — recovered from prompt history, not the transcript */
+  .msg.user.queued .mtext{border-left-style:dashed}
+  .msg .qtag{font-size:9px;font-weight:700;color:var(--teal);text-transform:uppercase;
+    letter-spacing:.04em;margin-bottom:3px}
+  .msg.think,.msg.tool{background:var(--card);border:1px solid var(--stroke);border-radius:10px;
+    padding:10px 12px;cursor:pointer;margin-left:10px}
   .msg.think{opacity:.7}
   .msg.tool.bad{border-color:rgba(217,107,115,.5)}
   .mhead{display:flex;gap:7px;align-items:baseline;font-size:12px}
@@ -154,6 +165,13 @@ enum WebDashboardPage {
   .msg.think .mtext{display:none}
   .msg.think.open .mtext{display:block;margin-top:7px;font-size:12px}
   #chatnote{color:var(--sub);text-align:center;padding:30px 16px;font-size:12px}
+  @media (max-width:520px){
+    #chat{padding:14px 13px 22px}
+    #sinfo{padding:6px 13px}
+    #stickyq{padding:10px 13px 0}
+    #inputbar{padding-left:10px;padding-right:10px}
+    .msg.think,.msg.tool{margin-left:0}
+  }
   /* a shell terminal's scrollback — wrapped so a phone never scrolls sideways */
   .shellout{margin:0;white-space:pre-wrap;word-break:break-word;font-size:11.5px;line-height:1.5;
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}
@@ -193,7 +211,7 @@ enum WebDashboardPage {
   .dstat .a{color:var(--green)}
   .dstat .d{color:var(--red)}
   /* session info strip: model, permission mode, context-window fill */
-  #sinfo{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:5px 12px;background:var(--panel);
+  #sinfo{display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:7px 20px;background:var(--panel);
     border-bottom:1px solid var(--stroke);font-size:10px;color:var(--sub)}
   #sinfo:empty{display:none}
   #sinfo .chip{background:var(--card);border:1px solid var(--stroke);border-radius:999px;padding:2px 8px;font-weight:600}
@@ -248,7 +266,8 @@ enum WebDashboardPage {
   /* flex:none + the safe-area pad keeps the composer pinned to the true bottom; without it the
      bar floated and the page showed through underneath on a phone. */
   #inputbar{flex:none;background:var(--panel);border-top:1px solid var(--stroke);
-    padding:8px;padding-bottom:max(8px,env(safe-area-inset-bottom))}
+    padding:10px 14px;padding-bottom:max(10px,env(safe-area-inset-bottom))}
+  #inputbar > *{max-width:760px;margin-left:auto;margin-right:auto}
   #prow{display:flex;gap:6px;align-items:center;margin-bottom:8px}
   #pfind{flex:none;width:82px;background:var(--card);color:var(--text);border:1px solid var(--stroke);
     border-radius:7px;padding:5px 8px;font-size:12px;font-family:inherit}
@@ -349,11 +368,13 @@ function openTerm(id,name){
   document.getElementById('term').classList.add('show');
   document.body.classList.add('locked');   // stop the page scrolling behind the overlay
   syncViewport();
+  requestAnimationFrame(syncViewport);     // re-measure once the lock has taken effect
   renderPresets();          // latest Notes as quick-commands
   beaconSelect(id,'chat');
   setView('chat');          // reading history is the common remote case
 }
 function closeTerm(){
+  document.getElementById('stickyq').classList.remove('on');
   document.getElementById('term').classList.remove('show');
   document.body.classList.remove('locked');
   window.scrollTo(0,0);
@@ -371,6 +392,7 @@ function setView(v){
   document.getElementById('chat').classList.toggle('on',v==='chat');
   document.getElementById('termframe').classList.toggle('on',v==='term');
   document.getElementById('keys').classList.toggle('chatview',v==='chat');
+  updateStickyPrompt();          // it belongs to the chat pane — never leave it over the terminal
   if(v==='term'){stopChatPoll();ensureTerm();}
   else{loadChat();startChatPoll();}
 }
@@ -419,6 +441,10 @@ if(window.visualViewport){
   visualViewport.addEventListener('resize',syncViewport);
   visualViewport.addEventListener('scroll',syncViewport);
 }
+/* Rotation and browser-chrome changes don't always emit a visualViewport event, and the value read
+   during openTerm can predate the lock, so re-measure on the next frame too. */
+window.addEventListener('resize',syncViewport);
+window.addEventListener('orientationchange',()=>setTimeout(syncViewport,120));
 /* Belt and braces: if the document itself got scrolled while a field had focus, put it back. */
 document.getElementById('inputtext').addEventListener('blur',()=>{
   window.scrollTo(0,0);
@@ -731,9 +757,10 @@ function msgHTML(m){
       (m.ok===false?'<span style="color:var(--red)">✕</span>':'')+'</div>'+
       (det?'<div class="mbody">'+det+'</div>':'')+'</div>';
   }
-  return '<div class="msg '+(m.role==='user'?'user':'asst')+(m.sub?' sub':'')+'">'+
+  return '<div class="msg '+(m.role==='user'?'user':'asst')+(m.sub?' sub':'')+(m.queued?' queued':'')+'">'+
     '<span class="cp" data-copy="1">copy</span>'+
     (m.sub?'<div class="tag">subagent</div>':'')+
+    (m.queued?'<div class="qtag">追问 · 回合进行中</div>':'')+
     (m.ts?'<span class="when">'+hhmm(m.ts)+'</span>':'')+
     '<div class="mtext md">'+md(m.text)+'</div></div>';
 }
