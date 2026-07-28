@@ -102,6 +102,7 @@ let suites: [(String, [Test])] = [
         ("normal events are not truncated", EnvelopeAndSinkTests.testNormalEventsAreNotTruncated),
         ("file sink writes a header then events", EnvelopeAndSinkTests.testFileSinkWritesHeaderThenEvents),
         ("file sink appends rather than overwrites", EnvelopeAndSinkTests.testFileSinkAppendsRatherThanOverwrites),
+        ("two instances writing at once never tear a line", EnvelopeAndSinkTests.testTwoInstancesWritingAtOnceNeverTearALine),
         ("file sink creates private files", EnvelopeAndSinkTests.testFileSinkCreatesPrivateFiles),
         ("a disabled auditor writes nothing", EnvelopeAndSinkTests.testDisabledAuditorWritesNothing),
         ("the failure helper produces an alert", EnvelopeAndSinkTests.testFailureHelperProducesAnAlert),

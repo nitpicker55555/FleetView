@@ -159,7 +159,9 @@ public final class FileAuditSink: AuditSink, @unchecked Sendable {
     private var handle: FileHandle?
     private var currentPath: URL?
     private var currentDay: String = ""
-    private var buffer = Data()
+    /// Complete lines, kept separate on purpose — see `writeBuffer`.
+    private var buffer: [Data] = []
+    private var bufferedBytes = 0
     private var flushScheduled = false
 
     private let dayFormatter: DateFormatter = {
@@ -182,10 +184,12 @@ public final class FileAuditSink: AuditSink, @unchecked Sendable {
             // numbers always run in the order the lines physically appear. Encoding first would
             // hand the header a number larger than every line it precedes.
             self.prepareHandle(at: event.timestamp)
-            self.buffer.append(Data((self.encoder.line(for: event) + "\n").utf8))
+            let line = Data((self.encoder.line(for: event) + "\n").utf8)
+            self.buffer.append(line)
+            self.bufferedBytes += line.count
             // Small buffer, short timer: a crash should cost at most a few tens of milliseconds of
             // log, and the app should never pay a synchronous file write on the main thread.
-            if self.buffer.count >= 8192 {
+            if self.bufferedBytes >= 8192 {
                 self.writeBuffer()
             } else if !self.flushScheduled {
                 self.flushScheduled = true
@@ -204,11 +208,22 @@ public final class FileAuditSink: AuditSink, @unchecked Sendable {
         }
     }
 
+    /// Writes each line with its own `write(2)`.
+    ///
+    /// Concatenating the buffer would be fewer syscalls but breaks the property the whole
+    /// multi-instance story rests on: POSIX only guarantees an `O_APPEND` write is atomic when it
+    /// is smaller than `PIPE_BUF` (4096 bytes). An 8 KB batch can be split by the kernel, and a
+    /// second FleetView appending at the same moment lands in the gap — which is exactly what
+    /// happened in the live log, leaving one record torn across two lines. Every line is capped at
+    /// `maxLineBytes` by the encoder, so writing them one at a time keeps each write atomic.
     private func writeBuffer() {
         guard !buffer.isEmpty, let fh = handle else { return }
-        let data = buffer
+        let lines = buffer
         buffer.removeAll()
-        do { try fh.write(contentsOf: data) } catch { /* disk full / unlinked — drop, never crash */ }
+        bufferedBytes = 0
+        for line in lines {
+            do { try fh.write(contentsOf: line) } catch { return }   // disk full / unlinked
+        }
     }
 
     /// Opens (and rotates) the day's file. Rotation is by filename rather than by renaming, so a
@@ -240,11 +255,18 @@ public final class FileAuditSink: AuditSink, @unchecked Sendable {
         }
 
         let isNew = !fm.fileExists(atPath: url.path)
-        if isNew {
-            fm.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
-        }
-        guard let fh = try? FileHandle(forWritingTo: url) else { return }
-        _ = try? fh.seekToEnd()
+
+        // O_APPEND, and not `FileHandle(forWritingTo:)`.
+        //
+        // `FileHandle(forWritingTo:)` opens O_WRONLY and keeps its own file offset, so two
+        // FleetView instances holding the same file each write at *their* idea of the end and
+        // silently overwrite each other — in a live test half the lines vanished. Only O_APPEND
+        // makes the kernel position each write at the true end of file, and only then is a write
+        // smaller than PIPE_BUF atomic against another appender.
+        let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        guard descriptor >= 0 else { return }
+        if isNew { _ = chmod(url.path, 0o600) }   // in case a permissive umask widened it
+        let fh = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         handle = fh
         currentPath = url
         currentDay = day

@@ -66,10 +66,8 @@ enum Conversation {
     /// - Parameter ownPrompt: this terminal's last submitted prompt (recorded per terminal by the
     ///   hooks). When several terminals resume the SAME session they all append to one file and each
     ///   grows its own branch, so this is what tells us which branch belongs to this terminal.
-    /// `screen` is this terminal's own pane text — the only way to tell branches apart when several
-    /// terminals resume the same session (they all append to one file).
     static func parse(path: String, cwd: String = "", limit: Int = 120,
-                      ownPrompt: String = "", screen: String? = nil) -> ConvResult {
+                      ownPrompt: String = "") -> ConvResult {
         var info = ConvInfo()
         guard let text = tail(path) else { return ConvResult(messages: [], info: info) }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
@@ -83,7 +81,7 @@ enum Conversation {
         // A Claude session is a TREE, not a list: rewinding or editing a prompt starts a new branch
         // and the old one stays in the file. Rendering the file linearly interleaves abandoned
         // attempts with the real conversation, so follow only the active branch.
-        let active = activePath(records, ownPrompt: ownPrompt, screen: screen, &info)
+        let active = activePath(records, ownPrompt: ownPrompt, &info)
 
         for obj in records {
             if obj["payload"] != nil {
@@ -117,7 +115,7 @@ enum Conversation {
     /// without one, the newest record is the tip. Returns nil when the file has no tree at all
     /// (nothing to filter), and fills in how many branches the session has.
     private static func activePath(_ records: [[String: Any]], ownPrompt: String,
-                                   screen: String?, _ info: inout ConvInfo) -> Set<String>? {
+                                   _ info: inout ConvInfo) -> Set<String>? {
         var parent: [String: String] = [:]
         var children: [String: [String]] = [:]     // in file order ⇒ last child is the newest
         var byUuid: [String: [String: Any]] = [:]
@@ -139,28 +137,14 @@ enum Conversation {
         info.branches = children.values.filter { $0.count > 1 }.count
 
         var tip: String?
-        // Preferred: match the terminal's own screen against each branch. When several terminals
-        // resume ONE session they all append to the same file as separate branches, and the pane is
-        // the only per-terminal ground truth — its text is verbatim from that branch's messages.
-        let frags = paneFragments(screen)
-        if !frags.isEmpty, leaves.count > 1 {
-            var best: (score: Int, leaf: String)?
-            for l in leaves.reversed().prefix(14) {
-                let text = branchText(from: l, parent: parent, byUuid: byUuid)
-                let score = frags.reduce(0) { $0 + (text.contains($1) ? 1 : 0) }
-                if score > (best?.score ?? 0) { best = (score, l) }
-            }
-            tip = best?.leaf
-        }
-        // Otherwise: the branch whose most recent user prompt is the one THIS terminal submitted.
-        // Weaker — prompts like "继续" (or a shared prefix) appear on several branches.
-        if tip == nil {
-            let want = normalized(ownPrompt)
-            if !want.isEmpty {
-                tip = leaves.reversed().first { l in
-                    guard let text = latestUserText(from: l, parent: parent, byUuid: byUuid) else { return false }
-                    return matches(normalized(text), want)
-                }
+        // Preferred: the branch whose most recent user prompt is the one THIS terminal submitted.
+        // Several terminals resuming one session share the file, and this is the only per-terminal
+        // marker in it (the hooks record the prompt against the terminal that sent it).
+        let want = normalized(ownPrompt)
+        if !want.isEmpty {
+            tip = leaves.reversed().first { l in
+                guard let text = latestUserText(from: l, parent: parent, byUuid: byUuid) else { return false }
+                return matches(normalized(text), want)
             }
         }
         if tip == nil {
@@ -180,52 +164,6 @@ enum Conversation {
             tip = parent[u]
         }
         return path.isEmpty ? nil : path
-    }
-
-    /// Distinctive snippets of what the terminal is actually showing. Whitespace is stripped so the
-    /// pane's wrapping and padding can't break a match, chrome lines are skipped, and each snippet is
-    /// taken from inside a line so it never straddles a wrap boundary.
-    private static func paneFragments(_ screen: String?, count: Int = 12, size: Int = 16) -> [String] {
-        guard let screen else { return [] }
-        let chrome = ["new task?", "bypass permissions", "shift+tab", "for agents",
-                      "esc to interrupt", "to cycle", "ctrl+e to explain"]
-        var out: [String] = []
-        for line in screen.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
-            let low = line.lowercased()
-            if chrome.contains(where: { low.contains($0) }) { continue }
-            let squeezed = line.filter { !$0.isWhitespace }
-            guard squeezed.count >= size + 6 else { continue }
-            if squeezed.allSatisfy({ "─│╭╮╰╯✻⏵❯•⏸◉>-=·".contains($0) }) { continue }
-            out.append(String(squeezed.dropFirst(3).prefix(size)))
-            if out.count >= count { break }
-        }
-        return out
-    }
-
-    /// A branch's recent text (messages + tool results), whitespace-stripped for matching.
-    private static func branchText(from leafUuid: String, parent: [String: String],
-                                   byUuid: [String: [String: Any]], depth: Int = 140) -> String {
-        var parts: [String] = []
-        var u: String? = leafUuid
-        var seen = Set<String>()
-        var n = 0
-        while let cur = u, !seen.contains(cur), n < depth {
-            seen.insert(cur); n += 1
-            if let r = byUuid[cur], let m = r["message"] as? [String: Any] {
-                if let s = m["content"] as? String { parts.append(s) }
-                else if let blocks = m["content"] as? [[String: Any]] {
-                    for b in blocks {
-                        switch b["type"] as? String {
-                        case "text": if let t = b["text"] as? String { parts.append(t) }
-                        case "tool_result": if let t = b["content"] as? String { parts.append(String(t.prefix(2000))) }
-                        default: break
-                        }
-                    }
-                }
-            }
-            u = parent[cur]
-        }
-        return parts.joined(separator: "\n").filter { !$0.isWhitespace }
     }
 
     /// Text of the most recent real user prompt on a branch (skipping tool results and subagents).

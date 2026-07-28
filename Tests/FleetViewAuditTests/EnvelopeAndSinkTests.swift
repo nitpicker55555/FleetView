@@ -173,6 +173,57 @@ final class EnvelopeAndSinkTests: XCTestCase {
                       "both instances must survive in one file")
     }
 
+    func testTwoInstancesWritingAtOnceNeverTearALine() throws {
+        // Reproduces what the live log actually showed: two FleetView processes appending to the
+        // same file, and one record split across two lines. The cause was batching several lines
+        // into a single write larger than PIPE_BUF, which POSIX does not promise to keep atomic.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fv-audit-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let first = FileAuditSink(directory: dir, resource: AuditResource(instanceID: "a"))
+        let second = FileAuditSink(directory: dir, resource: AuditResource(instanceID: "b"))
+
+        let done = DispatchGroup()
+        for (sink, tag) in [(first, "a"), (second, "b")] {
+            DispatchQueue.global().async(group: done) {
+                for i in 0..<300 {
+                    sink.write(AuditEvent(name: "fleetview.terminal.status_changed",
+                                          message: "instance \(tag) event \(i)",
+                                          data: ["filler": .string(String(repeating: "x", count: 400)),
+                                                 "n": .int(i)]))
+                }
+                sink.flush()
+            }
+        }
+        XCTAssertEqual(done.wait(timeout: .now() + 30), .success)
+        first.flush()
+        second.flush()
+
+        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        let name = try XCTUnwrap(files.first { $0.hasSuffix(".jsonl") })
+        let text = try String(contentsOf: dir.appendingPathComponent(name), encoding: .utf8)
+        let lines = text.split(separator: "\n").map(String.init)
+
+        var torn = 0
+        var events = 0
+        var seen = Set<String>()
+        for line in lines {
+            guard let json = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
+                torn += 1
+                continue
+            }
+            guard (json["event.name"] as? String) == "fleetview.terminal.status_changed" else { continue }
+            events += 1
+            seen.insert((json["message"] as? String) ?? "")
+        }
+        XCTAssertEqual(torn, 0, "\(torn) of \(lines.count) lines were torn by a concurrent write")
+        // The real guarantee: with O_APPEND nothing overwrites anything, so every event survives.
+        // (Whether one header or two appear depends on which instance won the create race.)
+        XCTAssertEqual(events, 600, "events were lost to a concurrent writer")
+        XCTAssertEqual(seen.count, 600, "an event was overwritten by another instance")
+    }
+
     func testFileSinkCreatesPrivateFiles() throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("fv-audit-\(UUID().uuidString)")
