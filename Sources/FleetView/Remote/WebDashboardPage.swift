@@ -192,7 +192,22 @@ enum WebDashboardPage {
     background:linear-gradient(90deg,rgba(255,255,255,.10),rgba(255,255,255,.20),rgba(255,255,255,.10));
     background-size:220% 100%}
   @keyframes shim{0%{background-position:220% 0}100%{background-position:-120% 0}}
-  @media (prefers-reduced-motion:reduce){ .skel .row{animation:none} }
+  /* The conversation arrives rather than appearing: each card comes up from below with a strong
+     ease-out and a small overshoot, staggered, so the eye follows the last few into place. The two
+     sides drift in from their own edge, which is what makes it read as flying rather than fading. */
+  @keyframes flyR{
+    0%  {opacity:0;transform:translate(22px,30px) scale(.955)}
+    62% {opacity:1;transform:translate(-3px,-5px) scale(1.008)}
+    100%{opacity:1;transform:none}
+  }
+  @keyframes flyL{
+    0%  {opacity:0;transform:translate(-16px,26px) scale(.965)}
+    62% {opacity:1;transform:translate(2px,-4px) scale(1.006)}
+    100%{opacity:1;transform:none}
+  }
+  .msg.fly{animation:flyL .5s cubic-bezier(.16,1,.3,1) both}
+  .msg.user.fly{animation-name:flyR}
+  @media (prefers-reduced-motion:reduce){ .skel .row,.msg.fly{animation:none} }
   @media (max-width:520px){
     #chat{padding:14px 13px 22px}
     #sinfo{padding:6px 13px}
@@ -372,7 +387,7 @@ enum WebDashboardPage {
 <script>
 const COLORS={working:'var(--green)',shell:'var(--teal)',idle:'var(--gray)',
   needsYou:'var(--amber)',exited:'var(--red)',closed:'rgba(255,255,255,.22)'};
-let curUrl='',curId='',state=null,dragging=false,curView='chat',chatTimer=null,termLoaded=false,curInfo={},sentAt=0,stickBottom=false;
+let curUrl='',curId='',state=null,dragging=false,curView='chat',chatTimer=null,termLoaded=false,curInfo={},sentAt=0,stickBottom=false,flyNext=false;
 
 function short(n){if(n<1000)return ''+n;if(n<1000000)return (n/1000).toFixed(n<10000?1:0)+'k';return (n/1000000).toFixed(1)+'M';}
 function ago(sec){if(sec<0)return '';if(sec<5)return 'just now';if(sec<60)return sec+'s ago';
@@ -431,7 +446,7 @@ function showSkeleton(){
   document.getElementById('sinfo').innerHTML='';
   document.getElementById('stickyq').classList.remove('on');
   document.getElementById('perm').classList.remove('on');
-  sentGhost=null; curInfo={};
+  sentGhost=null; curInfo={}; flyNext=true;
 }
 /* Conversations are re-read from disk on every open, which is a visible wait on a phone. Keep the
    last few on the device and put one straight on screen, then let the poll bring it up to date —
@@ -463,7 +478,7 @@ function cachePut(id,j){
 function showCached(c){
   const el=document.getElementById('chat');
   el.dataset.sig=''; el.scrollTop=0;
-  sentGhost=null; stickBottom=true;
+  sentGhost=null; stickBottom=true; flyNext=true;
   curInfo=Object.assign({},c.info,{status:'',pendingTool:'',pendingText:''});
   document.getElementById('stickyq').classList.remove('on');
   document.getElementById('perm').classList.remove('on');
@@ -954,6 +969,12 @@ function renderChat(msgs,note){
     if(n.dataset.k&&open.has(n.dataset.k)) n.classList.add('open');
   });
   reconcileSent(el);
+  if(flyNext){                       // only when the conversation is first put on screen
+    flyNext=false;
+    const all=el.querySelectorAll('.msg'), n=all.length, from=Math.max(0,n-8);
+    for(let i=from;i<n;i++){ all[i].classList.add('fly');
+      all[i].style.animationDelay=((i-from)*46)+'ms'; }
+  }
   if(nearBottom){el.scrollTop=el.scrollHeight;stickBottom=false;}
   updateStickyPrompt();
 }
