@@ -120,8 +120,11 @@ enum WebDashboardPage {
   #chat{flex:1;min-height:0;position:relative;overflow-y:auto;-webkit-overflow-scrolling:touch;
     background:var(--bg);padding:18px 20px 26px;display:none;overscroll-behavior:contain;
     touch-action:pan-y}
+  /* Held halfway, the overlay has to read as a card lifted off the dashboard rather than a broken
+     layout — hence the edge shadow, kept through the settle so it fades out with the movement. */
   #term.dragging{transition:none}
-  #term.settle{transition:transform .22s cubic-bezier(.22,.8,.3,1)}
+  #term.settle{transition:transform .24s cubic-bezier(.22,.8,.3,1)}
+  #term.dragging,#term.settle{box-shadow:-22px 0 46px rgba(0,0,0,.55)}
   /* Hold the text to a comfortable measure on a wide screen instead of letting lines run the
      full width of a desktop browser. */
   #chat > *{max-width:760px;margin-left:auto;margin-right:auto}
@@ -508,13 +511,15 @@ function openTerm(id,name){
    resistance, then either settles back or carries on out to the right. */
 (function(){
   const t=document.getElementById('term'), chat=document.getElementById('chat');
-  let x0=0,y0=0,dx=0,t0=0,armed=false,active=false;
+  let x0=0,y0=0,dx=0,t0=0,armed=false,active=false,vx=0,lastX=0,lastT=0;
+  const reset=()=>{ armed=false; active=false; vx=0;
+    t.classList.remove('dragging'); t.classList.remove('settle'); t.style.transform=''; };
   // places where a horizontal drag means something else
   const busy=el=>!!(el&&el.closest&&el.closest('pre.code,.mbody,#presets,#keys,#inputbar,#tabs'));
   chat.addEventListener('touchstart',e=>{
     if(e.touches.length!==1||busy(e.target)){armed=false;return;}
-    const p=e.touches[0]; x0=p.clientX; y0=p.clientY; dx=0; t0=performance.now();
-    armed=true; active=false;
+    const p=e.touches[0]; x0=lastX=p.clientX; y0=p.clientY; dx=0; vx=0;
+    t0=lastT=performance.now(); armed=true; active=false;
   },{passive:true});
   chat.addEventListener('touchmove',e=>{
     if(!armed)return;
@@ -526,27 +531,35 @@ function openTerm(id,name){
       else return;
     }
     dx=Math.max(0,ax);
+    // Speed is tracked as it goes, smoothed, so a pause mid-swipe is a pause and not a flick.
+    const now=performance.now(), dt=Math.max(1,now-lastT);
+    vx=.65*vx+.35*((p.clientX-lastX)/dt);
+    lastX=p.clientX; lastT=now;
     const shown=dx*(1-Math.min(.45,dx/1400));      // resistance, so the far end feels heavy
-    t.style.transform='translate3d('+shown+'px,0,0)';
+    t.style.transform='translate3d('+shown+'px,0,0) scale('+(1-Math.min(.02,dx/6000))+')';
     e.preventDefault();
   },{passive:false});
   const settle=()=>{
     if(!active){armed=false;return;}
-    // A flick counts short of the distance, but only a real one: half a screen-width per second is
-    // an ordinary drag, not a gesture.
-    const flick=dx/Math.max(1,performance.now()-t0)>.9;
+    // A flick counts short of the distance, but only a real one — and only if the finger was still
+    // moving when it lifted. Stopping halfway and letting go is a decision to stay.
+    const stalled=performance.now()-lastT>100;
+    const flick=!stalled&&vx>.9;
     t.classList.remove('dragging'); t.classList.add('settle');
     if(dx>90||(flick&&dx>50)){
       t.style.transform='translate3d(100%,0,0)';
-      setTimeout(()=>{ t.classList.remove('settle'); t.style.transform=''; closeTerm(); },200);
+      setTimeout(()=>{ t.classList.remove('settle'); t.style.transform=''; closeTerm(); },210);
     }else{
       t.style.transform='';
-      setTimeout(()=>t.classList.remove('settle'),240);
+      setTimeout(()=>t.classList.remove('settle'),260);
     }
-    armed=false; active=false;
+    armed=false; active=false; vx=0;
   };
   chat.addEventListener('touchend',settle);
   chat.addEventListener('touchcancel',settle);
+  // A gesture that never gets its touchend — the tab going away mid-swipe — must not leave the
+  // overlay parked half off the screen.
+  document.addEventListener('visibilitychange',()=>{ if(document.hidden&&active) reset(); });
 })();
 function closeTerm(){
   document.getElementById('stickyq').classList.remove('on');
@@ -1254,11 +1267,14 @@ function card(t){
   </div>`;
 }
 function render(s){
-  document.getElementById('counts').textContent=`${s.projects.length} project${s.projects.length===1?'':'s'} · ${s.terminals.length} terminal${s.terminals.length===1?'':'s'}`;
+  const cnt=document.getElementById('counts');
+  const cntText=`${s.projects.length} project${s.projects.length===1?'':'s'} · ${s.terminals.length} terminal${s.terminals.length===1?'':'s'}`;
+  if(cnt.textContent!==cntText) cnt.textContent=cntText;
   let pills='';
   if(s.working>0)pills+=`<span class="pill" style="color:var(--green);background:rgba(92,209,140,.18)">${s.working} working</span> `;
   if(s.needs>0)pills+=`<span class="pill" style="color:var(--amber);background:rgba(250,184,82,.18)">${s.needs} needs you</span>`;
-  document.getElementById('pills').innerHTML=pills;
+  const pillEl=document.getElementById('pills');
+  if(pillEl.innerHTML!==pills) pillEl.innerHTML=pills;
   let html='';
   if(!s.remoteOK)html+=`<div class="banner">Web terminals are disabled — run <b>${esc(s.remoteHint)}</b> and relaunch FleetView. Status is still shown.</div>`;
   for(const p of s.projects){
@@ -1276,8 +1292,14 @@ function render(s){
     if(solo.length)html+=`<div class="grid">${solo.map(card).join('')}</div>`;
     html+='</div>';
   }
-  document.getElementById('root').innerHTML=html||'<div class="empty">No projects yet. Add one on the Mac.</div>';
+  // Every 1.5s this used to replace the whole board, which forces a layout in the middle of a
+  // flick and shows up as a stall at the end of a scroll. Almost every tick is identical, so the
+  // rebuild only happens when the markup actually differs.
+  const out=html||'<div class="empty">No projects yet. Add one on the Mac.</div>';
+  const root=document.getElementById('root');
+  if(out!==lastBoard){ lastBoard=out; root.innerHTML=out; }
 }
+let lastBoard='';
 
 async function tick(){
   if(dragging||termOpen())return;
