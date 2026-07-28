@@ -30,8 +30,13 @@ final class GeoResolver: @unchecked Sendable {
     private var publicCache: [String: (fields: [String: AuditValue], at: Date)] = [:]
     private let queue = DispatchQueue(label: "ai.eigent.fleetview.geo", qos: .utility)
 
+    private var hostGeoCache: [String: AuditValue] = [:]
+    private var hostGeoFetchedAt: Date?
+    private var hostFetchInFlight = false
+
     private let peerTTL: TimeInterval = 60
     private let publicTTL: TimeInterval = 86_400
+    private let hostTTL: TimeInterval = 3_600
 
     /// Everything known synchronously. Never blocks on the network.
     func fields(ip: String, acceptLanguage: String?) -> [String: AuditValue] {
@@ -45,6 +50,10 @@ final class GeoResolver: @unchecked Sendable {
             out["fleetview.web.accept_language"] = .string(language)
         }
 
+        // The machine's own timezone. Free, never leaves the Mac, and on a LAN it says more about
+        // where somebody is sitting than any address does.
+        out["fleetview.host.timezone"] = .string(TimeZone.current.identifier)
+
         switch scope {
         case .tailscale:
             if let peer = tailscalePeer(for: ip) {
@@ -56,10 +65,46 @@ final class GeoResolver: @unchecked Sendable {
             } else if config.wantsPublicGeoLookup {
                 resolvePublicInBackground(ip)     // available on the *next* request from this address
             }
-        case .loopback, .lan, .unknown:
+        case .loopback, .lan:
+            // A private address is not routable, so there is nothing to geolocate. What *can* be
+            // said is where this Mac's own connection comes out — the client is on the same wifi,
+            // so the network's location is a truthful answer to "where was this". Recorded under
+            // `host.geo` rather than `client.geo` so nobody mistakes it for the device's own fix.
+            for (key, value) in hostGeo() { out[key] = value }
+        case .unknown:
             break
         }
         return out
+    }
+
+    /// This Mac's egress location, refreshed hourly. Requires an explicit opt-in because resolving
+    /// it means asking a third party where our own public address is.
+    private func hostGeo() -> [String: AuditValue] {
+        guard AuditConfig.current.wantsPublicGeoLookup else { return [:] }
+        lock.lock()
+        let cached = hostGeoCache
+        let fresh = hostGeoFetchedAt.map { Date().timeIntervalSince($0) < hostTTL } ?? false
+        let inFlight = hostFetchInFlight
+        if !fresh && !inFlight { hostFetchInFlight = true }
+        lock.unlock()
+
+        if !fresh && !inFlight {
+            queue.async { [weak self] in
+                guard let self else { return }
+                // An empty host resolves our own public address, then its location.
+                let fields = Self.lookupPublic("").map { pairs in
+                    Dictionary(uniqueKeysWithValues: pairs.map { key, value in
+                        (key.replacingOccurrences(of: "client.", with: "host."), value)
+                    })
+                } ?? [:]
+                self.lock.lock()
+                self.hostGeoCache = fields
+                self.hostGeoFetchedAt = Date()
+                self.hostFetchInFlight = false
+                self.lock.unlock()
+            }
+        }
+        return cached
     }
 
     // MARK: - Tailscale
@@ -161,6 +206,8 @@ final class GeoResolver: @unchecked Sendable {
         }
     }
 
+    /// An empty `ip` asks the service to resolve whatever address the request came from — which is
+    /// this Mac's own egress address.
     private static func lookupPublic(_ ip: String) -> [String: AuditValue]? {
         let decimals = AuditConfig.current.geoPrecisionDecimals
         guard let url = URL(string: "http://ip-api.com/json/\(ip)?fields=status,countryCode,regionName,city,lat,lon,timezone,as") else { return nil }
