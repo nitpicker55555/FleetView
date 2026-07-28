@@ -23,6 +23,7 @@ struct ConvMsg: Codable {
     var edits: [ConvEdit]? = nil  // Edit / MultiEdit / Write → rendered as a diff
     var patch: String? = nil      // Codex apply_patch → already a patch, just colourised
     var pending: Bool = false     // tool call with no result yet → still running, or awaiting approval
+    var queued: Bool = false      // typed mid-turn: recovered from prompt history, not the transcript
 }
 
 /// One tappable choice parsed off the agent's on-screen prompt (e.g. "1. Yes"), so a permission
@@ -66,6 +67,90 @@ enum Conversation {
     /// - Parameter ownPrompt: this terminal's last submitted prompt (recorded per terminal by the
     ///   hooks). When several terminals resume the SAME session they all append to one file and each
     ///   grows its own branch, so this is what tells us which branch belongs to this terminal.
+    /// Prompts typed WHILE the agent is working never reach the transcript — Claude folds them
+    /// into the running turn and no `UserPromptSubmit` hook fires either, so the web chat simply
+    /// lost them. `~/.claude/history.jsonl` does keep every prompt with its session id and time,
+    /// which is enough to put them back where they were said.
+    private struct QueuedPrompt { let text: String; let ms: Double }
+
+    private static func queuedPrompts(sessionId: String, after: Double) -> [QueuedPrompt] {
+        let url = FV.home.appendingPathComponent(".claude/history.jsonl")
+        guard let h = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? h.close() }
+        guard let size = try? h.seekToEnd() else { return [] }
+        let window: UInt64 = 800_000                 // recent history is all that can be on screen
+        try? h.seek(toOffset: size > window ? size - window : 0)
+        guard let data = try? h.readToEnd(), let text = String(data: data, encoding: .utf8) else { return [] }
+
+        var out: [QueuedPrompt] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard line.first == "{", let d = line.data(using: .utf8),
+                  let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+                  (obj["sessionId"] as? String) == sessionId,
+                  let display = obj["display"] as? String, !display.isEmpty else { continue }
+            // JSON writes it as a number; some builds quote it. Accept both.
+            let ms = (obj["timestamp"] as? NSNumber)?.doubleValue
+                ?? Double(obj["timestamp"] as? String ?? "") ?? 0
+            guard ms >= after else { continue }
+            out.append(QueuedPrompt(text: display, ms: ms))
+        }
+        return out
+    }
+
+    /// Splice history-only prompts into the message list at the moment they were typed.
+    private static func mergeQueued(_ msgs: [ConvMsg], sessionId: String?) -> [ConvMsg] {
+        guard let sessionId, !msgs.isEmpty else { return msgs }
+        let stamps = msgs.compactMap { $0.ts.flatMap(isoMillis) }
+        guard let first = stamps.first else { return msgs }
+
+        let seen = Set(msgs.filter { $0.role == "user" && $0.kind == "text" }
+                           .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) })
+        // A prompt the user queued and then re-sent lands in the history twice; keep the first.
+        var taken = seen
+        var queued: [QueuedPrompt] = []
+        for q in queuedPrompts(sessionId: sessionId, after: first) {
+            let key = q.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if taken.contains(key) { continue }
+            taken.insert(key)
+            queued.append(q)
+        }
+        guard !queued.isEmpty else { return msgs }
+
+        var out: [ConvMsg] = []
+        var pending = queued.sorted { $0.ms < $1.ms }
+        for m in msgs {
+            let at = m.ts.flatMap(isoMillis) ?? .greatestFiniteMagnitude
+            while let q = pending.first, q.ms <= at {
+                pending.removeFirst()
+                out.append(ConvMsg(role: "user", kind: "text", text: q.text, tool: nil, cat: nil,
+                                   detail: nil, output: nil, ok: nil,
+                                   ts: isoString(q.ms), sub: false, queued: true))
+            }
+            out.append(m)
+        }
+        for q in pending {
+            out.append(ConvMsg(role: "user", kind: "text", text: q.text, tool: nil, cat: nil,
+                               detail: nil, output: nil, ok: nil,
+                               ts: isoString(q.ms), sub: false, queued: true))
+        }
+        return out
+    }
+
+    private static let isoParser: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let isoPlain = ISO8601DateFormatter()
+
+    private static func isoMillis(_ s: String) -> Double? {
+        guard let d = isoParser.date(from: s) ?? isoPlain.date(from: s) else { return nil }
+        return d.timeIntervalSince1970 * 1000
+    }
+    private static func isoString(_ ms: Double) -> String {
+        isoParser.string(from: Date(timeIntervalSince1970: ms / 1000))
+    }
+
     static func parse(path: String, cwd: String = "", limit: Int = 120,
                       ownPrompt: String = "") -> ConvResult {
         var info = ConvInfo()
@@ -106,7 +191,10 @@ enum Conversation {
             info.pendingTool = last.tool
             info.pendingText = last.text
         }
-        let out = msgs.count > limit ? Array(msgs.suffix(limit)) : msgs
+        // Put back the prompts that were typed while the agent was working (see mergeQueued).
+        let sessionId = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let merged = mergeQueued(msgs, sessionId: sessionId)
+        let out = merged.count > limit ? Array(merged.suffix(limit)) : merged
         return ConvResult(messages: out, info: info)
     }
 
