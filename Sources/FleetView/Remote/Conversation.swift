@@ -69,58 +69,121 @@ enum Conversation {
     ///   grows its own branch, so this is what tells us which branch belongs to this terminal.
     /// Prompts typed WHILE the agent is working never reach the transcript — Claude folds them
     /// into the running turn and no `UserPromptSubmit` hook fires either, so the web chat simply
-    /// lost them. `~/.claude/history.jsonl` does keep every prompt with its session id and time,
-    /// which is enough to put them back where they were said.
+    /// lost them. `~/.claude/history.jsonl` is the only record left.
+    ///
+    /// It is a record of the *input box*, though, not of what was sent: recalling an old prompt with
+    /// the up arrow appends it again with a fresh timestamp, and a half-typed line can be snapshotted
+    /// before you finish it. Both have to be filtered out or they surface as things you never said.
     private struct QueuedPrompt { let text: String; let ms: Double }
+
+    /// The history file logs everything the box was submitted with — including slash commands and
+    /// the wrappers the CLI expands them into, none of which belong in a conversation.
+    private static let queuedSkip = ["<local-command", "<command-name", "<command-message",
+                                     "<command-args", "[Request interrupted"]
+
+    private static func flatten(_ s: String) -> String {
+        s.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    /// Is `earlier` the same line as `later`, caught before it was finished? Prefix matching alone
+    /// misses the usual case — a word fixed in the middle — so the shared head and tail are measured
+    /// together: a draft keeps nearly all of itself inside the line that supersedes it.
+    private static func isDraft(_ earlier: String, of later: String) -> Bool {
+        let a = Array(earlier), b = Array(later)
+        guard b.count > a.count, a.count >= 8 else { return false }
+        var head = 0
+        while head < a.count, head < b.count, a[head] == b[head] { head += 1 }
+        var tail = 0
+        while tail < a.count - head, tail < b.count - head,
+              a[a.count - 1 - tail] == b[b.count - 1 - tail] { tail += 1 }
+        return Double(min(head + tail, a.count)) >= 0.8 * Double(a.count)
+    }
 
     private static func queuedPrompts(sessionId: String, after: Double) -> [QueuedPrompt] {
         let url = FV.home.appendingPathComponent(".claude/history.jsonl")
-        guard let h = try? FileHandle(forReadingFrom: url) else { return [] }
-        defer { try? h.close() }
-        guard let size = try? h.seekToEnd() else { return [] }
-        let window: UInt64 = 800_000                 // recent history is all that can be on screen
-        try? h.seek(toOffset: size > window ? size - window : 0)
-        guard let data = try? h.readToEnd(), let text = String(data: data, encoding: .utf8) else { return [] }
+        // The whole file: the earliest sighting of a prompt is what says whether a later one is a
+        // recall, and that can predate any tail window. Only lines naming this session are parsed.
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
 
-        var out: [QueuedPrompt] = []
+        var all: [QueuedPrompt] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard line.first == "{", let d = line.data(using: .utf8),
+            guard line.first == "{", line.contains(sessionId),
+                  let d = line.data(using: .utf8),
                   let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
                   (obj["sessionId"] as? String) == sessionId,
                   let display = obj["display"] as? String, !display.isEmpty else { continue }
+            let t = display.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty, !t.hasPrefix("/"),
+                  !queuedSkip.contains(where: { t.hasPrefix($0) }) else { continue }
             // JSON writes it as a number; some builds quote it. Accept both.
             let ms = (obj["timestamp"] as? NSNumber)?.doubleValue
                 ?? Double(obj["timestamp"] as? String ?? "") ?? 0
-            guard ms >= after else { continue }
-            out.append(QueuedPrompt(text: display, ms: ms))
+            guard ms > 0 else { continue }
+            all.append(QueuedPrompt(text: t, ms: ms))
+        }
+        all.sort { $0.ms < $1.ms }
+
+        // Keep the first sighting of each text only — a second one is the up-arrow bringing an old
+        // prompt back into the box, which is not something that was said again.
+        var firstSeen = Set<String>()
+        var fresh: [QueuedPrompt] = []
+        for q in all where firstSeen.insert(flatten(q.text)).inserted { fresh.append(q) }
+
+        // Drop a line a later one supersedes: that is a snapshot of typing in progress, not a prompt
+        // of its own. (Bounded in time so an unrelated later message can't swallow one.)
+        var out: [QueuedPrompt] = []
+        for (i, q) in fresh.enumerated() {
+            let k = flatten(q.text)
+            let superseded = fresh[(i + 1)...].contains {
+                $0.ms - q.ms < 600_000 && isDraft(k, of: flatten($0.text))
+            }
+            if !superseded, q.ms >= after { out.append(q) }
         }
         return out
     }
 
     /// Splice history-only prompts into the message list at the moment they were typed.
-    private static func mergeQueued(_ msgs: [ConvMsg], sessionId: String?) -> [ConvMsg] {
+    private static func mergeQueued(_ msgs: [ConvMsg], sessionId: String?, everSaid: [String]) -> [ConvMsg] {
         guard let sessionId, !msgs.isEmpty else { return msgs }
         let stamps = msgs.compactMap { $0.ts.flatMap(isoMillis) }
         guard let first = stamps.first else { return msgs }
 
-        let seen = Set(msgs.filter { $0.role == "user" && $0.kind == "text" }
-                           .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) })
+        // Every prompt in the FILE, not just the branch being rendered: a compaction leaves the
+        // earlier branch out of `msgs`, and a prompt from it must not come back as a new one.
+        let shown = msgs.filter { $0.role == "user" && $0.kind == "text" }.map { flatten($0.text) }
+            + everSaid
+        /// Is this prompt already on screen? Exact match for short ones; for anything long enough to
+        /// be distinctive, a shared opening or a containment counts too — a pasted-in prompt reads
+        /// as "[Pasted text #1 +40 lines]" here and as the full text there, and matching only
+        /// exactly put it on screen a second time.
+        func alreadyShown(_ k: String) -> Bool {
+            if k.isEmpty { return true }
+            if shown.contains(k) { return true }
+            guard k.count >= 12 else { return false }
+            let head = String(k.prefix(12))
+            return shown.contains { $0.hasPrefix(head) || $0.contains(k) }
+        }
         // A prompt the user queued and then re-sent lands in the history twice; keep the first.
-        var taken = seen
+        var taken = Set<String>()
         var queued: [QueuedPrompt] = []
         for q in queuedPrompts(sessionId: sessionId, after: first) {
-            let key = q.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if taken.contains(key) { continue }
+            let key = flatten(q.text)
+            if taken.contains(key) || alreadyShown(key) { continue }
             taken.insert(key)
             queued.append(q)
         }
         guard !queued.isEmpty else { return msgs }
 
+        // Chronologically these belong in the middle of a turn, but reading them there is wrong:
+        // the turn's own output carries on underneath them. They are shown at the end of the turn
+        // they interrupted — right before the next thing you said, which is where the agent
+        // actually picks them up.
         var out: [ConvMsg] = []
         var pending = queued.sorted { $0.ms < $1.ms }
         for m in msgs {
             let at = m.ts.flatMap(isoMillis) ?? .greatestFiniteMagnitude
-            while let q = pending.first, q.ms <= at {
+            let boundary = m.role == "user" && m.kind == "text" && !m.sub
+            while boundary, let q = pending.first, q.ms <= at {
                 pending.removeFirst()
                 out.append(ConvMsg(role: "user", kind: "text", text: q.text, tool: nil, cat: nil,
                                    detail: nil, output: nil, ok: nil,
@@ -193,7 +256,17 @@ enum Conversation {
         }
         // Put back the prompts that were typed while the agent was working (see mergeQueued).
         let sessionId = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-        let merged = mergeQueued(msgs, sessionId: sessionId)
+        // Prompts from every branch in the file, so a compacted-away one is still recognised.
+        let everSaid: [String] = records.compactMap { obj in
+            guard (obj["type"] as? String) == "user",
+                  let m = obj["message"] as? [String: Any] else { return nil }
+            if let str = m["content"] as? String { return flatten(str) }
+            guard let blocks = m["content"] as? [[String: Any]] else { return nil }
+            let t = blocks.compactMap { ($0["type"] as? String) == "text" ? $0["text"] as? String : nil }
+                          .joined(separator: " ")
+            return t.isEmpty ? nil : flatten(t)
+        }
+        let merged = mergeQueued(msgs, sessionId: sessionId, everSaid: everSaid)
         let out = merged.count > limit ? Array(merged.suffix(limit)) : merged
         return ConvResult(messages: out, info: info)
     }
