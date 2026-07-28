@@ -970,6 +970,9 @@ final class AppState: ObservableObject {
             if let add = query["add"] { addNote(add) }
             else if let d = query["del"], let nid = UUID(uuidString: d) { removeNote(nid) }
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/favicon.ico":
+            // Answer once instead of 404-ing forever: browsers ask unprompted and keep retrying.
+            return ("204 No Content", "image/x-icon", Data())
         case "/select":
             // A beacon: the web page tells the server which terminal the user opened. Without it,
             // "what were they looking at" would have to be guessed from a polling endpoint, whose

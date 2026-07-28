@@ -156,6 +156,9 @@ final class PanelVersions {
     private func capture(content: String, auditor: Auditor, attribution: PanelAttribution) -> PanelVersion? {
         let fm = FileManager.default
         try? fm.createDirectory(at: FV.panelVersionsDir, withIntermediateDirectories: true)
+        // The very first capture usually finds a panel that was already on disk before auditing
+        // existed. Nothing can be attributed to it, and saying so beats an unexplained "unknown".
+        let preexisting = currentUUID == nil && currentSHA == nil
 
         let version = PanelVersion(uuid: Identifiers.uuidV7(),
                                    sha256: PanelCapture.sha256(content),
@@ -189,8 +192,10 @@ final class PanelVersions {
         var data = version.auditData
         data["panel.path"] = .string(destination.path)
         if !PanelCapture.looksComplete(content) { data["panel.incomplete"] = .bool(true) }
+        if preexisting { data["panel.preexisting"] = .bool(true) }
 
-        let who = attribution.terminalName ?? attribution.method.rawValue
+        let who = attribution.terminalName
+            ?? (preexisting ? "an earlier run (archived on first sight)" : attribution.method.rawValue)
         auditor.emit(AuditEvent(name: "fleetview.panel.version_created",
                                 categories: ["configuration"],
                                 types: ["creation"],

@@ -124,7 +124,9 @@ final class WebAudit: @unchecked Sendable {
 
         guard ok else {
             // A refused request changes nothing, so the state diff cannot see it — and a refused
-            // request is precisely what an audit trail exists for.
+            // request is precisely what an audit trail exists for. Static shell paths are the
+            // exception: browsers ask for /favicon.ico unprompted, and its 404 says nothing.
+            guard !WebPathPolicy.isDocument(scope.path) else { return }
             auditor.emit(AuditEvent(name: "fleetview.web.request_denied",
                                     kind: .alert,
                                     categories: ["web"],

@@ -132,6 +132,57 @@ final class WebRequestTests: XCTestCase {
         XCTAssertEqual(second.session.totalRequests, 2)
     }
 
+    func testACookielessPollerReusesItsSession() {
+        // A scripted client keeps no cookie. Minting a session per request turned 13 minutes of
+        // fleet-monitor polling into 227 "session started" records, which is noise, not a log.
+        let registry = WebSessionRegistry()
+        let first = registry.observe(id: nil, ip: "127.0.0.1", userAgent: "Python-urllib/3.14",
+                                     path: "/state", now: now)
+        var newSessions = first.isNew ? 1 : 0
+        for i in 1...50 {
+            let next = registry.observe(id: nil, ip: "127.0.0.1", userAgent: "Python-urllib/3.14",
+                                        path: "/state", now: now.addingTimeInterval(Double(i) * 2))
+            if next.isNew { newSessions += 1 }
+        }
+        XCTAssertEqual(newSessions, 1, "50 polls must be one visit")
+        XCTAssertEqual(registry.activeCount, 1)
+    }
+
+    func testDifferentCookielessClientsStaySeparate() {
+        let registry = WebSessionRegistry()
+        _ = registry.observe(id: nil, ip: "127.0.0.1", userAgent: "Python-urllib/3.14", path: "/state", now: now)
+        let other = registry.observe(id: nil, ip: "192.168.2.8", userAgent: "Python-urllib/3.14",
+                                     path: "/state", now: now)
+        let tool = registry.observe(id: nil, ip: "127.0.0.1", userAgent: "fleetctl/fleet-monitor/1.0",
+                                    path: "/state", now: now)
+        XCTAssertTrue(other.isNew, "a different address is a different client")
+        XCTAssertTrue(tool.isNew, "a different tool is a different client")
+        XCTAssertEqual(registry.activeCount, 3)
+    }
+
+    func testACookieAlwaysWinsOverTheFallback() {
+        let registry = WebSessionRegistry()
+        let a = registry.observe(id: nil, ip: "10.0.0.5", userAgent: "Safari", path: "/", now: now)
+        let b = registry.observe(id: "ws_explicit", ip: "10.0.0.5", userAgent: "Safari",
+                                 path: "/", now: now.addingTimeInterval(1))
+        XCTAssertNotEqual(b.session.id, a.session.id, "an explicit cookie identifies its own session")
+    }
+
+    func testACookielessClientDoesNotAdoptAnExpiredSession() {
+        let registry = WebSessionRegistry(idleTimeout: 60)
+        let first = registry.observe(id: nil, ip: "127.0.0.1", userAgent: "curl", path: "/", now: now)
+        let later = registry.observe(id: nil, ip: "127.0.0.1", userAgent: "curl",
+                                     path: "/", now: now.addingTimeInterval(600))
+        XCTAssertTrue(later.isNew)
+        XCTAssertNotEqual(later.session.id, first.session.id)
+    }
+
+    func testFaviconIsNotAudited() {
+        // Every browser asks for it unprompted; its 404 says nothing about anyone's behaviour.
+        XCTAssertTrue(WebPathPolicy.isDocument("/favicon.ico"))
+        XCTAssertFalse(WebPathPolicy.isAudited("/favicon.ico"))
+    }
+
     func testAStaleCookieStartsAFreshSession() {
         let registry = WebSessionRegistry(idleTimeout: 60)
         let first = registry.observe(id: nil, ip: "10.0.0.5", userAgent: "x", path: "/", now: now)

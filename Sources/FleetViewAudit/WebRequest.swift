@@ -138,9 +138,13 @@ public enum WebPathPolicy {
     ]
 
     /// Static shell of the app: interesting the first time (it starts a session) and noise after.
-    public static let documents: Set<String> = ["/", "/index.html", "/panel"]
+    /// `/favicon.ico` is here because every browser asks for it unprompted — a 404 for it says
+    /// nothing about anyone's behaviour.
+    public static let documents: Set<String> = ["/", "/index.html", "/panel", "/favicon.ico"]
 
     public static func isPolled(_ path: String) -> Bool { polled.contains(path) }
+
+    public static func isDocument(_ path: String) -> Bool { documents.contains(path) }
 
     /// Everything that changes something, sends input, or reveals an endpoint gets its own record.
     public static func isAudited(_ path: String) -> Bool {
@@ -223,7 +227,11 @@ public final class WebSessionRegistry: @unchecked Sendable {
                         now: Date) -> Observation {
         lock.lock(); defer { lock.unlock() }
 
-        let key = id ?? Self.newID()
+        // A client that cannot keep a cookie — the CLI pollers, `curl`, anything scripted — would
+        // otherwise mint a session on every single request. Fall back to matching a live session by
+        // address and user agent, so a poller is one long visit rather than hundreds of one-request
+        // ones. (Only as a fallback: a real browser's cookie always wins.)
+        let key = id ?? liveSessionKey(ip: ip, userAgent: userAgent, now: now) ?? Self.newID()
         var isNew = false
         var session: WebSession
         if var existing = sessions[key], now.timeIntervalSince(existing.lastSeen) < idleTimeout {
@@ -250,6 +258,16 @@ public final class WebSessionRegistry: @unchecked Sendable {
         sessions[key] = session
 
         return Observation(session: session, isNew: isNew, isAudited: WebPathPolicy.isAudited(path))
+    }
+
+    /// A live session from the same client, for requests that arrive without a cookie.
+    /// Caller must hold the lock.
+    private func liveSessionKey(ip: String, userAgent: String?, now: Date) -> String? {
+        sessions.values
+            .filter { $0.ip == ip && $0.userAgent == userAgent
+                      && now.timeIntervalSince($0.lastSeen) < idleTimeout }
+            .max { $0.lastSeen < $1.lastSeen }?
+            .id
     }
 
     public func setGeo(_ geo: [String: AuditValue], for id: String) {
