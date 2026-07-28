@@ -954,6 +954,10 @@ final class AppState: ObservableObject {
             }
             remote.sendKey(id, k)
             markActivity(id)
+            // Interrupting ends the turn without any hook firing (there's no Stop event for a
+            // cancelled turn), so the card and the chat would sit on "running" forever. The desktop
+            // Esc monitor already corrects this locally; do the same for a remote interrupt.
+            if k == "Escape" || k == "C-c" { handleInterrupt(id) }
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         case "/scroll":
             guard let s = query["id"], let id = UUID(uuidString: s) else {
