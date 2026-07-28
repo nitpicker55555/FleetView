@@ -115,8 +115,13 @@ enum WebDashboardPage {
   #tabs button{background:transparent;border:0;color:var(--sub);border-radius:6px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer}
   #tabs button.on{background:var(--accent);color:#0b1020}
   /* conversation pane — plain scrollable chat, the reliable way to read history on a phone */
+  /* pan-y: vertical scrolling stays the browser's, horizontal gestures come to us — which is both
+     how the swipe-back below is possible and what stops Safari's own edge swipe leaving the page. */
   #chat{flex:1;min-height:0;position:relative;overflow-y:auto;-webkit-overflow-scrolling:touch;
-    background:var(--bg);padding:18px 20px 26px;display:none;overscroll-behavior:contain}
+    background:var(--bg);padding:18px 20px 26px;display:none;overscroll-behavior:contain;
+    touch-action:pan-y}
+  #term.dragging{transition:none}
+  #term.settle{transition:transform .22s cubic-bezier(.22,.8,.3,1)}
   /* Hold the text to a comfortable measure on a wide screen instead of letting lines run the
      full width of a desktop browser. */
   #chat > *{max-width:760px;margin-left:auto;margin-right:auto}
@@ -499,6 +504,50 @@ function openTerm(id,name){
   beaconSelect(id,'chat');
   setView('chat');          // reading history is the common remote case
 }
+/* Swipe right to go back, the way the phone's own apps do. The overlay follows your finger with
+   resistance, then either settles back or carries on out to the right. */
+(function(){
+  const t=document.getElementById('term'), chat=document.getElementById('chat');
+  let x0=0,y0=0,dx=0,t0=0,armed=false,active=false;
+  // places where a horizontal drag means something else
+  const busy=el=>!!(el&&el.closest&&el.closest('pre.code,.mbody,#presets,#keys,#inputbar,#tabs'));
+  chat.addEventListener('touchstart',e=>{
+    if(e.touches.length!==1||busy(e.target)){armed=false;return;}
+    const p=e.touches[0]; x0=p.clientX; y0=p.clientY; dx=0; t0=performance.now();
+    armed=true; active=false;
+  },{passive:true});
+  chat.addEventListener('touchmove',e=>{
+    if(!armed)return;
+    const p=e.touches[0], ax=p.clientX-x0, ay=p.clientY-y0;
+    if(!active){
+      // decide once: mostly vertical is a scroll and we never take it back
+      if(Math.abs(ay)>10&&Math.abs(ay)>=Math.abs(ax)){armed=false;return;}
+      if(ax>14&&Math.abs(ax)>Math.abs(ay)*1.6){ active=true; t.classList.remove('settle'); t.classList.add('dragging'); }
+      else return;
+    }
+    dx=Math.max(0,ax);
+    const shown=dx*(1-Math.min(.45,dx/1400));      // resistance, so the far end feels heavy
+    t.style.transform='translate3d('+shown+'px,0,0)';
+    e.preventDefault();
+  },{passive:false});
+  const settle=()=>{
+    if(!active){armed=false;return;}
+    // A flick counts short of the distance, but only a real one: half a screen-width per second is
+    // an ordinary drag, not a gesture.
+    const flick=dx/Math.max(1,performance.now()-t0)>.9;
+    t.classList.remove('dragging'); t.classList.add('settle');
+    if(dx>90||(flick&&dx>50)){
+      t.style.transform='translate3d(100%,0,0)';
+      setTimeout(()=>{ t.classList.remove('settle'); t.style.transform=''; closeTerm(); },200);
+    }else{
+      t.style.transform='';
+      setTimeout(()=>t.classList.remove('settle'),240);
+    }
+    armed=false; active=false;
+  };
+  chat.addEventListener('touchend',settle);
+  chat.addEventListener('touchcancel',settle);
+})();
 function closeTerm(){
   document.getElementById('stickyq').classList.remove('on');
   document.getElementById('term').classList.remove('show');
@@ -592,7 +641,8 @@ function syncViewport(){
   lastBand=top+':'+bottom;
   const chat=document.getElementById('chat');
   const gap=Math.max(0,chat.scrollHeight-chat.scrollTop-chat.clientHeight);
-  t.style.height='';t.style.transform='';        // the box stays inset:0; only the padding moves
+  t.style.height='';
+  if(!t.classList.contains('dragging')) t.style.transform='';   // never fight a swipe in progress
   t.style.paddingTop=top+'px';
   t.style.paddingBottom=bottom+'px';
   document.getElementById('jump').style.bottom=(96+bottom)+'px';   // it sits above the composer
