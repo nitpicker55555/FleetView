@@ -1,3 +1,4 @@
+import FleetViewAudit
 import Foundation
 
 /// Everything the TerminalWindowController needs to run a terminal *inside* a FleetView tmux
@@ -139,6 +140,16 @@ final class RemoteServer {
         }
         do { try proc.run() } catch { return nil }
         instances[id] = (port, proc)
+        // A terminal becoming reachable from other devices is a security-relevant fact, and one no
+        // state diff would show — the model is unchanged, a listener simply appeared.
+        AppAudit.shared.auditor.emit("fleetview.ttyd.started",
+                                     categories: ["network"],
+                                     message: "terminal \"\(name)\" is now served on :\(port)",
+                                     target: AuditTarget(kind: "terminal", id: id.uuidString, name: name),
+                                     data: ["port": .int(port),
+                                            "pid": .int(Int(proc.processIdentifier)),
+                                            "writable": .bool(true),
+                                            "tmux_session": .string(session)])
         return Endpoint(url: "http://\(ip):\(port)/", port: port, session: session)
     }
 
@@ -249,8 +260,13 @@ final class RemoteServer {
 
     /// Stop a terminal's web server and destroy its tmux session (called on Remove Terminal).
     func stop(_ id: UUID) {
-        if let inst = instances.removeValue(forKey: id), inst.proc.isRunning {
-            inst.proc.terminate()
+        if let inst = instances.removeValue(forKey: id) {
+            if inst.proc.isRunning { inst.proc.terminate() }
+            AppAudit.shared.auditor.emit("fleetview.ttyd.stopped",
+                                         categories: ["network"],
+                                         message: "stopped serving a terminal on :\(inst.port)",
+                                         target: AuditTarget(kind: "terminal", id: id.uuidString),
+                                         data: ["port": .int(inst.port)])
         }
         runTmux(["kill-session", "-t", RemoteServer.sessionName(for: id)])
     }

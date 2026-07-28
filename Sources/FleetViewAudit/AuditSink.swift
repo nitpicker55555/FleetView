@@ -176,31 +176,36 @@ public final class FileAuditSink: AuditSink, @unchecked Sendable {
     }
 
     public func write(_ event: AuditEvent) {
-        let line = encoder.line(for: event)
         queue.async { [weak self] in
             guard let self else { return }
-            self.buffer.append(Data((line + "\n").utf8))
+            // The file (and its header) is prepared *before* the event is encoded, so sequence
+            // numbers always run in the order the lines physically appear. Encoding first would
+            // hand the header a number larger than every line it precedes.
+            self.prepareHandle(at: event.timestamp)
+            self.buffer.append(Data((self.encoder.line(for: event) + "\n").utf8))
             // Small buffer, short timer: a crash should cost at most a few tens of milliseconds of
             // log, and the app should never pay a synchronous file write on the main thread.
             if self.buffer.count >= 8192 {
-                self.flushLocked()
+                self.writeBuffer()
             } else if !self.flushScheduled {
                 self.flushScheduled = true
                 self.queue.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                     self?.flushScheduled = false
-                    self?.flushLocked()
+                    self?.writeBuffer()
                 }
             }
         }
     }
 
     public func flush() {
-        queue.sync { self.flushLocked() }
+        queue.sync {
+            self.prepareHandle()
+            self.writeBuffer()
+        }
     }
 
-    private func flushLocked() {
-        guard !buffer.isEmpty else { return }
-        guard let fh = handleForToday() else { buffer.removeAll(); return }
+    private func writeBuffer() {
+        guard !buffer.isEmpty, let fh = handle else { return }
         let data = buffer
         buffer.removeAll()
         do { try fh.write(contentsOf: data) } catch { /* disk full / unlinked — drop, never crash */ }
@@ -208,15 +213,21 @@ public final class FileAuditSink: AuditSink, @unchecked Sendable {
 
     /// Opens (and rotates) the day's file. Rotation is by filename rather than by renaming, so a
     /// second instance holding the old handle keeps writing to a file that still exists.
-    private func handleForToday() -> FileHandle? {
-        let day = dayFormatter.string(from: Date())
-        if day != currentDay { closeCurrent() }
+    /// `moment` is the timestamp of the event this file is being opened for. The header takes it
+    /// too, so the file's first line is never stamped later than the line after it — event ids are
+    /// derived from timestamps, and a header claiming the future would break ordering by id.
+    private func prepareHandle(at moment: Date = Date()) {
+        let day = dayFormatter.string(from: moment)
+        if let path = currentPath, handle != nil, day == currentDay,
+           Self.fileSize(path) < maxFileBytes { return }
 
-        if let fh = handle, let path = currentPath {
-            if Self.fileSize(path) < maxFileBytes { return fh }
-            closeCurrent()
-        }
+        // Anything still buffered belongs to the file we are leaving.
+        writeBuffer()
+        closeCurrent()
+        openFile(day: day, at: moment)
+    }
 
+    private func openFile(day: String, at moment: Date) {
         let fm = FileManager.default
         try? fm.createDirectory(at: directory, withIntermediateDirectories: true,
                                 attributes: [.posixPermissions: 0o700])
@@ -232,7 +243,7 @@ public final class FileAuditSink: AuditSink, @unchecked Sendable {
         if isNew {
             fm.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
         }
-        guard let fh = try? FileHandle(forWritingTo: url) else { return nil }
+        guard let fh = try? FileHandle(forWritingTo: url) else { return }
         _ = try? fh.seekToEnd()
         handle = fh
         currentPath = url
@@ -250,12 +261,12 @@ public final class FileAuditSink: AuditSink, @unchecked Sendable {
                     "schema": .int(encoder.resource.schemaVersion),
                     "tz": .string(TimeZone.current.identifier),
                     "file": .string(url.lastPathComponent),
-                ])
+                ],
+                timestamp: moment)
             if let data = (encoder.line(for: header) + "\n").data(using: .utf8) {
                 try? fh.write(contentsOf: data)
             }
         }
-        return fh
     }
 
     private static func fileSize(_ url: URL) -> Int {
@@ -271,6 +282,6 @@ public final class FileAuditSink: AuditSink, @unchecked Sendable {
     }
 
     deinit {
-        queue.sync { self.flushLocked(); self.closeCurrent() }
+        queue.sync { self.writeBuffer(); self.closeCurrent() }
     }
 }

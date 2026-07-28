@@ -1,3 +1,4 @@
+import FleetViewAudit
 import Foundation
 
 /// Watches ~/.fleetview/events for hook event files dropped by hook.sh (atomic writes),
@@ -14,6 +15,24 @@ final class EventWatcher {
         let message: String?
         let source: String?     // SessionStart: "startup" | "resume" | "compact" | "clear"
         let command: String?    // ShellCommand: the shell command line
+
+        // The hook script forwards the agent's raw payload verbatim, so these have always been in
+        // the pipeline — they were simply discarded here. They are what lets the panel archive say
+        // which conversation wrote a given version, with no change to hook.sh at all.
+        let toolName: String?
+        /// Decided at parse time: `tool_input` is a `[String: Any]` and so not `Sendable`, and this
+        /// is the only question anyone asks of it.
+        let writesPanel: Bool
+
+        /// ShellCommand pairing: a command reports itself when it starts and again when it ends.
+        let cmdId: String?
+        let exitCode: Int?
+        let durationMs: Int?
+        let tty: String?
+        let pid: Int?
+        /// `claude` reports its own command line so that starting an agent is audited, but its
+        /// status is owned by its hooks — this flag keeps the card from being dragged to "shell".
+        let quiet: Bool
     }
 
     private let dir: URL
@@ -63,7 +82,18 @@ final class EventWatcher {
                            prompt: p["prompt"] as? String,
                            message: p["message"] as? String,
                            source: p["source"] as? String,
-                           command: p["command"] as? String)
+                           command: p["command"] as? String,
+                           toolName: p["tool_name"] as? String,
+                           writesPanel: PanelToolMatcher.isPanelWrite(
+                               tool: p["tool_name"] as? String,
+                               input: p["tool_input"] as? [String: Any],
+                               panelPath: FV.panelHTML.path),
+                           cmdId: p["cmd_id"] as? String,
+                           exitCode: p["exit_code"].flatMap { $0 as? Int ?? Int("\($0)") },
+                           durationMs: p["duration_ms"].flatMap { $0 as? Int ?? Int("\($0)") },
+                           tty: p["tty"] as? String,
+                           pid: p["pid"].flatMap { $0 as? Int ?? Int("\($0)") },
+                           quiet: (p["quiet"] as? String).map { !$0.isEmpty } ?? false)
             onEvent?(ev)
         }
     }

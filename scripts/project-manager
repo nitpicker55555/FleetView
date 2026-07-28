@@ -37,8 +37,14 @@ def base_url():
 
 BASE = base_url()
 
+# Identify ourselves so the audit log attributes these calls to the CLI rather than to an
+# anonymous browser on the LAN.
+UA = "fleetctl/project-manager/1.0"
+
+
 def _get(path):
-    with urllib.request.urlopen(BASE + path, timeout=10) as r:
+    req = urllib.request.Request(BASE + path, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=10) as r:
         return r.read().decode("utf-8", "replace")
 
 def api_json(path):

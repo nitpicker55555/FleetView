@@ -210,6 +210,9 @@ final class AppState: ObservableObject {
 
     @Published var panelExists = false
     @Published var panelMtime: TimeInterval = 0
+    /// UUIDv7 of the archived version currently on screen. Reloading on this rather than on mtime
+    /// means `touch panel.html` no longer reflows the panel for nothing.
+    @Published var panelVersion: String = ""
     private var panelTimer: Timer?
 
     /// Watch `~/.fleetview/ui/panel.html` so an agent can create / update / remove the panel *while*
@@ -228,6 +231,16 @@ final class AppState: ObservableObject {
     }
 
     private func refreshPanel() {
+        // Archive the version before publishing the change, so `panelVersion` never names a uuid
+        // that has not been written yet.
+        PanelVersions.shared.check(auditor: audit) { [weak self] in
+            guard let self else { return .unknown }
+            return AppAudit.shared.panelAttribution(active: self.panelWriteCandidates(), at: Date())
+        }
+        if panelVersion != (PanelVersions.shared.currentUUID ?? "") {
+            panelVersion = PanelVersions.shared.currentUUID ?? ""
+        }
+
         let attrs = try? FileManager.default.attributesOfItem(atPath: FV.panelHTML.path)
         let exists = attrs != nil
         let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
@@ -707,6 +720,15 @@ final class AppState: ObservableObject {
     func handleHookEvent(_ ev: EventWatcher.Event) {
         guard let uid = UUID(uuidString: ev.term),
               let idx = terminals.firstIndex(where: { $0.id == uid }) else { return }
+        // Everything this hook provokes is the agent's (or the shell's) doing, not the user's at the
+        // keyboard — declaring it once here attributes the whole cascade correctly.
+        AuditContext.with(hookActor(ev, terminal: terminals[idx])) {
+            auditHookEvent(ev, terminal: uid)
+            applyHookEvent(ev, uid: uid, idx: idx)
+        }
+    }
+
+    private func applyHookEvent(_ ev: EventWatcher.Event, uid: UUID, idx: Int) {
         FV.log("evt=\(ev.event) term=\(terminals[idx].name) src=\(ev.source ?? "-") msg=\(ev.message ?? "-")")
         terminals[idx].lastActivity = Date()   // a hook fired → real agent/shell activity in this terminal
         if let sid = ev.sessionId { terminals[idx].sessionId = sid }
@@ -757,6 +779,9 @@ final class AppState: ObservableObject {
             }
         case "ShellCommand":
             // A plain (non-claude) command ran at the zsh prompt → back to "shell", show the command.
+            // `claude` still reports itself so the *act of starting an agent* is audited, but it must
+            // not drag the card back to "shell" — its own hooks own the status from here.
+            guard !ev.quiet else { break }
             terminals[idx].status = .shell
             if let c = ev.command, !c.isEmpty {
                 terminals[idx].lastPrompt = c
@@ -941,10 +966,26 @@ final class AppState: ObservableObject {
             if let add = query["add"] { addNote(add) }
             else if let d = query["del"], let nid = UUID(uuidString: d) { removeNote(nid) }
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/select":
+            // A beacon: the web page tells the server which terminal the user opened. Without it,
+            // "what were they looking at" would have to be guessed from a polling endpoint, whose
+            // meaning would drift the moment the poll interval changed.
+            return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         case "/panel":
             // The agent-authored dynamic panel (self-contained HTML). Empty page if none written yet.
+            // `?v=<uuid>` replays an archived version instead of the current one.
+            if let uuid = query["v"], !uuid.isEmpty {
+                guard let html = PanelVersions.shared.html(uuid: uuid) else {
+                    return ("404 Not Found", "text/plain", Data("no such panel version".utf8))
+                }
+                return ("200 OK", "text/html; charset=utf-8", Data(html.utf8))
+            }
             let html = (try? String(contentsOf: FV.panelHTML, encoding: .utf8)) ?? "<!doctype html><body></body>"
             return ("200 OK", "text/html; charset=utf-8", Data(html.utf8))
+        case "/panel-versions":
+            // Newest first; each line is one archived version with its provenance.
+            let lines = PanelVersions.shared.recentVersions(limit: min(200, Int(query["limit"] ?? "") ?? 50))
+            return ("200 OK", "application/json", Data("[\(lines.joined(separator: ","))]".utf8))
         case "/panel-data":
             // Fast-changing data the panel's own JS polls via fetch('/panel-data').
             let data = (try? Data(contentsOf: FV.panelJSON)) ?? Data("{}".utf8)
@@ -954,7 +995,12 @@ final class AppState: ObservableObject {
             let attrs = try? FileManager.default.attributesOfItem(atPath: FV.panelHTML.path)
             let exists = attrs != nil
             let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            let body = try? JSONEncoder().encode(["exists": exists ? 1 : 0, "mtime": Int(mtime)])
+            // `uuid` is the reliable reload signal: mtime moves when the file is merely touched.
+            let body = try? JSONSerialization.data(withJSONObject: [
+                "exists": exists ? 1 : 0,
+                "mtime": Int(mtime),
+                "uuid": PanelVersions.shared.currentUUID ?? "",
+            ])
             return ("200 OK", "application/json", body ?? Data(#"{"exists":0,"mtime":0}"#.utf8))
         case "/conversation":
             // Structured conversation for the web view — renders as chat with native scrolling,
@@ -1067,6 +1113,18 @@ final class AppState: ObservableObject {
 
     /// Perform a card action requested from the web (mirrors the desktop drag-to-act zones).
     private func webAction(_ id: UUID, _ act: String, name: String?) {
+        // Wrapped so that an action naming a terminal that no longer exists still leaves a trace:
+        // it changes nothing, so the state diff alone would show a silent no-op.
+        audited(AuditIntent("web.action",
+                            categories: ["web"],
+                            target: auditTarget(terminal: id),
+                            data: AuditValue.compact(["do": .string(act), "name": name.map { .string($0) }]),
+                            message: "web action \(act)")) {
+            performWebAction(id, act, name: name)
+        }
+    }
+
+    private func performWebAction(_ id: UUID, _ act: String, name: String?) {
         switch act {
         case "done":         toggleSubtaskDone(id)
         case "duplicate":    duplicateTerminal(id)

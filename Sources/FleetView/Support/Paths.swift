@@ -25,6 +25,12 @@ enum FV {
     /// which stays a free-form debug scratchpad for tuning status heuristics.
     static var logsDir: URL { supportDir.appendingPathComponent("logs", isDirectory: true) }
 
+    // Panel version archive. `panel.html` stays exactly where it was — versions are *copies*, so the
+    // skill's contract, the agents writing it and the `/panel` route are all untouched.
+    static var panelVersionsDir: URL { uiDir.appendingPathComponent("versions", isDirectory: true) }
+    static var panelIndex: URL { panelVersionsDir.appendingPathComponent("index.jsonl") }
+    static var panelCurrent: URL { uiDir.appendingPathComponent("current.json") }
+
     /// Shown in every audit line so an archived log says which build produced it.
     static var version: String {
         let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String

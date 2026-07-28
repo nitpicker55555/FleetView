@@ -306,6 +306,13 @@ function esc(s){const d=document.createElement('div');d.textContent=s||'';return
 function termOpen(){return document.getElementById('term').classList.contains('show');}
 
 // ---------- terminal open / input ----------
+/* Tell the server which terminal is on screen. Opening one is pure client-side state, so without
+   this beacon "what was being watched, and for how long" would have to be inferred from a polling
+   endpoint — whose meaning would drift the moment the poll interval changed. */
+function beaconSelect(id,view){
+  try{ fetch('/select?id='+encodeURIComponent(id||'')+'&view='+encodeURIComponent(view||''),
+             {cache:'no-store',keepalive:true}); }catch(e){}
+}
 function openTerm(id,name){
   curId=id;curUrl='';termLoaded=false;
   document.getElementById('termname').textContent=name;
@@ -313,6 +320,7 @@ function openTerm(id,name){
   document.getElementById('term').classList.add('show');
   document.body.classList.add('locked');   // stop the page scrolling behind the overlay
   renderPresets();          // latest Notes as quick-commands
+  beaconSelect(id,'chat');
   setView('chat');          // reading history is the common remote case
 }
 function closeTerm(){
@@ -320,6 +328,7 @@ function closeTerm(){
   document.body.classList.remove('locked');
   document.getElementById('termframe').src='about:blank';
   curId='';termLoaded=false;stopChatPoll();
+  beaconSelect('','');
 }
 /* Chat = structured transcript (native scrolling, works on touch).
    Terminal = the live ttyd mirror, loaded lazily so just reading costs nothing. */
@@ -876,7 +885,9 @@ async function pollPanel(){
     const el=document.getElementById('panel');
     if(m.exists){
       el.classList.add('show');
-      if(m.mtime!==panelMtime){panelMtime=m.mtime;document.getElementById('panelframe').src='/panel?t='+m.mtime;}
+      /* Reload on the archived version's uuid, not on mtime: touching the file is not a new panel. */
+      const token=m.uuid||m.mtime;
+      if(token!==panelMtime){panelMtime=token;document.getElementById('panelframe').src='/panel?t='+encodeURIComponent(token);}
     }else{el.classList.remove('show');panelMtime=-1;}
   }catch(e){}
 }

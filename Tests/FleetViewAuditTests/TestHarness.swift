@@ -88,6 +88,18 @@ func XCTAssertLessThanOrEqual<V: Comparable>(_ a: V, _ b: V, _ message: @autoclo
     if !(a <= b) { TestReporter.fail(message().isEmpty ? "expected \(a) <= \(b)" : message(), file, line) }
 }
 
+func XCTAssertGreaterThan<V: Comparable>(_ a: V, _ b: V, _ message: @autoclosure () -> String = "",
+                                         file: StaticString = #filePath, line: UInt = #line) {
+    TestReporter.record()
+    if !(a > b) { TestReporter.fail(message().isEmpty ? "expected \(a) > \(b)" : message(), file, line) }
+}
+
+func XCTAssertGreaterThanOrEqual<V: Comparable>(_ a: V, _ b: V, _ message: @autoclosure () -> String = "",
+                                                file: StaticString = #filePath, line: UInt = #line) {
+    TestReporter.record()
+    if !(a >= b) { TestReporter.fail(message().isEmpty ? "expected \(a) >= \(b)" : message(), file, line) }
+}
+
 func XCTAssertNil(_ value: Any?, _ message: @autoclosure () -> String = "",
                   file: StaticString = #filePath, line: UInt = #line) {
     TestReporter.record()

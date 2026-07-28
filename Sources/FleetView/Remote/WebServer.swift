@@ -1,3 +1,4 @@
+import FleetViewAudit
 import Foundation
 import Network
 
@@ -79,14 +80,17 @@ final class WebServer {
     }
 
     private func route(_ conn: NWConnection, header: Data) {
-        let requestLine = String(data: header, encoding: .utf8)?
-            .split(separator: "\r\n").first.map(String.init) ?? ""
-        let fields = requestLine.split(separator: " ")
-        let rawPath = fields.count >= 2 ? String(fields[1]) : "/"
-        let (path, params) = Self.parsePath(rawPath)
+        // The whole header block is parsed now, not just the request line: the client address,
+        // User-Agent and session cookie are what make every downstream event attributable, and they
+        // used to be thrown away here.
+        let raw = String(data: header, encoding: .utf8) ?? ""
+        let request = HTTPRequestHead(raw: raw)
+        let path = request?.path ?? "/"
+        let params = request?.query ?? [:]
+        let client = Self.clientAddress(conn)
+        let scope = WebAudit.shared.begin(request: request, ip: client.ip, port: client.port)
 
-        if path == "/ask" { handleAsk(conn, params); return }   // long-running; handled off the main thread
-        if path == "/tree" || path == "/fork" { handleTree(conn, path, params); return }   // dir scans — same
+        if path == "/ask" { handleAsk(conn, params, scope); return }   // long-running; off the main thread
 
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
@@ -94,18 +98,49 @@ final class WebServer {
                 return
             }
             MainActor.assumeIsolated {
-                let (status, type, body) = app.webResponse(path: path, query: params)
-                self.queue.async { self.send(conn, status: status, type: type, body: body) }
+                // Everything this request provokes — including state changes in handlers that know
+                // nothing about logging — is attributed to this browser, at this address.
+                let (status, type, body) = AuditContext.with(scope.actor, trace: scope.trace) {
+                    app.webResponse(path: path, query: params)
+                }
+                WebAudit.shared.finish(scope, status: status, bytes: body.count, query: params)
+                self.queue.async {
+                    self.send(conn, status: status, type: type, body: body, setCookie: scope.setCookie)
+                }
             }
         }
+    }
+
+    /// The peer address of an inbound connection. `remoteEndpoint` is only populated once the path
+    /// is established, so `endpoint` is the fallback.
+    static func clientAddress(_ conn: NWConnection) -> (ip: String, port: Int?) {
+        let endpoint = conn.currentPath?.remoteEndpoint ?? conn.endpoint
+        guard case .hostPort(let host, let port) = endpoint else { return ("unknown", nil) }
+        return (hostString(host), Int(port.rawValue))
+    }
+
+    private static func hostString(_ host: NWEndpoint.Host) -> String {
+        let raw: String
+        switch host {
+        case .ipv4(let address): raw = "\(address)"
+        case .ipv6(let address): raw = "\(address)"
+        case .name(let name, _): raw = name
+        @unknown default: raw = "unknown"
+        }
+        // IPv6 literals arrive with a scope zone ("fe80::1%en0"); the address is the part we want.
+        return raw.split(separator: "%").first.map(String.init) ?? raw
     }
 
     /// GET /ask?id=&q= — a "BTW" side query: ask the agent using its context without touching the live
     /// session. The spec lookup is quick (main actor); the agent subprocess (~10-30s) runs on a global
     /// queue so it never blocks the UI or other requests.
-    private func handleAsk(_ conn: NWConnection, _ query: [String: String]) {
+    private func handleAsk(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        func answer(_ status: String, _ type: String, _ body: Data) {
+            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
+            send(conn, status: status, type: type, body: body, setCookie: scope.setCookie)
+        }
         guard let s = query["id"], let id = UUID(uuidString: s), let q = query["q"], !q.isEmpty else {
-            send(conn, status: "400 Bad Request", type: "text/plain", body: Data("bad request".utf8)); return
+            answer("400 Bad Request", "text/plain", Data("bad request".utf8)); return
         }
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
@@ -113,56 +148,23 @@ final class WebServer {
             }
             let spec = MainActor.assumeIsolated { app.askSpec(id) }
             guard let spec else {
-                self.send(conn, status: "409 Conflict", type: "text/plain",
-                          body: Data("no agent session for this terminal yet".utf8)); return
+                answer("409 Conflict", "text/plain", Data("no agent session for this terminal yet".utf8))
+                return
             }
             DispatchQueue.global(qos: .userInitiated).async {
-                let answer = RemoteServer.ask(spec, question: q)
-                self.send(conn, type: "text/plain; charset=utf-8", body: Data(answer.utf8))
+                let reply = RemoteServer.ask(spec, question: q)
+                answer("200 OK", "text/plain; charset=utf-8", Data(reply.utf8))
             }
         }
     }
 
-    /// GET /tree and /fork — building a session tree reads every jsonl in the project dir (seconds
-    /// on a big project), so the scan runs on a global queue; only the terminal lookup and the
-    /// new-terminal creation touch the main actor.
-    private func handleTree(_ conn: NWConnection, _ path: String, _ query: [String: String]) {
-        guard let s = query["id"], let id = UUID(uuidString: s) else {
-            send(conn, status: "400 Bad Request", type: "application/json", body: Data(#"{"error":"bad id"}"#.utf8)); return
-        }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let app = self.app else { return }
-            if path == "/tree" {
-                let tp = MainActor.assumeIsolated { app.transcriptPath(for: id) }
-                guard let tp else {
-                    self.send(conn, type: "application/json",
-                              body: Data(#"{"nodes":[],"error":"no agent session yet"}"#.utf8)); return
-                }
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let tree = SessionTree.build(transcriptPath: tp)
-                    self.send(conn, type: "application/json",
-                              body: (try? JSONEncoder().encode(tree)) ?? Data("{}".utf8))
-                }
-            } else {
-                MainActor.assumeIsolated {
-                    app.forkTerminalAsync(from: id, at: query["node"]) { t in
-                        if let t, let body = try? JSONEncoder().encode(["id": t.id.uuidString, "name": t.name]) {
-                            self.send(conn, type: "application/json", body: body)
-                        } else {
-                            self.send(conn, status: "409 Conflict", type: "application/json",
-                                      body: Data(#"{"error":"fork failed"}"#.utf8))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func send(_ conn: NWConnection, status: String = "200 OK", type: String, body: Data) {
+    private func send(_ conn: NWConnection, status: String = "200 OK", type: String, body: Data,
+                      setCookie: String? = nil) {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(type)\r\n"
         head += "Content-Length: \(body.count)\r\n"
         head += "Cache-Control: no-store\r\n"
+        if let setCookie { head += "Set-Cookie: \(setCookie)\r\n" }   // identifies this browser's visit
         head += "Connection: close\r\n\r\n"
         var out = Data(head.utf8); out.append(body)
         conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })

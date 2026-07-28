@@ -58,23 +58,60 @@ enum ShellIntegration {
     # keep shell history in the user's real location, never FleetView's dir
     [[ "$HISTFILE" == "$FLEETVIEW_SHELL_DIR/"* ]] && HISTFILE="$FLEETVIEW_REAL_ZDOTDIR/.zsh_history"
 
-    # --- FleetView: report each non-claude shell command to the dashboard (preexec) ---
+    # --- FleetView: report each shell command to the dashboard (preexec/precmd) ---
+    # preexec reports the command as it starts; precmd reports how it ended. The pair shares a
+    # cmd_id so the audit log can join them into one command with a duration and an exit code.
+    fleetview_emit() {
+      local d="$HOME/.fleetview/events"
+      [[ -d "$d" ]] || mkdir -p "$d"
+      local base="$d/cmd-$$-$RANDOM$RANDOM"
+      print -r -- "$1" > "$base.tmp" 2>/dev/null
+      mv -f "$base.tmp" "$base.json" 2>/dev/null
+    }
+
     fleetview_preexec() {
       [[ -z "$FLEETVIEW_TERM_ID" ]] && return
-      local first=${1%% *}
-      [[ "$first" == claude ]] && return          # claude is tracked via Claude Code hooks
       emulate -L zsh
+      local first=${1%% *}
       local cmd="$1"
       cmd="${cmd//\\/\\\\}"
       cmd="${cmd//\"/\\\"}"
       cmd="${cmd//$'\n'/ }"
       cmd="${cmd//$'\t'/ }"
-      local d="$HOME/.fleetview/events"
-      [[ -d "$d" ]] || mkdir -p "$d"
-      local base="$d/cmd-$$-$RANDOM$RANDOM"
-      print -r -- "{\"event\":\"ShellCommand\",\"term\":\"$FLEETVIEW_TERM_ID\",\"payload\":{\"command\":\"$cmd\"}}" > "$base.tmp" 2>/dev/null
-      mv -f "$base.tmp" "$base.json" 2>/dev/null
+      local cwd="${PWD//\\/\\\\}"
+      cwd="${cwd//\"/\\\"}"
+      FLEETVIEW_CMD_ID="c$$-$RANDOM$RANDOM"
+      FLEETVIEW_CMD_START=$EPOCHREALTIME
+      # `claude` keeps its own hooks for *status*, but starting an agent is itself an action worth
+      # recording, so the command line is reported for it too.
+      [[ "$first" == claude ]] && FLEETVIEW_CMD_QUIET=1 || FLEETVIEW_CMD_QUIET=
+      fleetview_emit "{\"event\":\"ShellCommand\",\"term\":\"$FLEETVIEW_TERM_ID\",\"payload\":{\"command\":\"$cmd\",\"cmd_id\":\"$FLEETVIEW_CMD_ID\",\"cwd\":\"$cwd\",\"pid\":$$,\"tty\":\"$TTY\",\"quiet\":\"$FLEETVIEW_CMD_QUIET\"}}"
     }
-    autoload -Uz add-zsh-hook 2>/dev/null && add-zsh-hook preexec fleetview_preexec 2>/dev/null || { typeset -ga preexec_functions; preexec_functions+=(fleetview_preexec); }
+
+    fleetview_precmd() {
+      # NOT `status`: that name is read-only in zsh, and assigning to it aborts the hook — which
+      # silently costs every command its exit code.
+      local code=$?
+      [[ -z "$FLEETVIEW_TERM_ID" || -z "$FLEETVIEW_CMD_ID" ]] && return
+      emulate -L zsh
+      local ms=0
+      if [[ -n "$FLEETVIEW_CMD_START" ]]; then
+        ms=$(( (EPOCHREALTIME - FLEETVIEW_CMD_START) * 1000 ))
+        ms=${ms%%.*}
+      fi
+      fleetview_emit "{\"event\":\"ShellCommandDone\",\"term\":\"$FLEETVIEW_TERM_ID\",\"payload\":{\"cmd_id\":\"$FLEETVIEW_CMD_ID\",\"exit_code\":$code,\"duration_ms\":$ms}}"
+      FLEETVIEW_CMD_ID=
+      FLEETVIEW_CMD_START=
+    }
+
+    zmodload zsh/datetime 2>/dev/null    # EPOCHREALTIME, for command durations
+    if autoload -Uz add-zsh-hook 2>/dev/null; then
+      add-zsh-hook preexec fleetview_preexec 2>/dev/null
+      add-zsh-hook precmd fleetview_precmd 2>/dev/null
+    else
+      typeset -ga preexec_functions precmd_functions
+      preexec_functions+=(fleetview_preexec)
+      precmd_functions+=(fleetview_precmd)
+    fi
     """# }
 }

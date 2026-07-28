@@ -5,7 +5,7 @@
 | **文档类型** | 设计文档（实施篇） |
 | **创建日期** | 2026-07-28 |
 | **最后更新** | 2026-07-28 |
-| **状态** | 实现中 —— 引擎与状态层已完成并通过测试；Web/管道/Panel 待接入 |
+| **状态** | 已实现 —— 引擎、状态层、Web 层、管道 tap、Panel 归档全部接入，145 个测试通过 |
 | **对应代码版本** | `a96f272`（2026-07-28） |
 | **上游规范** | [2026-07-27-audit-logging-spec.md](2026-07-27-audit-logging-spec.md) |
 
@@ -131,7 +131,7 @@ Sources/FleetView/State/AppState+Audit.swift   ← app 侧唯一知道日志存�
 ## 5. 测试
 
 ```bash
-swift run FleetViewAuditTests     # 87 个测试，223 个断言
+swift run FleetViewAuditTests     # 145 个测试，430 个断言
 ```
 
 > ⚠️ **不是 `swift test`**。这台机器只有 Command Line Tools 没有完整 Xcode，SwiftPM 既够不到 XCTest 也够不到 swift-testing，`swift test` 直接失败。所以测试目标是一个普通可执行文件 + 一个 ~100 行的 XCTest 兼容 shim（`Tests/FleetViewAuditTests/TestHarness.swift`）。
@@ -151,27 +151,51 @@ swift run FleetViewAuditTests     # 87 个测试，223 个断言
 | 密钥不入日志 | 6 类模式 + 幂等 + 不误伤普通命令 |
 | ULID/UUIDv7 可排序 | 同毫秒内仍严格有序、UUIDv7 前 48 位即时间戳 |
 
-**未做端到端运行验证**：FleetView 是 GUI 应用，且你有一个长期运行的生产实例 —— 起第二个实例会抢走 hook 事件，所以没有实际启动 app 跑一遍。当前验证到"编译通过 + 引擎层单测全绿"为止。
+### 实测（不只是单测）
+
+**zsh 集成在真实 zsh 里跑过**：把生成的 `.zshrc` 抽出来，用隔离的 `HOME`/`ZDOTDIR` 起一个交互式 zsh 执行命令，检查落盘的事件文件。这一步抓到了两个单测抓不到的 bug：
+
+| bug | 后果 |
+|---|---|
+| `local status=$?` | `status` 在 zsh 里是**只读变量**，赋值直接中止 hook —— 每条命令的退出码都会静默丢失 |
+| 测试脚本里 real/FleetView 的 ZDOTDIR 指向同一目录 | 自递归（这个是测试脚本的问题，不是产品的） |
+
+修复后实测输出：
+
+```
+ShellCommand      | {"command":"echo hello >/dev/null","cmd_id":"c72175-14313188","cwd":"/tmp/fvzsh",…}
+ShellCommandDone  | {"cmd_id":"c72175-14313188","exit_code":0,"duration_ms":5}
+ShellCommand      | {"command":"sh -c 'exit 7'","cmd_id":"c72175-203702916",…}
+ShellCommandDone  | {"cmd_id":"c72175-203702916","exit_code":7,"duration_ms":4}
+ShellCommand      | {"command":"claude --version",…,"quiet":"1"}
+```
+
+**集成测试也抓到一个真 bug**：日志首行 `fleetview.log.opened` 拿到的序号是 13 却物理写在第一行 —— 因为事件在进缓冲区时就编好了号，而文件头要到首次 flush 才生成。这会让"序号有断层 = 丢行"这个性质失效。改成**先备好文件再编码**。
+
+**未做端到端 GUI 运行验证**：FleetView 是 GUI 应用，且你有一个长期运行的生产实例 —— 起第二个实例会抢走 hook 事件。所以桌面 UI 路径验证到"编译通过 + 模型层单测 + 真实 zsh 实测"为止。
 
 ---
 
-## 6. 已完成 / 未完成
+## 6. 已完成
 
-**已完成**
-- 审计引擎（独立 library + 87 个测试）
-- 环境 actor 上下文
-- AppState 接入：`AppAudit.shared.start(state)`（AppDelegate 一行）+ 兜底扫描 → **所有状态变更已被自动记录**，包括点击选中终端（`ui.task_selected`，因为选中被建模成状态）
-- 意图包装：`raiseTerminal`（点卡片提窗口）、`openInFinder`、`newTerminal`（含失败路径）、`removeTerminal`、`renameTerminal`
-- 退出时 flush
+| 层 | 内容 |
+|---|---|
+| **引擎** | 独立 library，145 个测试；ECS 信封、确定性编码、原子行写、日轮转、超长行裁剪、脱敏、ULID/UUIDv7 |
+| **环境 actor** | 线程局部栈；入口处声明一次，全链路继承 |
+| **状态层** | `AppAudit.shared.start(state)`（AppDelegate 一行）+ 兜底扫描 → 所有状态变更自动记录，**包括点击选中终端**（选中被建模成状态） |
+| **意图包装** | `raiseTerminal`、`openInFinder`、`newTerminal`（含失败路径）、`removeTerminal`、`renameTerminal`、`webAction` |
+| **Web 层** | 解析完整请求头、取 `NWConnection` 远端地址、`fv_ws` cookie 会话、`AuditContext` 包住每个请求、轮询端点只计数不落行、5 分钟聚合、空闲过期、4xx 记 alert |
+| **地理位置** | IP 分域（loopback/lan/tailscale/public）→ Tailscale 节点名+登录用户+DERP 区域 → `Accept-Language` → 公网 IP 城市级（默认关闭，需显式开启） |
+| **管道 tap** | `EventWatcher` 增 `tool_name`/`writesPanel`/`cmd_id`/`exit_code`/`duration_ms`；zsh 加 `precmd`；agent 会话/prompt/权限/turn 结束；shell 命令 start/finish |
+| **Panel 归档** | UUIDv7 命名、sha256 去重、稳定性等待防截断、`index.jsonl`、三级归因、`/panel?v=`、`/panel-versions`、桌面 History 菜单、按 uuid 重载 |
+| **CLI 归因** | `project-manager` / `fleet-monitor` 带 `fleetctl/*` UA，不再被记成匿名浏览器 |
 
-**未完成（下一步）**
-1. **Web 层**：`WebServer.route` 目前仍丢弃客户端 IP 与请求头；需要取 `NWConnection` 的远端地址、解析头、下发 `fv_ws` cookie、用 `AuditContext.with(.web(...))` 包住请求 → 之后所有 web 触发的状态变更会**自动**带上 IP/UA/geo，不用改任何端点
-2. **管道 tap**：`EventWatcher` 增 `tool_name`/`tool_input`（panel 归因用）；zsh 加 `precmd` 拿退出码与耗时
-3. **Panel 版本归档**：UUIDv7 + sha256 去重 + index.jsonl + 归因（见规范 §14）
-4. **地理位置**：IP 分类 → Tailscale 身份 → 离线 GeoLite2
-5. **其余 AppState 方法的 intent 标注**（不影响覆盖率，只影响可读性 —— 兜底扫描已经在记了）
+### 仍可继续的（都不影响覆盖率）
 
-> 第 1 项之所以排最前：它是**一次改动换全量归因**的典型 —— 改一个 `route` 函数，所有现存和未来的 web 端点就都有了 actor/IP/地理位置。
+1. 其余 AppState 方法的 intent 标注 —— 兜底扫描已经在记，只是少一个操作名
+2. 离线 GeoLite2（mmdb）读取器，取代可选的在线查询
+3. `tailscale serve` + HTTPS 后启用浏览器精确定位（当前 http:// 下浏览器一定拒绝）
+4. asciicast 终端录制（默认关）
 
 ---
 
