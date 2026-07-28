@@ -137,7 +137,7 @@ enum WebDashboardPage {
      coloured edge, so it stays a quotation of the conversation rather than a control. */
   #stickyq .sq{position:relative;padding:13px 16px;border-radius:12px;
     font-size:14px;line-height:1.5;font-weight:500;color:#15181d;
-    background:rgba(255,255,255,.80);
+    background:rgba(255,255,255,.86);
     -webkit-backdrop-filter:blur(30px) saturate(140%);backdrop-filter:blur(30px) saturate(140%);
     border:1px solid rgba(255,255,255,.6);
     box-shadow:0 12px 30px rgba(0,0,0,.45);
@@ -145,16 +145,19 @@ enum WebDashboardPage {
   .msg .mtext{white-space:pre-wrap;word-break:break-word}
   .msg.user{margin-top:26px}                 /* a new question needs a visible break before it */
   .msg.user:first-child{margin-top:0}
-  .msg.user .mtext{background:#1d2431;border-left:3px solid var(--accent);
-    padding:12px 15px;border-radius:3px 12px 12px 3px;font-size:14px;line-height:1.55;
-    box-shadow:0 6px 16px rgba(0,0,0,.32)}   /* opaque: it floats over the messages below */
+  /* Same white card as #stickyq: that bar is a quotation of one of these, so they have to read as
+     the same object. Inline code and links need their own colours on a light ground. */
+  .msg.user .mtext{background:rgba(255,255,255,.86);color:#15181d;
+    padding:12px 15px;border-radius:12px;font-size:14px;line-height:1.55;
+    border:1px solid rgba(255,255,255,.6);box-shadow:0 6px 16px rgba(0,0,0,.32)}
+  .msg.user .mtext code{background:rgba(0,0,0,.07);color:#12151a}
+  .msg.user .mtext a{color:#1b4bd0}
   .msg.asst .mtext{color:var(--text);padding:0 2px}
   .msg.sub{opacity:.72}
   .msg .tag{font-size:9px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:2px}
-  /* typed while the agent was working — recovered from prompt history, not the transcript */
-  .msg.user.queued .mtext{border-left-style:dashed}
-  .msg .qtag{font-size:9px;font-weight:700;color:var(--teal);text-transform:uppercase;
-    letter-spacing:.04em;margin-bottom:3px}
+  /* typed while the agent was working: the same card, just drawn with a broken edge */
+  .msg.user.queued .mtext{background:rgba(255,255,255,.78);
+    border-style:dashed;border-color:rgba(21,24,29,.28)}
   .msg.think,.msg.tool{background:var(--card);border:1px solid var(--stroke);border-radius:10px;
     padding:10px 12px;cursor:pointer;margin-left:10px}
   .msg.think{opacity:.7}
@@ -349,7 +352,7 @@ enum WebDashboardPage {
 <script>
 const COLORS={working:'var(--green)',shell:'var(--teal)',idle:'var(--gray)',
   needsYou:'var(--amber)',exited:'var(--red)',closed:'rgba(255,255,255,.22)'};
-let curUrl='',curId='',state=null,dragging=false,curView='chat',chatTimer=null,termLoaded=false,curInfo={},sentAt=0;
+let curUrl='',curId='',state=null,dragging=false,curView='chat',chatTimer=null,termLoaded=false,curInfo={},sentAt=0,stickBottom=false;
 
 function short(n){if(n<1000)return ''+n;if(n<1000000)return (n/1000).toFixed(n<10000?1:0)+'k';return (n/1000000).toFixed(1)+'M';}
 function ago(sec){if(sec<0)return '';if(sec<5)return 'just now';if(sec<60)return sec+'s ago';
@@ -776,7 +779,6 @@ function msgHTML(m){
   return '<div class="msg '+(m.role==='user'?'user':'asst')+(m.sub?' sub':'')+(m.queued?' queued':'')+'">'+
     '<span class="cp" data-copy="1">copy</span>'+
     (m.sub?'<div class="tag">subagent</div>':'')+
-    (m.queued?'<div class="qtag">追问 · 上一回合进行时输入</div>':'')+
     (m.ts?'<span class="when">'+hhmm(m.ts)+'</span>':'')+
     '<div class="mtext md">'+md(m.text)+'</div></div>';
 }
@@ -801,7 +803,7 @@ function renderChat(msgs,note){
   const sig=msgs.length+':'+(last.text||'').length+':'+(last.output||'').length+
             ':'+(st.status||'')+':'+(st.pendingText||'');
   if(el.dataset.sig===sig)return;      // unchanged → don't rebuild at all
-  const nearBottom=el.scrollHeight-el.scrollTop-el.clientHeight<120;
+  const nearBottom=stickBottom||el.scrollHeight-el.scrollTop-el.clientHeight<120;
   // Remember which cards the user expanded and restore them after the rebuild — otherwise reading a
   // long tool output is impossible. Keyed by content, not position: messages get appended and old
   // ones drop off the front, so any index-based anchor drifts.
@@ -812,7 +814,8 @@ function renderChat(msgs,note){
   if(open.size) Array.prototype.forEach.call(el.querySelectorAll('.msg'),n=>{
     if(n.dataset.k&&open.has(n.dataset.k)) n.classList.add('open');
   });
-  if(nearBottom)el.scrollTop=el.scrollHeight;
+  if(nearBottom){el.scrollTop=el.scrollHeight;stickBottom=false;}
+  updateStickyPrompt();
 }
 async function key(k){if(!curId)return;try{await fetch('/key?id='+curId+'&k='+encodeURIComponent(k));}catch(e){}}
 async function scrollTerm(dir){if(!curId)return;try{await fetch('/scroll?id='+curId+'&dir='+dir);}catch(e){}}
@@ -853,6 +856,7 @@ async function sendText(){
      message interrupted the turn instead of sending — so it took two taps. */
   if(!t){ key(document.getElementById('sendbtn').dataset.stop?'Escape':'Enter'); return; }
   ta.value='';ta.style.height='auto';
+  stickBottom=true; jumpLatest();    // follow your own message down, wherever you were reading
   markSent();                       // the hook is a beat behind; don't sit on 'idle' meanwhile
   try{ await fetch('/type?id='+encodeURIComponent(curId)+'&enter=1&text='+encodeURIComponent(t)); }
   catch(e){ ta.value=t; sentAt=0; renderInfo(curInfo); }
