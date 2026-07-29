@@ -339,6 +339,12 @@ enum WebDashboardPage {
   #inputtext{flex:1;resize:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:10px;
     padding:10px 12px;font:14px/1.35 inherit;max-height:120px}
   #sendbtn{flex:none;background:var(--accent);color:#0b1020;border:0;border-radius:10px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer}
+  #imgbtn{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:10px;
+    padding:10px 12px;font-size:16px;line-height:1;cursor:pointer}
+  #imgbtn:active{background:var(--accent);color:#0b1020}
+  #imgbtn[disabled]{opacity:.5}
+  /* Dropping a file anywhere on the conversation should work, so the whole overlay is the target. */
+  #term.dropping{outline:2px dashed var(--accent);outline-offset:-6px}
 </style>
 </head>
 <body>
@@ -386,6 +392,8 @@ enum WebDashboardPage {
       <button onclick="key('BSpace')">⌫</button>
     </div>
     <div id="sendrow">
+      <input id="imgfile" type="file" accept="image/*" multiple hidden>
+      <button id="imgbtn" title="Attach an image — it uploads to the Mac and its path goes in the prompt">🖼</button>
       <textarea id="inputtext" rows="1" placeholder="Type here (中文 OK) — Enter to send, Shift+Enter for newline"></textarea>
       <button id="sendbtn">Send</button>
     </div>
@@ -1112,6 +1120,69 @@ async function sendText(){
             if(sentGhost){ sentGhost.node.remove(); sentGhost=null; } }
   setTimeout(loadChat,400);
 }
+/* Images: an agent reads a picture by opening a file, so getting one out of a phone and into a
+   prompt means putting the bytes on the Mac and typing the path. The upload answers with the
+   absolute path it wrote, which is inserted at the cursor — the same thing you would do by hand
+   after AirDropping the photo, minus the AirDrop. */
+async function attachImages(files){
+  const list=[...files].filter(f=>!f.type||f.type.startsWith('image/'));
+  if(!list.length)return;
+  const btn=document.getElementById('imgbtn');
+  const was=btn.textContent; btn.disabled=true; btn.textContent='…';
+  const paths=[];
+  for(const f of list){
+    try{
+      const r=await fetch('/upload',{method:'POST',headers:{'Content-Type':f.type||'application/octet-stream'},body:f});
+      const j=await r.json();
+      if(j.path) paths.push(j.path); else throw new Error(j.error||('HTTP '+r.status));
+    }catch(e){
+      btn.textContent='✕';
+      setTimeout(()=>{btn.textContent=was;},1400);
+      toast('image upload failed: '+e.message);
+    }
+  }
+  btn.disabled=false;
+  if(btn.textContent==='…') btn.textContent=was;
+  if(paths.length) insertAtCursor(document.getElementById('inputtext'), paths.join(' ')+' ');
+}
+/* Land the path where the cursor is, so a caption typed around it survives. */
+function insertAtCursor(ta,text){
+  const s=ta.selectionStart??ta.value.length, e=ta.selectionEnd??ta.value.length;
+  const before=ta.value.slice(0,s), after=ta.value.slice(e);
+  const pad=(before&&!/\s$/.test(before))?' ':'';
+  ta.value=before+pad+text+after;
+  const at=(before+pad+text).length;
+  ta.setSelectionRange(at,at);
+  ta.style.height='auto'; ta.style.height=Math.min(120,ta.scrollHeight)+'px';
+  ta.focus();
+  syncSendBtn();
+}
+document.getElementById('imgbtn').addEventListener('click',()=>document.getElementById('imgfile').click());
+document.getElementById('imgfile').addEventListener('change',e=>{
+  attachImages(e.target.files);
+  e.target.value='';                 // same file twice in a row still fires
+});
+/* Paste a screenshot straight into the box — the desktop path, where there is no file picker
+   worth using. */
+document.getElementById('inputtext').addEventListener('paste',e=>{
+  const items=[...(e.clipboardData?.items||[])].filter(i=>i.kind==='file'&&i.type.startsWith('image/'));
+  if(!items.length)return;           // ordinary text paste is left alone
+  e.preventDefault();
+  attachImages(items.map(i=>i.getAsFile()).filter(Boolean));
+});
+/* Drag a file onto the conversation. The counter guards against dragleave firing as the pointer
+   crosses a child element, which would otherwise clear the highlight mid-drag. */
+(function(){
+  const t=document.getElementById('term'); let depth=0;
+  t.addEventListener('dragenter',e=>{ e.preventDefault(); if(++depth===1) t.classList.add('dropping'); });
+  t.addEventListener('dragover',e=>e.preventDefault());
+  t.addEventListener('dragleave',()=>{ if(--depth<=0){ depth=0; t.classList.remove('dropping'); } });
+  t.addEventListener('drop',e=>{
+    e.preventDefault(); depth=0; t.classList.remove('dropping');
+    if(e.dataTransfer?.files?.length) attachImages(e.dataTransfer.files);
+  });
+})();
+
 /* The message needs a beat or two to reach the transcript, and a send that shows nothing reads as a
    send that failed. Put the card on screen immediately and keep it until the real one turns up. */
 let sentGhost=null;

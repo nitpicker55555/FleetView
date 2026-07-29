@@ -18,6 +18,10 @@ enum FV {
         sessionsDir.appendingPathComponent("\(termId.uuidString).json")
     }
     static var uiDir: URL { supportDir.appendingPathComponent("ui", isDirectory: true) }   // agent-authored dynamic panel
+    /// Images sent from the web dashboard. They land here under a generated name and only their
+    /// absolute path is typed into the prompt, so the agent reads the file the same way it would
+    /// read one you dropped into a desktop terminal.
+    static var uploadsDir: URL { supportDir.appendingPathComponent("uploads", isDirectory: true) }
     static var panelHTML: URL { uiDir.appendingPathComponent("panel.html") }
     static var panelJSON: URL { uiDir.appendingPathComponent("panel.json") }
 
