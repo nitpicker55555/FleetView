@@ -16,3 +16,22 @@ __pycache__/
 
 # Packaged app bundle
 FleetView.app/
+
+# Agent-produced operational files.
+#
+# scripts/ and examples/ hold two different kinds of thing: tooling that ships as part of
+# FleetView, and one-off scripts and panels an agent wrote to babysit a running fleet. The second
+# kind is not part of the program and must not be swept into a commit by whoever runs `git add -A`
+# next. So these directories are ignored by default and the product tooling is whitelisted back
+# in — which also means anything an agent drops here later is ignored without anyone having to
+# notice. Adding a `!` line is the deliberate act that says "this one IS part of FleetView".
+#
+# (Already-tracked files are unaffected by these rules; only new, untracked ones.)
+scripts/*
+!scripts/package_app.sh
+!scripts/project-manager
+examples/*
+!examples/fleet-panel.html
+
+# Scratch space for anything an agent needs to write inside the repo.
+.scratch/
