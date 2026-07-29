@@ -815,6 +815,15 @@ function updateStickyPrompt(){
   bar.style.top=chat.offsetTop+'px';
   bar.classList.add('on');
 }
+/* That top is computed, not inherited, so it goes stale the moment anything above the pane changes
+   height — and #sinfo does that on its own: its chips wrap to a second line as they come and go (a
+   longer token count, a permission mode, a branch count), and it is display:none while empty, so it
+   jumps from nothing to a row or two just after a conversation opens. None of that is a scroll, so
+   nothing recomputed the offset and the bar stayed where the previous layout had put it.
+   Watch the pane instead: every one of those ends up resizing it. */
+if(window.ResizeObserver){
+  new ResizeObserver(()=>updateStickyPrompt()).observe(document.getElementById('chat'));
+}
 /* clipboard needs a secure context; plain-HTTP over Tailscale isn't one, so fall back */
 function copyText(t){
   try{ if(navigator.clipboard&&window.isSecureContext){ navigator.clipboard.writeText(t); toast('Copied'); return; } }catch(e){}
