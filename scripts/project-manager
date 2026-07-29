@@ -5,8 +5,8 @@ Talks to FleetView's embedded HTTP API (the same one the web dashboard uses), so
 locally and over the network (e.g. Tailscale). Point it elsewhere with FLEETVIEW_URL, otherwise it
 auto-discovers the local server via ~/.fleetview/web-port.
 
-  project-manager ls                       list every terminal + live status
-  project-manager watch [-n SEC]           live-refreshing list
+  project-manager ls [-m]                  list every terminal + live status (-m: only marked)
+  project-manager watch [-n SEC] [-m]      live-refreshing list
   project-manager show <sel> [-l N]        one terminal: status + recent output (conversation)
   project-manager tail <sel> [-l N]        recent output only
   project-manager send <sel> <text...>     inject a prompt (adds Enter; -N to not submit)
@@ -67,6 +67,11 @@ STATUS_COLOR = {"working": "32", "needsYou": "33", "idle": "90", "shell": "36", 
 def dot(status):
     return c(STATUS_COLOR.get(status, "0"), "●")
 
+def mark(t):
+    """The card's mark flag. Still called `done` on the wire — renaming it would drop the marks
+    already saved in ~/.fleetview/state.json."""
+    return c("32", "✓") if t.get("done") else " "
+
 def short_tokens(n):
     if n < 1000: return str(n)
     if n < 1_000_000: return "%.1fk" % (n / 1000)
@@ -117,18 +122,26 @@ def resolve(st, sel):
 def cmd_ls(a):
     st = state()
     rows = st["terminals"]
+    # `done` is the wire name of the mark flag (kept so existing saved marks still load).
+    if getattr(a, "marked", False):
+        rows = [t for t in rows if t.get("done")]
+        if not rows:
+            print("no marked terminals"); return
     if not rows:
         print("no terminals"); return
     w = min(26, max((len(t["name"]) for t in rows), default=4))
-    print("%-8s   %-*s %-12s %-12s %-5s %5s %7s  %s" % (
-        "ID", w, "NAME", "CLUSTER", "PROJECT", "AGENT", "IDLE", "TOKENS", "STATUS/PROMPT"))
+    print("%-8s   %-1s %-*s %-12s %-12s %-5s %5s %7s  %s" % (
+        "ID", "M", w, "NAME", "CLUSTER", "PROJECT", "AGENT", "IDLE", "TOKENS", "STATUS/PROMPT"))
     for t in rows:
         prompt = (t.get("prompt") or "").replace("\n", " ")[:50]
-        print("%-8s %s %-*s %-12s %-12s %-5s %5s %7s  %s" % (
-            t["id"][:8].lower(), dot(t["status"]), w, t["name"][:w],
+        print("%-8s %s %s %-*s %-12s %-12s %-5s %5s %7s  %s" % (
+            t["id"][:8].lower(), dot(t["status"]), mark(t), w, t["name"][:w],
             (cluster_name(st, t.get("clusterId")) or "-")[:12], proj_name(st, t["projectId"])[:12],
             (t.get("agent") or "-")[:5], ago(t.get("idle")), short_tokens(t.get("tokens", 0)),
             c(STATUS_COLOR.get(t["status"], "0"), t["statusLabel"]) + "  " + prompt))
+    n = sum(1 for t in st["terminals"] if t.get("done"))
+    if n and not getattr(a, "marked", False):
+        print(c("90", "%d marked (project-manager ls -m)" % n))
 
 def cmd_watch(a):
     try:
@@ -146,8 +159,9 @@ def cmd_tail(a):
 
 def cmd_show(a):
     st = state(); t = resolve(st, a.sel)
-    print("%s %s   [%s]  agent=%s  tokens=%s  last activity=%s ago" % (
-        dot(t["status"]), c("1", t["name"]), c(STATUS_COLOR.get(t["status"], "0"), t["statusLabel"]),
+    print("%s %s%s   [%s]  agent=%s  tokens=%s  last activity=%s ago" % (
+        dot(t["status"]), c("1", t["name"]), c("32", "  ✓ marked") if t.get("done") else "",
+        c(STATUS_COLOR.get(t["status"], "0"), t["statusLabel"]),
         t.get("agent") or "-", short_tokens(t.get("tokens", 0)), ago(t.get("idle"))))
     cl = cluster_name(st, t.get("clusterId"))
     print("project: %s%s   id: %s" % (proj_name(st, t["projectId"]), ("   cluster: " + cl) if cl else "", t["id"]))
@@ -269,8 +283,12 @@ def cmd_rm(a):
 def main():
     p = argparse.ArgumentParser(prog="project-manager", description="Control a running FleetView instance.")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("ls", help="list terminals").set_defaults(fn=cmd_ls)
-    w = sub.add_parser("watch", help="live list"); w.add_argument("-n", type=float, default=2.0); w.set_defaults(fn=cmd_watch)
+    s = sub.add_parser("ls", help="list terminals")
+    s.add_argument("-m", "--marked", action="store_true", help="only terminals you marked")
+    s.set_defaults(fn=cmd_ls)
+    w = sub.add_parser("watch", help="live list"); w.add_argument("-n", type=float, default=2.0)
+    w.add_argument("-m", "--marked", action="store_true", help="only terminals you marked")
+    w.set_defaults(fn=cmd_watch)
     for name, fn in (("show", cmd_show), ("tail", cmd_tail)):
         s = sub.add_parser(name); s.add_argument("sel"); s.add_argument("-l", "--lines", type=int, default=200); s.set_defaults(fn=fn)
     s = sub.add_parser("send", help="inject a prompt"); s.add_argument("sel"); s.add_argument("-N", "--no-enter", action="store_true"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_send)

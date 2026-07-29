@@ -62,7 +62,7 @@ struct TerminalCardView: View {
             Button("Show Session Tree") { state.openSessionTree(terminal.id) }
             Button("Duplicate (fork session)") { state.duplicateTerminal(terminal.id) }
             Button("Duplicate blank") { state.duplicateTerminal(terminal.id, blank: true) }
-            Button(done ? "Mark Not Done" : "Mark Done") { state.toggleSubtaskDone(terminal.id) }
+            Button(done ? "Unmark" : "Mark") { state.toggleSubtaskDone(terminal.id) }
             if terminal.clusterId != nil {
                 Button("Remove from Cluster") { state.removeFromCluster(terminal.id) }
             }
@@ -128,7 +128,7 @@ struct TerminalCardView: View {
         HStack(spacing: 8) {
             idChip
             if done {
-                Text("done")
+                Text("mark")
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Theme.green.opacity(0.18)).foregroundColor(Theme.green)
@@ -150,7 +150,7 @@ struct TerminalCardView: View {
     private var controls: some View {
         HStack(spacing: 13) {
             iconButton(done ? "checkmark.circle.fill" : "circle",
-                       active: done, help: done ? "Mark not done" : "Mark subtask done") {
+                       active: done, help: done ? "Unmark" : "Mark") {
                 state.toggleSubtaskDone(terminal.id)
             }
             if terminal.status.isOpen {

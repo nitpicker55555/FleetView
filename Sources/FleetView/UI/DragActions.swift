@@ -56,7 +56,7 @@ struct ActionZoneView: View {
 
     private var title: String {
         switch zone {
-        case .done:         return done ? "Not Done" : "Done"
+        case .done:         return done ? "Unmark" : "Mark"
         case .duplicate:    return "Duplicate"
         case .rename:       return "Rename"
         case .leaveCluster: return "Leave Cluster"

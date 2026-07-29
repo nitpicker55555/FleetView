@@ -1183,7 +1183,7 @@ function endDrag(){
   document.getElementById('dock').style.display='none';
 }
 function zonesFor(cluster,done){
-  const z=[{k:'done',t:done?'Undone':'✓ Done'},{k:'duplicate',t:'⧉ Duplicate'},{k:'rename',t:'✎ Rename'}];
+  const z=[{k:'done',t:done?'Unmark':'✓ Mark'},{k:'duplicate',t:'⧉ Duplicate'},{k:'rename',t:'✎ Rename'}];
   if(cluster)z.push({k:'leaveCluster',t:'⇤ Leave'});
   z.push({k:'remove',t:'🗑 Remove',danger:true});
   return z;
