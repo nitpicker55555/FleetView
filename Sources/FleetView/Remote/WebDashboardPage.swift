@@ -674,15 +674,39 @@ window.addEventListener('orientationchange',()=>setTimeout(syncViewport,120));
    last one from mid-animation, and the band stays keyboard-sized: a strip of empty page under the
    composer that never goes away. Re-measure on a slow tick; it's a no-op unless the band moved. */
 setInterval(syncViewport,400);
-document.getElementById('inputtext').addEventListener('focusout',()=>{
-  lastBand='';                     // force the next measurement through, focus has changed
-  syncViewport(); setTimeout(syncViewport,60); setTimeout(syncViewport,400);
-});
-document.getElementById('inputtext').addEventListener('focus',()=>{ lastBand=''; });
-/* Belt and braces: if the document itself got scrolled while a field had focus, put it back. */
-document.getElementById('inputtext').addEventListener('blur',()=>{
-  window.scrollTo(0,0);
-  setTimeout(syncViewport,50);
+/* Both fields, not just the composer: the preset filter opens the same keyboard, and while it had
+   no handlers at all its band was only ever cleared by the slow poll — and not at all if the
+   measurement below stayed stale. */
+for(const id of ['inputtext','pfind']){
+  const el=document.getElementById(id);
+  if(!el) continue;
+  el.addEventListener('focusout',()=>{
+    lastBand='';                   // force the next measurement through, focus has changed
+    syncViewport(); setTimeout(syncViewport,60); setTimeout(syncViewport,400);
+  });
+  el.addEventListener('focus',()=>{ lastBand=''; });
+  /* Belt and braces: if the document itself got scrolled while a field had focus, put it back. */
+  el.addEventListener('blur',()=>{
+    window.scrollTo(0,0);
+    setTimeout(syncViewport,50);
+  });
+}
+/* Dismissing the keyboard with the field still focused (iPadOS' hide-keyboard key, iOS' Done)
+   emits no blur and no focusout, so the two guards on the measurement — "a field is focused" and
+   "the shortfall is keyboard-sized" — can both still hold against a stale visualViewport height.
+   The band then stays keyboard-sized with no keyboard, which is the offset that never came back.
+   Tapping the transcript is the gesture people actually use to put the keyboard away, so make it
+   blur explicitly: that puts the dismissal back on the handlers above instead of on a measurement
+   that may never change again. */
+document.getElementById('chat').addEventListener('pointerdown',()=>{
+  const a=document.activeElement;
+  if(a&&(a.id==='inputtext'||a.id==='pfind')) a.blur();
+},{passive:true});
+/* Coming back from another app is the other way to return to a keyboard-sized band with no
+   keyboard: the events that would have cleared it fired while the tab was hidden. */
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden) return;
+  lastBand=''; syncViewport(); setTimeout(syncViewport,200);
 });
 
 /* Shell terminal: the pane's scrollback, wrapped and natively scrollable. */
