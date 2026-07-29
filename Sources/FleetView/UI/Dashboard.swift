@@ -38,11 +38,39 @@ struct DashboardView: View {
         .frame(minWidth: 960, minHeight: 580)
         .overlay { treeInspector }     // interactive: text selection + scrolling
         .overlay { dragOverlay }
+        .overlay { searchOverlay }
         .coordinateSpace(name: "fleet")
         .onPreferenceChange(BoardFrameKey.self) { state.boardFrame = $0 }
         .onPreferenceChange(CardFramesKey.self) { state.cardFrames = $0 }
         .sheet(item: $state.nameSheet) { req in
             NameSheet(request: req).environmentObject(state)
+        }
+        .background {                                  // ⌘K — search every conversation on disk
+            Button("") { state.toggleSearch() }
+                .keyboardShortcut("k", modifiers: .command).hidden()
+        }
+    }
+
+    /// Search floats over the whole board rather than docking beside a terminal: a hit can come
+    /// from any project, including one with nothing open.
+    ///
+    /// While a result is being dragged the panel gets out of the way — it covers the very board
+    /// the node is being dropped onto. It stays mounted (opacity, not removal) because the drag
+    /// gesture lives on the row and would be cancelled the moment the row disappeared.
+    @ViewBuilder private var searchOverlay: some View {
+        if state.searchOpen {
+            let dragging = state.treeDrag?.hit != nil
+            ZStack {
+                Color.black.opacity(dragging ? 0 : 0.42)
+                    .ignoresSafeArea()
+                    .onTapGesture { state.closeSearch() }
+                    .allowsHitTesting(!dragging)
+                SearchPanel(model: state.searchModel).environmentObject(state)
+                    .opacity(dragging ? 0.12 : 1)
+                    .scaleEffect(dragging ? 0.97 : 1)
+            }
+            .animation(.easeOut(duration: 0.16), value: dragging)
+            .transition(.opacity)
         }
     }
 
@@ -326,10 +354,26 @@ struct TopBar: View {
             if working > 0 { pill("\(working) working", .working) }
             if needs > 0 { pill("\(needs) needs you", .needsYou) }
             Spacer()
+            searchButton
             webButton
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
         .background(Theme.panel.opacity(0.55))
+    }
+
+    /// The only on-screen way in to conversation search (⌘K also opens it). Icon-only, matching
+    /// the Web button's chrome.
+    private var searchButton: some View {
+        Button { state.toggleSearch() } label: {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(state.searchOpen ? Theme.accent : Theme.text)
+                .frame(width: 24, height: 21)
+                .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.stroke, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("搜索所有 Claude / Codex 对话历史 (⌘K)")
     }
 
     private var webButton: some View {

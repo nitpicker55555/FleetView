@@ -44,12 +44,20 @@ final class AppState: ObservableObject {
     @Published var treePanelWidth: Double = 460
     let treeModel = SessionTreeModel()
 
-    /// A node being dragged from the tree panel toward the board.
+    // MARK: - Conversation search (⌘K)
+
+    @Published var searchOpen = false
+    let searchModel = SearchModel()
+
+    /// A node being dragged toward the board — from the tree panel, or from a search result.
+    /// A search drag carries the hit instead of a uuid: it has to be resolved against its own
+    /// project (which may have no terminal open at all), not against the tree panel's.
     struct TreeDrag {
         let nodeUuid: String
         let nativeSid: String?
         let prompt: String
         var location: CGPoint
+        var hit: SearchIndex.Hit? = nil
     }
     @Published var treeDrag: TreeDrag?
     @Published var treeDropCardId: UUID?      // same-project card under the cursor → join its cluster
@@ -121,6 +129,25 @@ final class AppState: ObservableObject {
         treeBoardHot = card == nil && boardFrame.contains(location)
     }
 
+    /// A search result being dragged. Drop targets are scoped to the hit's OWN project — joining
+    /// a cluster in some unrelated project would put the conversation in the wrong place.
+    func searchDragChanged(hit: SearchIndex.Hit, location: CGPoint) {
+        let prompt = hit.body.replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if treeDrag?.hit?.id == hit.id {
+            treeDrag?.location = location
+        } else {
+            treeDrag = TreeDrag(nodeUuid: hit.node, nativeSid: nil, prompt: prompt,
+                                location: location, hit: hit)
+        }
+        let card = cardFrames.first { entry in
+            entry.value.contains(location)
+                && project(terminals.first(where: { $0.id == entry.key })?.projectId)?.path == hit.project
+        }?.key
+        treeDropCardId = card
+        treeBoardHot = card == nil && boardFrame.contains(location)
+    }
+
     func treeDragEnded(at location: CGPoint) {
         let drag = treeDrag
         let card = treeDropCardId
@@ -128,10 +155,14 @@ final class AppState: ObservableObject {
         treeDrag = nil
         treeDropCardId = nil
         treeBoardHot = false
-        guard let d = drag else { return }
-        if let card {
+        guard let d = drag, card != nil || boardHot else { return }
+        if let hit = d.hit {
+            // Resolving a hit reads transcripts and may synthesise a fork, so it runs off the main
+            // actor; the model owns that path (and the spinner) already.
+            searchModel.open(hit, in: self, joinClusterOf: card)
+        } else if let card {
             forkOpenNode(nodeUuid: d.nodeUuid, nativeSid: d.nativeSid, prompt: d.prompt, joinClusterOf: card)
-        } else if boardHot {
+        } else {
             forkOpenNode(nodeUuid: d.nodeUuid, nativeSid: d.nativeSid, prompt: d.prompt, joinClusterOf: nil)
         }
     }
@@ -189,15 +220,15 @@ final class AppState: ObservableObject {
     }
 
     /// Type a command into a terminal's shell after a delay (used by fork/duplicate flows).
-    private func typeIntoTerminal(_ id: UUID, _ command: String, after delay: TimeInterval) {
+    func typeIntoTerminal(_ id: UUID, _ command: String, after delay: TimeInterval) {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.controllers[id]?.type(command + "\r")
         }
     }
 
     /// The terminal's cluster, creating one (named after it) when it has none — shared by
-    /// duplicate and tree-drop-on-card.
-    private func ensureCluster(for id: UUID) -> UUID? {
+    /// duplicate, tree-drop-on-card and search-drop-on-card.
+    func ensureCluster(for id: UUID) -> UUID? {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return nil }
         if let c = terminals[idx].clusterId { return c }
         let cluster = Cluster(name: terminals[idx].name)

@@ -22,6 +22,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.web.app = state
         state.web.start()            // web dashboard (mirror of this window) on the LAN
         state.startPanelWatch()      // hot-load the agent-authored top panel (no relaunch needed)
+        // Warm the conversation-search index in the background. The first build reads every
+        // transcript on disk (~15 s); every refresh after that is incremental and near-free, so
+        // doing it at launch means ⌘K is instant instead of waiting on a cold index.
+        SearchIndex.refresh()
         let w = EventWatcher()
         w.onEvent = { [weak self] ev in
             Task { @MainActor in self?.state.handleHookEvent(ev) }
@@ -88,6 +92,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(.separator())
+        // ⌘K is bound in the view too; the menu item is what makes it discoverable.
+        let search = NSMenuItem(title: "搜索对话历史…", action: #selector(openSearch), keyEquivalent: "k")
+        search.target = self
+        editMenu.addItem(search)
 
         NSApp.mainMenu = mainMenu
     }
@@ -104,5 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func revealSupport() {
         FV.ensureSupportDir()
         NSWorkspace.shared.open(FV.supportDir)
+    }
+
+    @objc private func openSearch() {
+        state.openSearch()
     }
 }
