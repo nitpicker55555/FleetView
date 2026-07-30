@@ -127,6 +127,21 @@ def cmd_ls(a):
         rows = [t for t in rows if t.get("done")]
         if not rows:
             print("no marked terminals"); return
+        # Few rows in -m, so show full detail (untruncated project + cwd) rather than the packed table.
+        for t in rows:
+            cl = cluster_name(st, t.get("clusterId"))
+            last = (t.get("prompt") or "").replace("\n", " ")[:70]
+            print("%s %s %s   [%s]  %s" % (
+                dot(t["status"]), c("32", "✓"), c("1", t["name"]),
+                c(STATUS_COLOR.get(t["status"], "0"), t["statusLabel"]), c("90", t["id"][:8].lower())))
+            print("    project: %s%s" % (proj_name(st, t["projectId"]), ("   cluster: " + cl) if cl else ""))
+            print("    cwd: %s" % t.get("cwd", "?"))
+            print("    agent=%s  idle=%s  tokens=%s" % (
+                t.get("agent") or "-", ago(t.get("idle")), short_tokens(t.get("tokens", 0))))
+            if last:
+                print("    %s %s" % (c("90", "last:"), last))
+            print()
+        return
     if not rows:
         print("no terminals"); return
     w = min(26, max((len(t["name"]) for t in rows), default=4))
