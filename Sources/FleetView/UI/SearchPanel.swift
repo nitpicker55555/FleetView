@@ -207,8 +207,8 @@ struct SearchPanel: View {
                     .font(.system(size: 11)).foregroundColor(tint).frame(width: 14)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
-                        Text(h.name)
-                            .font(.system(size: 12, weight: .semibold)).foregroundColor(Theme.text)
+                        Text(highlighted(h.name, base: Theme.text))
+                            .font(.system(size: 12, weight: .semibold))
                         if let c = h.clusterName {
                             Text(c).font(.system(size: 9)).foregroundColor(Theme.subtext)
                                 .padding(.horizontal, 4).padding(.vertical, 1)
@@ -221,8 +221,8 @@ struct SearchPanel: View {
                         Text(h.why).font(.system(size: 8.5, design: .monospaced))
                             .foregroundColor(Theme.subtext.opacity(0.7))
                     }
-                    Text(h.detail)
-                        .font(.system(size: 10.5)).foregroundColor(Theme.subtext)
+                    Text(highlighted(h.detail, base: Theme.subtext))
+                        .font(.system(size: 10.5))
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer()
@@ -295,9 +295,8 @@ struct SearchPanel: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     .padding(.top, 1)
 
-                Text(snippet(hit.body))
+                Text(highlighted(snippet(hit.body), base: isPrompt ? Theme.text : Theme.subtext))
                     .font(.system(size: 11.5))
-                    .foregroundColor(isPrompt ? Theme.text : Theme.subtext)
                     .lineLimit(2).multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -392,9 +391,8 @@ struct SearchPanel: View {
                 .background(isPrompt ? Theme.accent : tint.opacity(0.16))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 .padding(.top, 2)
-            Text(msg.body)
+            Text(highlighted(msg.body, base: isHit ? Theme.text : Theme.subtext))
                 .font(.system(size: 11.5, design: isPrompt ? .default : .monospaced))
-                .foregroundColor(isHit ? Theme.text : Theme.subtext)
                 .textSelection(.enabled)
                 .lineLimit(isHit ? nil : 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -470,13 +468,54 @@ struct SearchPanel: View {
         path == "—" ? "未知项目" : (path as NSString).lastPathComponent
     }
 
-    /// One line, collapsed — a matched prompt is often a wall of pasted text.
+    /// One line, collapsed and windowed onto the first match — a matched prompt is often a wall of
+    /// pasted text, and taking the first 240 characters of one regularly showed no match at all.
     private func snippet(_ body: String) -> String {
         let flat = body.split(whereSeparator: { $0.isNewline })
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
             .joined(separator: "  ")
-        return flat.count > 240 ? String(flat.prefix(240)) + "…" : flat
+        let width = 240
+        guard flat.count > width else { return flat }
+        // Start a little before the match so it has context on both sides rather than opening on it.
+        guard let hit = firstMatch(in: flat) else { return String(flat.prefix(width)) + "…" }
+        let lead = 60
+        var start = flat.index(hit, offsetBy: -lead, limitedBy: flat.startIndex) ?? flat.startIndex
+        if flat.distance(from: start, to: flat.endIndex) < width {
+            start = flat.index(flat.endIndex, offsetBy: -width)
+        }
+        let end = flat.index(start, offsetBy: width, limitedBy: flat.endIndex) ?? flat.endIndex
+        return (start > flat.startIndex ? "…" : "") + flat[start..<end]
+            + (end < flat.endIndex ? "…" : "")
+    }
+
+    /// Where the earliest search term lands in `text`, if any.
+    private func firstMatch(in text: String) -> String.Index? {
+        SearchIndex.terms(model.query)
+            .compactMap { text.range(of: $0, options: .caseInsensitive)?.lowerBound }
+            .min()
+    }
+
+    /// Mark every term the index matched on. Each term is highlighted independently because that is
+    /// what the query means — two words are two AND-ed terms, not one substring.
+    private func highlighted(_ text: String, base: Color) -> AttributedString {
+        var a = AttributedString(text)
+        a.foregroundColor = base
+        for term in SearchIndex.terms(model.query) where !term.isEmpty {
+            var from = text.startIndex
+            while let r = text.range(of: term, options: .caseInsensitive,
+                                     range: from..<text.endIndex) {
+                if let lo = AttributedString.Index(r.lowerBound, within: a),
+                   let hi = AttributedString.Index(r.upperBound, within: a) {
+                    a[lo..<hi].foregroundColor = Theme.amber
+                    a[lo..<hi].backgroundColor = Theme.amber.opacity(0.18)
+                    a[lo..<hi].inlinePresentationIntent = .stronglyEmphasized
+                }
+                from = r.upperBound
+                if from >= text.endIndex { break }
+            }
+        }
+        return a
     }
 
     private func shortDate(_ iso: String) -> String {

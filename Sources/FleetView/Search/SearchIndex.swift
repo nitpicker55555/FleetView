@@ -81,25 +81,21 @@ enum SearchIndex {
         return out
     }
 
-    /// Turn what the user typed into an FTS5 MATCH expression.
+    /// The literal terms in a query, as typed: whitespace separates them, `"…"` keeps one together.
     ///
-    /// Bare words are AND-ed, `"…"` stays a phrase, and every CJK run becomes an adjacent-token
-    /// phrase so it matches inside a longer run. Anything FTS5 would read as an operator is
-    /// quoted away — a stray `*` or `-` in a query should search, not throw.
-    static func matchExpression(_ query: String) -> String? {
-        var terms: [String] = []
+    /// Shared with the UI so highlighting marks exactly what the index matched on. Doing it any
+    /// other way drifts: a two-word query is two independent AND-ed terms to FTS5, and highlighting
+    /// the whole string as one substring would mark nothing at all.
+    static func terms(_ query: String) -> [String] {
+        var out: [String] = []
         var buf = String()
         var inQuotes = false
 
         func flush() {
             defer { buf = "" }
-            let tokens = segment(buf).split(whereSeparator: { $0 == " " || $0.isNewline })
-                .map { $0.replacingOccurrences(of: "\"", with: "") }
-                .filter { !$0.isEmpty }
-            guard !tokens.isEmpty else { return }
-            terms.append("\"" + tokens.joined(separator: " ") + "\"")
+            let t = buf.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { out.append(t) }
         }
-
         for ch in query {
             if ch == "\"" {
                 if inQuotes { flush() }
@@ -111,7 +107,23 @@ enum SearchIndex {
             }
         }
         flush()
-        return terms.isEmpty ? nil : terms.joined(separator: " AND ")
+        return out
+    }
+
+    /// Turn what the user typed into an FTS5 MATCH expression.
+    ///
+    /// Terms are AND-ed, and every CJK run inside one becomes an adjacent-token phrase so it matches
+    /// inside a longer run. Anything FTS5 would read as an operator is quoted away — a stray `*` or
+    /// `-` in a query should search, not throw.
+    static func matchExpression(_ query: String) -> String? {
+        let parts: [String] = terms(query).compactMap { term in
+            let tokens = segment(term).split(whereSeparator: { $0 == " " || $0.isNewline })
+                .map { $0.replacingOccurrences(of: "\"", with: "") }
+                .filter { !$0.isEmpty }
+            guard !tokens.isEmpty else { return nil }
+            return "\"" + tokens.joined(separator: " ") + "\""
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " AND ")
     }
 
     // MARK: - Database
