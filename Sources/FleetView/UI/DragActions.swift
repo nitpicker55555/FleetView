@@ -66,7 +66,7 @@ struct ActionZoneView: View {
 
     private var icon: String {
         switch zone {
-        case .done:         return done ? "circle" : "checkmark.circle.fill"
+        case .done:         return done ? "bookmark.slash" : "bookmark.fill"
         case .duplicate:    return "plus.square.on.square"
         case .rename:       return "pencil"
         case .leaveCluster: return "arrow.up.forward.square"
@@ -76,7 +76,7 @@ struct ActionZoneView: View {
 
     private var tint: Color {
         switch zone {
-        case .done:         return Theme.green
+        case .done:         return Theme.markTint
         case .duplicate:    return Theme.accent
         case .rename:       return Color(red: 0.62, green: 0.64, blue: 0.72)
         case .leaveCluster: return Color(red: 0.98, green: 0.72, blue: 0.32)

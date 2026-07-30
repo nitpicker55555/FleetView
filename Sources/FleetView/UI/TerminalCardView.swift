@@ -16,7 +16,7 @@ struct TerminalCardView: View {
     private var highlighted: Bool { state.highlightedTerminalId == terminal.id }
     private var treeDropTarget: Bool { state.treeDropCardId == terminal.id }
     private var cardStroke: Color {
-        if done { return Theme.doneStroke.opacity(0.55) }
+        if done { return Theme.markTint.opacity(0.55) }
         if terminal.agentKind != .unknown { return Theme.agentColor(terminal.agentKind).opacity(0.5) }
         return Theme.stroke
     }
@@ -25,11 +25,11 @@ struct TerminalCardView: View {
         VStack(alignment: .leading, spacing: 11) {
             header.allowsHitTesting(renaming)     // display-only unless renaming → drags pass through the name/status
             promptLine.allowsHitTesting(false)    // never let the prompt text intercept a drag
-            Divider().overlay(done ? Theme.doneStroke.opacity(0.25) : Theme.stroke)
+            Divider().overlay(done ? Theme.markTint.opacity(0.25) : Theme.stroke)
             footer                                 // keeps its buttons clickable; drag still works over it
         }
         .padding(14)
-        .background(done ? Theme.doneCard : (hovering ? Theme.cardHover : Theme.card))
+        .background(done ? Theme.markCard : (hovering ? Theme.cardHover : Theme.card))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12)
             .stroke(cardStroke, lineWidth: done ? 1.5 : 1))
@@ -89,7 +89,7 @@ struct TerminalCardView: View {
                     .clipShape(Capsule())
             }
             if done {
-                Image(systemName: "checkmark.seal.fill").font(.system(size: 12)).foregroundColor(Theme.green)
+                Image(systemName: "bookmark.fill").font(.system(size: 11)).foregroundColor(Theme.markTint)
             }
             Text(terminal.status.label)
                 .font(.system(size: 11, weight: .medium))
@@ -128,10 +128,12 @@ struct TerminalCardView: View {
         HStack(spacing: 8) {
             idChip
             if done {
+                // Text only — the header already carries the bookmark glyph, and repeating it here
+                // was three of the same symbol on one card.
                 Text("mark")
                     .font(.system(size: 10, weight: .semibold))
                     .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(Theme.green.opacity(0.18)).foregroundColor(Theme.green)
+                    .background(Theme.markTint.opacity(0.18)).foregroundColor(Theme.markTint)
                     .clipShape(Capsule())
             }
             if terminal.lastActivity != nil {
@@ -149,7 +151,7 @@ struct TerminalCardView: View {
 
     private var controls: some View {
         HStack(spacing: 13) {
-            iconButton(done ? "checkmark.circle.fill" : "circle",
+            iconButton(done ? "bookmark.fill" : "bookmark",
                        active: done, help: done ? "Unmark" : "Mark") {
                 state.toggleSubtaskDone(terminal.id)
             }

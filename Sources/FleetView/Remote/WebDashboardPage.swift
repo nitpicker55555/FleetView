@@ -30,6 +30,7 @@ enum WebDashboardPage {
     /* Your own words are a raised layer over the conversation — inverted glass, so on a dark page
        that is white with dark text, and on a light page the reverse. */
     --quoteBg:rgba(255,255,255,.86); --quoteFg:#15181d; --quoteEdge:rgba(255,255,255,.6);
+    --markBg:#241d33; --markTint:#b58fe6;
     --quoteBgSoft:rgba(255,255,255,.78);
     --codeBg:#0e1116;
     --scheme:dark;
@@ -45,6 +46,7 @@ enum WebDashboardPage {
     --claude:#bc4c00; --codex:#0e7490;
     --onAccent:#ffffff;
     --quoteBg:rgba(28,32,38,.92); --quoteFg:#f2f4f7; --quoteEdge:rgba(255,255,255,.10);
+    --markBg:#f7f0ff; --markTint:#8250df;
     --quoteBgSoft:rgba(28,32,38,.82);
     --codeBg:#f6f8fa;
     --scheme:light;
@@ -95,7 +97,9 @@ enum WebDashboardPage {
   .card.armed{transform:scale(1.03);box-shadow:0 10px 26px rgba(0,0,0,.5);border-color:var(--accent)}
   .card:hover{background:var(--cardHover)}
   .card.locked{cursor:default;opacity:.6}
-  .card.done{background:#101c13;border-color:rgba(92,209,140,.4)}
+  /* Violet, and never a hard-coded near-black: this was #101c13, which stayed black on a light
+     page. Matches the desktop card exactly. */
+  .card.done{background:var(--markBg);border-color:var(--markTint)}
   .card.dragging{opacity:.35}
   .cardtop{display:flex;align-items:center;gap:9px}
   .cardtop .name{font-weight:600;font-size:14px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -1381,7 +1385,7 @@ function endDrag(){
   document.getElementById('dock').style.display='none';
 }
 function zonesFor(cluster,done){
-  const z=[{k:'done',t:done?'Unmark':'✓ Mark'},{k:'duplicate',t:'⧉ Duplicate'},{k:'rename',t:'✎ Rename'}];
+  const z=[{k:'done',t:done?'Unmark':'🔖 Mark'},{k:'duplicate',t:'⧉ Duplicate'},{k:'rename',t:'✎ Rename'}];
   if(cluster)z.push({k:'leaveCluster',t:'⇤ Leave'});
   z.push({k:'remove',t:'🗑 Remove',danger:true});
   return z;
@@ -1477,7 +1481,7 @@ function card(t){
   const sig=t.status==='shell'?'$':'›';
   const agent=t.agent?`<span class="agent" style="color:${t.agent==='codex'?'var(--codex)':'var(--claude)'};background:${t.agent==='codex'?'rgba(102,204,217,.16)':'rgba(230,148,89,.16)'}">${t.agent}</span>`:'';
   const tok=t.tokens>0?`<span style="font-size:10px;color:var(--accent);margin-left:5px">${short(t.tokens)} tok</span>`:'';
-  const dn=t.done?'✓ ':'';
+  const dn=t.done?'🔖 ':'';
   return `<div class="card ${locked?'locked':''} ${t.done?'done':''}" data-id="${t.id}" data-name="${esc(t.name)}" data-cluster="${t.clusterId?'1':'0'}" data-canopen="${t.canOpen?'1':'0'}" data-done="${t.done?'1':'0'}">
     <div class="cardtop">
       <span class="dot" style="background:${COLORS[t.status]||COLORS.closed}"></span>

@@ -58,10 +58,18 @@ enum Theme {
     /// is what makes a filled button unreadable in one appearance or the other.
     static let onAccent  = dual(0x0B1020, 0xFFFFFF)
 
-    // "subtask done" card styling — a clear green shift.
-    static let doneCard   = dual(0x1A2B21, 0xDAFBE1)      // light: Primer success.subtle
-    static let doneStroke = dual(0x5CD18C, 0x1A7F37)
-    static let green      = dual(0x5CD18C, 0x1A7F37)      // Primer success.fg
+    // A marked card. Violet, and deliberately not green: green is `working`, so a marked terminal
+    // and a running one were the same colour and could not be told apart at a glance. Green also
+    // still said "done", which stopped being what the flag means when it became a mark — a bookmark
+    // is about finding something again, not about having finished it.
+    //
+    // Violet is the one hue in the palette carrying no status meaning (working/needsYou/exited/
+    // shell/idle/accent are green/amber/red/teal/grey/blue), so it cannot be misread as live state.
+    // It is ≥40° from every one of them in hue, and the same violet the tree already uses for a
+    // branch lane. Light is Primer's done.fg.
+    static let markTint = dual(0xB58FE6, 0x8250DF)
+    static let markCard = dual(0x241D33, 0xF7F0FF)
+    static let green    = dual(0x5CD18C, 0x1A7F37)        // Primer success.fg
     static let amber      = dual(0xFAB852, 0x9A6700)      // Primer attention.fg
     static let red        = dual(0xD96B73, 0xD1242F)      // Primer danger.fg
 
