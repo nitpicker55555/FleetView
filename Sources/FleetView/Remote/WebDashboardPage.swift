@@ -345,6 +345,27 @@ enum WebDashboardPage {
   #imgbtn[disabled]{opacity:.5}
   /* Dropping a file anywhere on the conversation should work, so the whole overlay is the target. */
   #term.dropping{outline:2px dashed var(--accent);outline-offset:-6px}
+  /* Files an agent handed over. Lives in the header rather than inside a conversation: it is the
+     one thing you want to reach without first knowing which terminal produced it. */
+  #traybtn{position:relative;background:var(--card);color:var(--text);border:1px solid var(--stroke);
+    border-radius:8px;padding:5px 9px;font-size:14px;line-height:1;cursor:pointer}
+  #traybtn.has{border-color:var(--accent)}
+  #traybadge:not(:empty){position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;
+    border-radius:999px;background:var(--accent);color:#0b1020;font-size:10px;font-weight:700;
+    line-height:16px;text-align:center;padding:0 3px}
+  #tray{display:none;position:sticky;top:0;z-index:6;background:var(--panel);
+    border-bottom:1px solid var(--stroke);max-height:min(60vh,420px);overflow-y:auto;
+    padding:8px 12px}
+  #tray.on{display:block}
+  #tray .f{display:flex;align-items:center;gap:10px;padding:9px 10px;margin-bottom:6px;
+    background:var(--card);border:1px solid var(--stroke);border-radius:10px;
+    color:var(--text);text-decoration:none}
+  #tray .f:active{background:var(--accent);color:#0b1020}
+  #tray .f .fi{flex:none;font-size:17px;line-height:1}
+  #tray .f .fb{flex:1;min-width:0}
+  #tray .f .fn{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #tray .f .fm{font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #tray .tnone{color:var(--sub);font-size:12px;padding:10px 4px}
 </style>
 </head>
 <body>
@@ -355,8 +376,10 @@ enum WebDashboardPage {
   <span class="muted" id="counts">…</span>
   <span id="pills"></span>
   <span class="spacer"></span>
+  <button id="traybtn" onclick="toggleTray()" title="Files agents have sent you">📥<span id="traybadge"></span></button>
   <span class="refresh" id="refresh"></span>
 </header>
+<div id="tray"><div id="traylist"></div></div>
 <main id="root"><div class="empty">Loading…</div></main>
 
 <div id="chip"></div>
@@ -392,8 +415,8 @@ enum WebDashboardPage {
       <button onclick="key('BSpace')">⌫</button>
     </div>
     <div id="sendrow">
-      <input id="imgfile" type="file" accept="image/*" multiple hidden>
-      <button id="imgbtn" title="Attach an image — it uploads to the Mac and its path goes in the prompt">🖼</button>
+      <input id="imgfile" type="file" multiple hidden>
+      <button id="imgbtn" title="Attach a file — it uploads to the Mac and its path goes in the prompt">📎</button>
       <textarea id="inputtext" rows="1" placeholder="Type here (中文 OK) — Enter to send, Shift+Enter for newline"></textarea>
       <button id="sendbtn">Send</button>
     </div>
@@ -1129,25 +1152,77 @@ async function sendText(){
             if(sentGhost){ sentGhost.node.remove(); sentGhost=null; } }
   setTimeout(loadChat,400);
 }
-/* Images: an agent reads a picture by opening a file, so getting one out of a phone and into a
-   prompt means putting the bytes on the Mac and typing the path. The upload answers with the
-   absolute path it wrote, which is inserted at the cursor — the same thing you would do by hand
-   after AirDropping the photo, minus the AirDrop. */
-async function attachImages(files){
-  const list=[...files].filter(f=>!f.type||f.type.startsWith('image/'));
+/* ---------- files an agent sent (the outbox) ----------
+   The mirror of the attach button: `fleetview-send` drops a file in ~/.fleetview/outbox and it
+   turns up here, one tap from opening on the phone. Polled with the rest of the dashboard, so a
+   file that lands while you are looking appears on its own. */
+let trayFiles=[];
+function fileIcon(ext){
+  if(['png','jpg','jpeg','gif','webp','heic','avif','svg'].includes(ext))return '🖼';
+  if(ext==='pdf')return '📄';
+  if(['csv','xlsx','xls'].includes(ext))return '📊';
+  if(['zip','tar','gz','tgz'].includes(ext))return '🗜';
+  if(['mp4','mov','mp3','wav','m4a'].includes(ext))return '🎬';
+  if(['txt','log','md','json','yml','yaml'].includes(ext))return '📝';
+  return '📎';
+}
+const kb=n=>n<1024?n+'B':(n<1048576?(n/1024).toFixed(0)+'KB':(n/1048576).toFixed(1)+'MB');
+async function loadFiles(){
+  try{
+    const r=await fetch('/files');
+    const list=await r.json();
+    if(!Array.isArray(list))return;
+    trayFiles.length=0; trayFiles.push(...list);
+  }catch(e){ return; }
+  const btn=document.getElementById('traybtn'), badge=document.getElementById('traybadge');
+  badge.textContent=trayFiles.length?String(trayFiles.length):'';
+  btn.classList.toggle('has',trayFiles.length>0);
+  if(document.getElementById('tray').classList.contains('on')) renderTray();
+}
+function renderTray(){
+  const el=document.getElementById('traylist');
+  if(!trayFiles.length){ el.innerHTML='<div class="tnone">nothing yet</div>'; return; }
+  /* `from` is a terminal id — the server deliberately leaves naming to us, since the dashboard
+     already knows every terminal from /state. */
+  const names={};
+  for(const t of (state?.terminals||[])) names[t.id]=t.name;
+  el.innerHTML=trayFiles.map(f=>{
+    const who=names[f.from]||'';
+    const bits=[kb(f.bytes||0), who, f.note||''].filter(Boolean).join(' · ');
+    return '<a class="f" href="/file?id='+encodeURIComponent(f.id)+'" target="_blank" rel="noopener">'
+      +'<span class="fi">'+fileIcon((f.ext||'').toLowerCase())+'</span>'
+      +'<span class="fb"><span class="fn">'+esc(f.name||f.id)+'</span>'
+      +'<span class="fm">'+esc(bits)+'</span></span></a>';
+  }).join('');
+}
+function toggleTray(){
+  const t=document.getElementById('tray');
+  t.classList.toggle('on');
+  if(t.classList.contains('on')){ renderTray(); loadFiles(); }
+}
+
+/* Files: an agent reads a file by opening it, so getting one out of a phone and into a prompt means
+   putting the bytes on the Mac and typing the path. The upload answers with the absolute path it
+   wrote, which is inserted at the cursor — the same thing you would do by hand after AirDropping
+   the file, minus the AirDrop. */
+async function attachFiles(files){
+  const list=[...files];
   if(!list.length)return;
   const btn=document.getElementById('imgbtn');
   const was=btn.textContent; btn.disabled=true; btn.textContent='…';
   const paths=[];
   for(const f of list){
     try{
-      const r=await fetch('/upload',{method:'POST',headers:{'Content-Type':f.type||'application/octet-stream'},body:f});
+      /* The name rides along in the query so the server can keep the extension — an agent keys off
+         .csv or .pdf, and the basename it writes is still its own uuid. */
+      const r=await fetch('/upload?name='+encodeURIComponent(f.name||''),
+        {method:'POST',headers:{'Content-Type':f.type||'application/octet-stream'},body:f});
       const j=await r.json();
       if(j.path) paths.push(j.path); else throw new Error(j.error||('HTTP '+r.status));
     }catch(e){
       btn.textContent='✕';
       setTimeout(()=>{btn.textContent=was;},1400);
-      toast('image upload failed: '+e.message);
+      toast('upload failed: '+e.message);
     }
   }
   btn.disabled=false;
@@ -1168,16 +1243,17 @@ function insertAtCursor(ta,text){
 }
 document.getElementById('imgbtn').addEventListener('click',()=>document.getElementById('imgfile').click());
 document.getElementById('imgfile').addEventListener('change',e=>{
-  attachImages(e.target.files);
+  attachFiles(e.target.files);
   e.target.value='';                 // same file twice in a row still fires
 });
-/* Paste a screenshot straight into the box — the desktop path, where there is no file picker
-   worth using. */
+/* Paste a screenshot straight into the box — the desktop path, where there is no file picker worth
+   using. `kind==='file'` is the whole test: a pasted file of any type is an attachment, and pasted
+   text is not a file, so ordinary paste is untouched. */
 document.getElementById('inputtext').addEventListener('paste',e=>{
-  const items=[...(e.clipboardData?.items||[])].filter(i=>i.kind==='file'&&i.type.startsWith('image/'));
-  if(!items.length)return;           // ordinary text paste is left alone
+  const items=[...(e.clipboardData?.items||[])].filter(i=>i.kind==='file');
+  if(!items.length)return;
   e.preventDefault();
-  attachImages(items.map(i=>i.getAsFile()).filter(Boolean));
+  attachFiles(items.map(i=>i.getAsFile()).filter(Boolean));
 });
 /* Drag a file onto the conversation. The counter guards against dragleave firing as the pointer
    crosses a child element, which would otherwise clear the highlight mid-drag. */
@@ -1188,7 +1264,7 @@ document.getElementById('inputtext').addEventListener('paste',e=>{
   t.addEventListener('dragleave',()=>{ if(--depth<=0){ depth=0; t.classList.remove('dropping'); } });
   t.addEventListener('drop',e=>{
     e.preventDefault(); depth=0; t.classList.remove('dropping');
-    if(e.dataTransfer?.files?.length) attachImages(e.dataTransfer.files);
+    if(e.dataTransfer?.files?.length) attachFiles(e.dataTransfer.files);
   });
 })();
 
@@ -1434,6 +1510,10 @@ async function pollPanel(){
   }catch(e){}
 }
 pollPanel();setInterval(pollPanel,1500);
+/* On its own timer, not inside tick(): tick() stops while a conversation is open, and a file that
+   arrives while you are reading one is exactly when you want to be told. Slower, because handing a
+   file over is a human-paced event. */
+loadFiles();setInterval(loadFiles,4000);
 </script>
 </body>
 </html>

@@ -22,6 +22,9 @@ enum FV {
     /// absolute path is typed into the prompt, so the agent reads the file the same way it would
     /// read one you dropped into a desktop terminal.
     static var uploadsDir: URL { supportDir.appendingPathComponent("uploads", isDirectory: true) }
+    /// The other direction: files an agent handed to whoever is reading the web dashboard. Each one
+    /// is `<uuid>.<ext>` beside a `<uuid>.json` describing it (see `fleetview-send`).
+    static var outboxDir: URL { supportDir.appendingPathComponent("outbox", isDirectory: true) }
     static var panelHTML: URL { uiDir.appendingPathComponent("panel.html") }
     static var panelJSON: URL { uiDir.appendingPathComponent("panel.json") }
 

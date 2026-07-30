@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""fleetview-send — hand a file from an agent to whoever is reading the FleetView web dashboard.
+
+The dashboard already goes the other way: you can attach a file on your phone and its path is typed
+into the prompt. This is the return trip. An agent that has produced something worth looking at — a
+report, a chart, a log, a built artifact — offers it here, and it shows up in the web dashboard's
+file tray, one tap from opening on the phone.
+
+Unlike `project-manager` this does not talk to the HTTP API. It writes straight into
+~/.fleetview/outbox/, which means it works while FleetView has never been opened, has no request
+size limit, and cannot fail halfway. The server only ever reads that directory.
+
+  fleetview-send <file>...              offer one or more files
+  fleetview-send -m "note" <file>       offer with a note shown next to it
+  fleetview-send --list                 what is currently on offer
+  fleetview-send --rm <id>...           withdraw by id (8-char prefix is enough)
+  fleetview-send --clear                withdraw everything
+  fleetview-send --link                 print the dashboard URL
+
+Each file is copied in under a generated uuid, so the same name twice never collides and nothing an
+agent passes can decide where bytes land. The original name is kept as metadata and is what the
+phone sees when it saves the file.
+"""
+import argparse
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import uuid
+
+HOME = os.path.expanduser("~")
+SUPPORT = os.path.join(HOME, ".fleetview")
+OUTBOX = os.path.join(SUPPORT, "outbox")
+TTY = sys.stdout.isatty()
+
+
+def c(code, s):
+    return "\033[%sm%s\033[0m" % (code, s) if TTY else s
+
+
+def human(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return "%.0f%s" % (n, unit) if unit == "B" else "%.1f%s" % (n, unit)
+        n /= 1024.0
+
+
+def safe_ext(name):
+    """Extension reduced to a bare token — it becomes part of a filename the server will open."""
+    ext = os.path.splitext(name)[1].lstrip(".").lower()
+    ext = "".join(ch for ch in ext if ch.isalnum())
+    return ext[:12] or "bin"
+
+
+def dashboard_url():
+    """Where to look at it — the address a phone on the same network can actually reach.
+
+    Wi-Fi/Ethernet first, and only then whatever a default route happens to pick: asking the routing
+    table gives a VPN's tunnel address (utun) whenever one is up, which is reachable from nothing.
+    Mirrors Tooling.lanIP() in the app for the same reason.
+    """
+    try:
+        with open(os.path.join(SUPPORT, "web-port")) as fh:
+            port = fh.read().strip()
+    except OSError:
+        return None
+    ip = None
+    for iface in ("en0", "en1", "en2"):
+        try:
+            out = subprocess.run(["ipconfig", "getifaddr", iface],
+                                 capture_output=True, text=True, timeout=2).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out:
+            ip = out
+            break
+    if not ip:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+        except OSError:
+            ip = "127.0.0.1"
+    return "http://%s:%s/" % (ip, port)
+
+
+def entries():
+    out = []
+    try:
+        names = os.listdir(OUTBOX)
+    except OSError:
+        return out
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(OUTBOX, n)) as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        blob = os.path.join(OUTBOX, "%s.%s" % (meta.get("id"), meta.get("ext")))
+        if not os.path.exists(blob):
+            continue
+        meta["_blob"] = blob
+        out.append(meta)
+    out.sort(key=lambda m: m.get("ts", ""), reverse=True)
+    return out
+
+
+def cmd_send(args):
+    os.makedirs(OUTBOX, exist_ok=True)
+    # The agent's own terminal, so the tray can say who sent it. FleetView puts this in the env of
+    # every terminal it launches; absent (a plain shell) is fine, it just shows unattributed.
+    term = os.environ.get("FLEETVIEW_TERM_ID", "")
+    sent = []
+    for path in args.files:
+        if not os.path.isfile(path):
+            print(c("31", "not a file: %s" % path), file=sys.stderr)
+            continue
+        size = os.path.getsize(path)
+        fid = str(uuid.uuid4()).lower()
+        ext = safe_ext(path)
+        blob = os.path.join(OUTBOX, "%s.%s" % (fid, ext))
+        try:
+            shutil.copyfile(path, blob)
+        except OSError as e:
+            print(c("31", "could not copy %s: %s" % (path, e)), file=sys.stderr)
+            continue
+        meta = {
+            "id": fid,
+            "name": os.path.basename(path),
+            "ext": ext,
+            "bytes": size,
+            "from": term,
+            "note": args.message or "",
+            "origin": os.path.abspath(path),
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        # Metadata last: a reader that catches us mid-copy sees no entry rather than a truncated one.
+        with open(os.path.join(OUTBOX, "%s.json" % fid), "w") as fh:
+            json.dump(meta, fh)
+        sent.append(meta)
+        print("%s %s  %s  %s" % (c("32", "sent"), c("1", meta["name"]),
+                                 c("90", human(size)), c("90", fid[:8])))
+    if not sent:
+        sys.exit(1)
+    url = dashboard_url()
+    if url:
+        print(c("90", "→ open %s and use the file tray" % url))
+    else:
+        print(c("33", "→ FleetView does not look to be running; the files are queued in %s" % OUTBOX))
+
+
+def cmd_list(args):
+    rows = entries()
+    if not rows:
+        print("nothing on offer")
+        return
+    print("%-8s %-30s %8s  %-19s %s" % ("ID", "NAME", "SIZE", "SENT", "NOTE"))
+    for m in rows:
+        print("%-8s %-30s %8s  %-19s %s" % (
+            m.get("id", "")[:8], (m.get("name") or "")[:30], human(m.get("bytes", 0)),
+            (m.get("ts") or "").replace("T", " ").rstrip("Z"), (m.get("note") or "")[:40]))
+
+
+def cmd_rm(args):
+    rows = entries()
+    gone = 0
+    for sel in args.ids:
+        hits = [m for m in rows if m.get("id", "").startswith(sel.lower())]
+        if not hits:
+            print(c("31", "no match: %s" % sel), file=sys.stderr)
+            continue
+        for m in hits:
+            os.remove(m["_blob"])
+            os.remove(os.path.join(OUTBOX, "%s.json" % m["id"]))
+            print("%s %s" % (c("90", "withdrew"), m.get("name")))
+            gone += 1
+    if not gone:
+        sys.exit(1)
+
+
+def cmd_clear(args):
+    rows = entries()
+    for m in rows:
+        os.remove(m["_blob"])
+        os.remove(os.path.join(OUTBOX, "%s.json" % m["id"]))
+    print("withdrew %d" % len(rows))
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="fleetview-send",
+        description="Hand a file to whoever is reading the FleetView web dashboard.")
+    p.add_argument("files", nargs="*", help="files to offer")
+    p.add_argument("-m", "--message", help="note shown beside the file")
+    p.add_argument("--list", action="store_true", help="what is currently on offer")
+    p.add_argument("--rm", nargs="+", metavar="ID", dest="ids", help="withdraw by id prefix")
+    p.add_argument("--clear", action="store_true", help="withdraw everything")
+    p.add_argument("--link", action="store_true", help="print the dashboard URL")
+    a = p.parse_args()
+
+    if a.link:
+        url = dashboard_url()
+        print(url or "FleetView is not running")
+        return
+    if a.list:
+        cmd_list(a); return
+    if a.ids:
+        cmd_rm(a); return
+    if a.clear:
+        cmd_clear(a); return
+    if not a.files:
+        p.print_help(); sys.exit(2)
+    cmd_send(a)
+
+
+if __name__ == "__main__":
+    main()

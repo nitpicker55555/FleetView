@@ -30,6 +30,7 @@ FleetView.app/
 scripts/*
 !scripts/package_app.sh
 !scripts/project-manager
+!scripts/fleetview-send
 examples/*
 !examples/fleet-panel.html
 

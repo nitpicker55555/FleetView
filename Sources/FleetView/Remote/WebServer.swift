@@ -125,6 +125,8 @@ final class WebServer {
         if path == "/upload" {                                         // writes a file; no app state
             handleUpload(conn, request, body, params, scope); return
         }
+        if path == "/files" { handleFileList(conn, params, scope); return }
+        if path == "/file" { handleFileGet(conn, params, scope); return }
 
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
@@ -215,10 +217,11 @@ final class WebServer {
         guard !body.isEmpty else {
             answer("400 Bad Request", "application/json", Data(#"{"error":"empty body"}"#.utf8)); return
         }
-        guard let ext = Self.imageExtension(body) else {
-            answer("415 Unsupported Media Type", "application/json",
-                   Data(#"{"error":"not an image"}"#.utf8)); return
-        }
+        // Any file, not just an image: a log, a CSV, a PDF are all things you might want to hand an
+        // agent from a phone. The extension is what an agent keys off, so it is worth getting right —
+        // sniffed when the bytes say what they are, otherwise taken from the client's filename and
+        // scrubbed to a bare token. The basename is still always ours.
+        let ext = Self.imageExtension(body) ?? Self.safeExtension(query["name"]) ?? "bin"
         let url = FV.uploadsDir.appendingPathComponent("\(UUID().uuidString.lowercased()).\(ext)")
         do {
             try FileManager.default.createDirectory(at: FV.uploadsDir, withIntermediateDirectories: true)
@@ -232,6 +235,104 @@ final class WebServer {
         let payload = ["path": url.path, "name": url.lastPathComponent, "bytes": "\(body.count)"]
         let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
         answer("200 OK", "application/json", data)
+    }
+
+    // MARK: - Outbox (agent → phone)
+
+    /// GET /files — what agents have handed over, newest first.
+    ///
+    /// The push side is deliberately not an endpoint: `fleetview-send` runs on this Mac and writes
+    /// straight into the outbox, so handing over a file needs no server, no request size limit, and
+    /// works while the dashboard has never been opened. This only reads what is there.
+    private func handleFileList(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        var out: [[String: Any]] = []
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: FV.outboxDir.path)) ?? []
+        for name in names where name.hasSuffix(".json") {
+            let url = FV.outboxDir.appendingPathComponent(name)
+            guard let d = try? Data(contentsOf: url),
+                  let meta = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+                  let id = meta["id"] as? String, let ext = meta["ext"] as? String else { continue }
+            // Drop an entry whose blob has been removed by hand rather than serving a broken row.
+            guard FileManager.default.fileExists(
+                atPath: FV.outboxDir.appendingPathComponent("\(id).\(ext)").path) else { continue }
+            // `from` stays a terminal id. Naming it is the page's job — it already polls /state for
+            // every terminal, and this handler runs on the server's queue, not the main actor.
+            out.append(meta)
+        }
+        out.sort { ($0["ts"] as? String ?? "") > ($1["ts"] as? String ?? "") }
+        let data = (try? JSONSerialization.data(withJSONObject: out)) ?? Data("[]".utf8)
+        WebAudit.shared.finish(scope, status: "200 OK", bytes: data.count, query: query)
+        send(conn, status: "200 OK", type: "application/json", body: data, setCookie: scope.setCookie)
+    }
+
+    /// GET /file?id=<uuid> — the bytes of one offered file.
+    private func handleFileGet(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        func answer(_ status: String, _ type: String, _ data: Data, disposition: String? = nil) {
+            WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query)
+            send(conn, status: status, type: type, body: data, setCookie: scope.setCookie,
+                 disposition: disposition)
+        }
+        // A UUID and nothing else: the id indexes into a directory, so it must not be able to be a
+        // path. Rebuilding it from the parsed value drops anything that isn't one.
+        guard let raw = query["id"], let uuid = UUID(uuidString: raw) else {
+            answer("400 Bad Request", "text/plain", Data("bad id".utf8)); return
+        }
+        let id = uuid.uuidString.lowercased()
+        guard let d = try? Data(contentsOf: FV.outboxDir.appendingPathComponent("\(id).json")),
+              let meta = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              let ext = meta["ext"] as? String,
+              let body = try? Data(contentsOf: FV.outboxDir.appendingPathComponent("\(id).\(ext)"))
+        else {
+            answer("404 Not Found", "text/plain", Data("no such file".utf8)); return
+        }
+        let name = (meta["name"] as? String) ?? "\(id).\(ext)"
+        let type = Self.mimeType(forExtension: ext)
+        // Known types open in the browser (the point is usually to LOOK at it on the phone);
+        // anything else downloads, under the name the agent gave it.
+        let inline = type != nil && query["dl"] != "1"
+        answer("200 OK", type ?? "application/octet-stream", body,
+               disposition: "\(inline ? "inline" : "attachment"); filename=\"\(Self.headerSafe(name))\"")
+    }
+
+    /// A filename that cannot break out of a header value — quotes and newlines would end the
+    /// Content-Disposition line early and let the rest of the name become another header.
+    static func headerSafe(_ s: String) -> String {
+        let clean = s.filter { $0 != "\"" && $0 != "\r" && $0 != "\n" && $0 != "\\" }
+        return clean.isEmpty ? "file" : clean
+    }
+
+    /// The extension out of a client-supplied filename, reduced to something that cannot escape the
+    /// uploads directory or surprise a shell: letters and digits only, and short. nil if there is
+    /// nothing usable left.
+    static func safeExtension(_ name: String?) -> String? {
+        guard let name, let dot = name.lastIndex(of: "."), dot != name.index(before: name.endIndex)
+        else { return nil }
+        let raw = name[name.index(after: dot)...].lowercased()
+        let clean = raw.filter { $0.isLetter || $0.isNumber }
+        guard !clean.isEmpty, clean.count <= 12 else { return nil }
+        return String(clean)
+    }
+
+    /// Content-Type for a file we are handing back, by extension. Anything unrecognised is served as
+    /// a download rather than guessed at.
+    static func mimeType(forExtension ext: String) -> String? {
+        switch ext.lowercased() {
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "heic": return "image/heic"
+        case "avif": return "image/avif"
+        case "svg": return "image/svg+xml"
+        case "pdf": return "application/pdf"
+        case "txt", "log", "md": return "text/plain; charset=utf-8"
+        case "csv": return "text/csv; charset=utf-8"
+        case "json": return "application/json"
+        case "html", "htm": return "text/html; charset=utf-8"
+        case "mp4", "mov": return "video/mp4"
+        case "mp3": return "audio/mpeg"
+        default: return nil
+        }
     }
 
     /// The file extension for an image, from its magic bytes. nil ⇒ not an image we accept.
@@ -258,11 +359,12 @@ final class WebServer {
     }
 
     private func send(_ conn: NWConnection, status: String = "200 OK", type: String, body: Data,
-                      setCookie: String? = nil) {
+                      setCookie: String? = nil, disposition: String? = nil) {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(type)\r\n"
         head += "Content-Length: \(body.count)\r\n"
         head += "Cache-Control: no-store\r\n"
+        if let disposition { head += "Content-Disposition: \(disposition)\r\n" }
         if let setCookie { head += "Set-Cookie: \(setCookie)\r\n" }   // identifies this browser's visit
         head += "Connection: close\r\n\r\n"
         var out = Data(head.utf8); out.append(body)
