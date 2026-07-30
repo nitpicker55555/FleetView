@@ -33,6 +33,10 @@ struct WebSnapshot: Codable {
     let remoteOK: Bool            // tmux + ttyd present → terminals are interactive
     let remoteHint: String        // install hint when they're not
     let askGeo: Bool              // whether the page should ask the device for its position
+    /// The appearance the desktop window is drawing right now. The dashboard follows the Mac rather
+    /// than the phone's own dark mode: it is a mirror of that window, and the two disagreeing reads
+    /// as a bug rather than a preference.
+    let dark: Bool
 }
 
 /// A tiny, dependency-free HTTP/1.1 server (Network.framework) that serves the web dashboard.

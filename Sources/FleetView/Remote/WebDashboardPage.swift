@@ -15,12 +15,43 @@ enum WebDashboardPage {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>FleetView</title>
 <style>
+  /* Dark is the default, and these are the same values the desktop app's Theme uses, so the two
+     palettes can be compared line by line. `html.light` below is the other appearance; which one is
+     applied comes from the Mac (state.dark), not from the phone — the dashboard is a mirror of that
+     window, and the two disagreeing looks like a bug. */
   :root{
     --bg:#14171c; --panel:#1c1f25; --card:#25282f; --cardHover:#2e3039;
     --stroke:rgba(255,255,255,.08); --text:#ebedf2; --sub:#99a1b0; --accent:#7a9eff;
     --green:#5cd18c; --teal:#4dadc2; --gray:#8c93a3; --amber:#fab852; --red:#d96b73;
     --claude:#e69459; --codex:#66ccd9;
+    /* Foreground for anything sitting ON --accent. Was #0b1020 in ten places, which meant the
+       light theme's darker blue would have carried near-black text. */
+    --onAccent:#0b1020;
+    /* Your own words are a raised layer over the conversation — inverted glass, so on a dark page
+       that is white with dark text, and on a light page the reverse. */
+    --quoteBg:rgba(255,255,255,.86); --quoteFg:#15181d; --quoteEdge:rgba(255,255,255,.6);
+    --quoteBgSoft:rgba(255,255,255,.78);
+    --codeBg:#0e1116;
+    --scheme:dark;
   }
+  /* Light: GitHub Primer, which is built for dense text-heavy tool UI and whose semantic colours
+     land on the status dots already in use — fg.default #1f2328, fg.muted #59636e,
+     border.default #d1d9e0, accent.fg #0969da, success #1a7f37, attention #9a6700, danger #d1242f.
+     The surface stack inverts rather than the hues: a grey board, near-white panels, white cards. */
+  html.light{
+    --bg:#eef1f5; --panel:#f7f8fa; --card:#ffffff; --cardHover:#f1f3f6;
+    --stroke:#d1d9e0; --text:#1f2328; --sub:#59636e; --accent:#0969da;
+    --green:#1a7f37; --teal:#0e7490; --gray:#6e7781; --amber:#9a6700; --red:#d1242f;
+    --claude:#bc4c00; --codex:#0e7490;
+    --onAccent:#ffffff;
+    --quoteBg:rgba(28,32,38,.92); --quoteFg:#f2f4f7; --quoteEdge:rgba(255,255,255,.10);
+    --quoteBgSoft:rgba(28,32,38,.82);
+    --codeBg:#f6f8fa;
+    --scheme:light;
+  }
+  /* Tells the browser to render form controls, scrollbars and the like to match. */
+  :root{color-scheme:dark}
+  html.light{color-scheme:light}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--text);
@@ -87,7 +118,7 @@ enum WebDashboardPage {
     padding:16px;padding-bottom:max(16px,env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(0,0,0,.75) 45%)}
   .zone{min-width:88px;text-align:center;padding:14px 12px;border-radius:12px;font-size:13px;font-weight:600;
     background:var(--card);border:1px solid var(--stroke);color:var(--text)}
-  .zone.hot{background:var(--accent);color:#0b1020;border-color:var(--accent);transform:scale(1.06)}
+  .zone.hot{background:var(--accent);color:var(--onAccent);border-color:var(--accent);transform:scale(1.06)}
   .zone.danger{color:var(--red);border-color:rgba(217,107,115,.4)}
   .zone.danger.hot{background:var(--red);color:#fff}
   /* terminal overlay */
@@ -121,7 +152,7 @@ enum WebDashboardPage {
   /* view switch */
   #tabs{display:flex;gap:2px;background:var(--card);border:1px solid var(--stroke);border-radius:8px;padding:2px}
   #tabs button{background:transparent;border:0;color:var(--sub);border-radius:6px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer}
-  #tabs button.on{background:var(--accent);color:#0b1020}
+  #tabs button.on{background:var(--accent);color:var(--onAccent)}
   /* conversation pane — plain scrollable chat, the reliable way to read history on a phone */
   /* pan-y: vertical scrolling stays the browser's, horizontal gestures come to us — which is both
      how the swipe-back below is possible and what stops Safari's own edge swipe leaving the page. */
@@ -149,10 +180,10 @@ enum WebDashboardPage {
      cleanest way to say "this is on top" is to invert it: white glass, dark text. No tint and no
      coloured edge, so it stays a quotation of the conversation rather than a control. */
   #stickyq .sq{position:relative;padding:13px 16px;border-radius:12px;
-    font-size:14px;line-height:1.5;font-weight:500;color:#15181d;
-    background:rgba(255,255,255,.86);
+    font-size:14px;line-height:1.5;font-weight:500;color:var(--quoteFg);
+    background:var(--quoteBg);
     -webkit-backdrop-filter:blur(30px) saturate(140%);backdrop-filter:blur(30px) saturate(140%);
-    border:1px solid rgba(255,255,255,.6);
+    border:1px solid var(--quoteEdge);
     box-shadow:0 12px 30px rgba(0,0,0,.45);
     display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .msg .mtext{white-space:pre-wrap;word-break:break-word}
@@ -160,9 +191,9 @@ enum WebDashboardPage {
   .msg.user:first-child{margin-top:0}
   /* Same white card as #stickyq: that bar is a quotation of one of these, so they have to read as
      the same object. Inline code and links need their own colours on a light ground. */
-  .msg.user .mtext{background:rgba(255,255,255,.86);color:#15181d;
+  .msg.user .mtext{background:var(--quoteBg);color:var(--quoteFg);
     padding:12px 15px;border-radius:12px;font-size:14px;line-height:1.55;
-    border:1px solid rgba(255,255,255,.6);box-shadow:0 6px 16px rgba(0,0,0,.32)}
+    border:1px solid var(--quoteEdge);box-shadow:0 6px 16px rgba(0,0,0,.32)}
   .msg.user .mtext code{background:rgba(0,0,0,.07);color:#12151a}
   /* Sending should feel like the card is pushed up out of the composer, so it starts squashed
      against the bottom edge and settles with a slight overshoot. */
@@ -179,7 +210,7 @@ enum WebDashboardPage {
   .msg.sub{opacity:.72}
   .msg .tag{font-size:9px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:2px}
   /* typed while the agent was working: the same card, just drawn with a broken edge */
-  .msg.user.queued .mtext{background:rgba(255,255,255,.78);
+  .msg.user.queued .mtext{background:var(--quoteBgSoft);
     border-style:dashed;border-color:rgba(21,24,29,.28)}
   .msg.think,.msg.tool{background:var(--card);border:1px solid var(--stroke);border-radius:10px;
     padding:10px 12px;cursor:pointer;margin-left:10px}
@@ -248,7 +279,7 @@ enum WebDashboardPage {
   .md a{color:var(--accent)}
   .md code{background:rgba(255,255,255,.08);padding:1px 4px;border-radius:4px;
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
-  .md pre.code{background:#0e1116;border:1px solid var(--stroke);border-radius:8px;padding:9px 10px;
+  .md pre.code{background:var(--codeBg);border:1px solid var(--stroke);border-radius:8px;padding:9px 10px;
     margin:8px 0;overflow-x:auto;white-space:pre;position:relative;
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.45}
   .md pre.code i.lang{position:absolute;right:8px;top:3px;font-style:normal;font-size:9px;
@@ -258,7 +289,7 @@ enum WebDashboardPage {
   .md th{background:var(--card);font-weight:600}
   /* code diff (Edit / MultiEdit / Write / codex apply_patch) */
   .diff{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.5;
-    overflow-x:auto;border-radius:6px;background:#0e1116;padding:6px 0;margin-top:7px}
+    overflow-x:auto;border-radius:6px;background:var(--codeBg);padding:6px 0;margin-top:7px}
   .dl{white-space:pre;padding:0 10px}
   .dl.add{background:rgba(92,209,140,.14);color:#9fe3bd}
   .dl.del{background:rgba(217,107,115,.14);color:#f0a8ad}
@@ -308,7 +339,7 @@ enum WebDashboardPage {
   #perm .opts{display:flex;flex-direction:column;gap:6px}
   #perm button{text-align:left;background:var(--card);color:var(--text);border:1px solid var(--stroke);
     border-radius:8px;padding:9px 11px;font-size:13px;cursor:pointer}
-  #perm button:active{background:var(--accent);color:#0b1020}
+  #perm button:active{background:var(--accent);color:var(--onAccent)}
   /* todo / plan / question tool views */
   .todo{margin-top:7px}
   .todo div{padding:2px 0;font-size:12px;line-height:1.45}
@@ -318,7 +349,7 @@ enum WebDashboardPage {
   .qopts .qq{font-size:12px;font-weight:600;margin:6px 0 3px}
   .qopts .qo{font-size:12px;color:var(--sub);padding:1px 0 1px 14px}
   /* jump to latest */
-  #jump{position:absolute;right:14px;bottom:96px;z-index:6;background:var(--accent);color:#0b1020;border:0;
+  #jump{position:absolute;right:14px;bottom:96px;z-index:6;background:var(--accent);color:var(--onAccent);border:0;
     border-radius:999px;width:34px;height:34px;font-size:16px;line-height:1;cursor:pointer;display:none;
     box-shadow:0 4px 14px rgba(0,0,0,.45)}
   #jump.on{display:block}
@@ -333,12 +364,12 @@ enum WebDashboardPage {
   #presets{flex:1;display:flex;gap:6px;overflow-x:auto;min-width:0}
   #presets button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:7px;
     padding:6px 10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;cursor:pointer}
-  #presets button:active{background:var(--accent);color:#0b1020}
+  #presets button:active{background:var(--accent);color:var(--onAccent)}
   #presets button.meta{color:var(--accent);font-family:inherit;font-weight:600}
   #presets button.del{color:var(--red);border-color:rgba(217,107,115,.4);font-family:inherit}
   #keys{display:flex;gap:6px;overflow-x:auto;margin-bottom:8px}
   #keys button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:7px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer}
-  #keys button:active{background:var(--accent);color:#0b1020}
+  #keys button:active{background:var(--accent);color:var(--onAccent)}
   /* The key row exists to drive a TUI: scrolling a pane, arrowing through a menu, ^C, backspace.
      Chat has none of that — it scrolls natively, answers prompts with real buttons, and stops the
      agent with the Send/Stop button — so the whole row goes away there. */
@@ -346,10 +377,10 @@ enum WebDashboardPage {
   #sendrow{display:flex;gap:8px;align-items:flex-end}
   #inputtext{flex:1;resize:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:10px;
     padding:10px 12px;font:14px/1.35 inherit;max-height:120px}
-  #sendbtn{flex:none;background:var(--accent);color:#0b1020;border:0;border-radius:10px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer}
+  #sendbtn{flex:none;background:var(--accent);color:var(--onAccent);border:0;border-radius:10px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer}
   #imgbtn{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:10px;
     padding:10px 12px;font-size:16px;line-height:1;cursor:pointer}
-  #imgbtn:active{background:var(--accent);color:#0b1020}
+  #imgbtn:active{background:var(--accent);color:var(--onAccent)}
   #imgbtn[disabled]{opacity:.5}
   /* Dropping a file anywhere on the conversation should work, so the whole overlay is the target. */
   #term.dropping{outline:2px dashed var(--accent);outline-offset:-6px}
@@ -359,7 +390,7 @@ enum WebDashboardPage {
     border-radius:8px;padding:5px 9px;font-size:14px;line-height:1;cursor:pointer}
   #traybtn.has{border-color:var(--accent)}
   #traybadge:not(:empty){position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;
-    border-radius:999px;background:var(--accent);color:#0b1020;font-size:10px;font-weight:700;
+    border-radius:999px;background:var(--accent);color:var(--onAccent);font-size:10px;font-weight:700;
     line-height:16px;text-align:center;padding:0 3px}
   #tray{display:none;position:sticky;top:0;z-index:6;background:var(--panel);
     border-bottom:1px solid var(--stroke);max-height:min(60vh,420px);overflow-y:auto;
@@ -368,7 +399,7 @@ enum WebDashboardPage {
   #tray .f{display:flex;align-items:center;gap:10px;padding:9px 10px;margin-bottom:6px;
     background:var(--card);border:1px solid var(--stroke);border-radius:10px;
     color:var(--text);text-decoration:none}
-  #tray .f:active{background:var(--accent);color:#0b1020}
+  #tray .f:active{background:var(--accent);color:var(--onAccent)}
   #tray .f .fi{flex:none;font-size:17px;line-height:1}
   #tray .f .fb{flex:1;min-width:0}
   #tray .f .fn{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -1492,10 +1523,22 @@ function render(s){
 }
 let lastBoard='';
 
+/* Follow the Mac's appearance, not the phone's. The dashboard is a mirror of that window, so the
+   two disagreeing reads as a bug; and it is one flag on /state, which is polled anyway. Applied to
+   <html> rather than <body> so `color-scheme` reaches the scrollbars and form controls too. */
+function applyScheme(dark){
+  document.documentElement.classList.toggle('light', dark===false);
+}
 async function tick(){
-  if(dragging||termOpen())return;
+  if(dragging)return;
   try{
-    const r=await fetch('/state',{cache:'no-store'});state=await r.json();render(state);
+    const r=await fetch('/state',{cache:'no-store'});state=await r.json();
+    // The appearance is the one thing worth keeping current while a conversation is open — flipping
+    // the Mac's theme and watching the phone stay dark reads as broken. Redrawing the board behind
+    // the overlay is not: that is what the guard below is for.
+    applyScheme(state.dark);
+    if(termOpen())return;
+    render(state);
     reportLocation(state);   // once per browser; no-op until the page is served over HTTPS
     document.getElementById('refresh').textContent='updated '+new Date().toLocaleTimeString();
   }catch(e){document.getElementById('refresh').textContent='offline — retrying…';}

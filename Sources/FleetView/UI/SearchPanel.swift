@@ -90,7 +90,7 @@ struct SearchPanel: View {
         Button(action: act) {
             Text(title)
                 .font(.system(size: 11, weight: on ? .semibold : .regular))
-                .foregroundColor(on ? .black : Theme.subtext)
+                .foregroundColor(on ? Theme.onAccent : Theme.subtext)
                 .padding(.horizontal, 9).padding(.vertical, 4)
                 .background(on ? tint : Theme.card)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -172,7 +172,7 @@ struct SearchPanel: View {
                 // rather than being implied by indentation.
                 Text(isPrompt ? "我" : "AI")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(isPrompt ? .black : tint)
+                    .foregroundColor(isPrompt ? Theme.onAccent : tint)
                     .frame(width: 18, height: 14)
                     .background(isPrompt ? Theme.accent : tint.opacity(0.16))
                     .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -268,7 +268,7 @@ struct SearchPanel: View {
         return HStack(alignment: .top, spacing: 8) {
             Text(isPrompt ? "我" : "AI")
                 .font(.system(size: 9, weight: .bold))
-                .foregroundColor(isPrompt ? .black : tint)
+                .foregroundColor(isPrompt ? Theme.onAccent : tint)
                 .frame(width: 18, height: 14)
                 .background(isPrompt ? Theme.accent : tint.opacity(0.16))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
@@ -300,7 +300,7 @@ struct SearchPanel: View {
             }
             Image(systemName: "hand.draw")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.black)
+                .foregroundColor(Theme.onAccent)
                 .frame(width: 30, height: 22)
                 .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 7))
                 .contentShape(Rectangle())
