@@ -496,8 +496,11 @@ enum SearchIndex {
     }
 
     /// Ranked hits for `query`. BM25 ordering, newest-first among equals.
+    ///
+    /// `paths` narrows to specific transcripts — that is how "search this conversation" is served
+    /// off the same index as "search everything", instead of a second code path that reads the file.
     static func search(_ query: String, scope: Scope = .both, limit: Int = 200,
-                       source: Source? = nil) -> [Hit] {
+                       source: Source? = nil, paths: [String] = []) -> [Hit] {
         queue.sync {
             guard let db = open(), let match = matchExpression(query) else { return [] }
             var roles: [Int] = []
@@ -513,6 +516,9 @@ enum SearchIndex {
             WHERE msg_fts MATCH ? AND m.role IN (\(roles.map { _ in "?" }.joined(separator: ",")))
             """
             if source != nil { sql += " AND m.src = ?" }
+            if !paths.isEmpty {
+                sql += " AND m.path IN (\(paths.map { _ in "?" }.joined(separator: ",")))"
+            }
             sql += " ORDER BY rank, m.ts DESC LIMIT ?"
 
             var stmt: OpaquePointer?
@@ -525,6 +531,7 @@ enum SearchIndex {
             bind(stmt, i, match); i += 1
             for r in roles { sqlite3_bind_int(stmt, i, Int32(r)); i += 1 }
             if let source { sqlite3_bind_int(stmt, i, Int32(source.rawValue)); i += 1 }
+            for p in paths { bind(stmt, i, p); i += 1 }
             sqlite3_bind_int(stmt, i, Int32(limit))
 
             var hits: [Hit] = []

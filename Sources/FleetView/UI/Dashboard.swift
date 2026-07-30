@@ -55,7 +55,14 @@ struct DashboardView: View {
         .sheet(item: $state.nameSheet) { req in
             NameSheet(request: req).environmentObject(state)
         }
-        .background {                                  // ⌘K — search every conversation on disk
+        // ⌘F opens search; Tab widens its scope. The session tree binds ⌘F to its own node filter,
+        // which is find-in-this-panel and the right meaning while you are in it — so ⌘F defers to it
+        // and ⌘K stays the accelerator that always reaches search.
+        .background {
+            if state.treePanelTerminalId == nil {
+                Button("") { state.toggleSearch() }
+                    .keyboardShortcut("f", modifiers: .command).hidden()
+            }
             Button("") { state.toggleSearch() }
                 .keyboardShortcut("k", modifiers: .command).hidden()
         }

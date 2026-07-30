@@ -19,18 +19,27 @@ struct SearchPanel: View {
             Divider().overlay(Theme.stroke)
             footer
         }
+        // The recede goes on the CONTENT, inside the panel's own shape. Applied after `clipShape` it
+        // blurred the clipped result — so the rounded edge and the border smeared, and the blur
+        // sampled the transparency outside the shape and faded the whole rim out. A panel that
+        // recedes should keep its chrome crisp and push only what is inside it back.
+        .receded(model.preview != nil)
         .frame(width: 780, height: 560)
         .background(Theme.panel)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.stroke, lineWidth: 1))
-        // This panel is level 1, so it recedes under its own level-2 preview by the same numbers
-        // the dashboard recedes under it. The preview is added AFTER, so it stays crisp.
-        .receded(model.preview != nil)
         .shadow(color: .black.opacity(0.45), radius: 30, y: 12)
         .overlay { previewCard }
         // Esc peels one layer at a time: the preview first, then the panel.
         .onExitCommand { model.preview != nil ? model.closePreview() : state.closeSearch() }
+        // Tab widens the search a step. It has to be intercepted here rather than bound as a
+        // shortcut: the field has focus, and Tab is what SwiftUI would otherwise use to leave it.
+        .background {
+            Button("") { model.mode = model.mode.next }
+                .keyboardShortcut(.tab, modifiers: []).hidden()
+        }
         .onAppear {
+            model.app = state
             focused = true
             model.refreshIndex()
         }
@@ -62,25 +71,34 @@ struct SearchPanel: View {
 
     // MARK: - Scope
 
-    /// Prompt / reply / both, plus which agent. These are the two axes that actually change what
-    /// comes back; everything else is ranking.
+    /// How wide to look (Tab), and — once you are in the conversation tiers — which side and which
+    /// agent. The scope pills are hidden in fleet mode because they mean nothing there.
     private var scopeBar: some View {
         HStack(spacing: 6) {
-            segment("我的 prompt", on: model.scope == .prompts) { model.scope = .prompts }
-            segment("Agent 回复", on: model.scope == .replies) { model.scope = .replies }
-            segment("全部", on: model.scope == .both) { model.scope = .both }
-
-            Divider().frame(height: 16).overlay(Theme.stroke).padding(.horizontal, 4)
-
-            segment("Claude", on: model.source == .claude, tint: Theme.claudeTint) {
-                model.source = model.source == .claude ? nil : .claude
+            ForEach(SearchModel.Mode.allCases) { m in
+                segment(m.title, on: model.mode == m) { model.mode = m }
             }
-            segment("Codex", on: model.source == .codex, tint: Theme.codexTint) {
-                model.source = model.source == .codex ? nil : .codex
+            Text("⇥")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(Theme.subtext.opacity(0.7))
+                .padding(.leading, 1)
+
+            if model.mode != .fleet {
+                Divider().frame(height: 16).overlay(Theme.stroke).padding(.horizontal, 4)
+                segment("我的 prompt", on: model.scope == .prompts) { model.scope = .prompts }
+                segment("Agent 回复", on: model.scope == .replies) { model.scope = .replies }
+                segment("全部", on: model.scope == .both) { model.scope = .both }
+                segment("Claude", on: model.source == .claude, tint: Theme.claudeTint) {
+                    model.source = model.source == .claude ? nil : .claude
+                }
+                segment("Codex", on: model.source == .codex, tint: Theme.codexTint) {
+                    model.source = model.source == .codex ? nil : .codex
+                }
             }
             Spacer()
             if model.total > 0 {
-                Text(String(format: "%d 条 · %.0f ms", model.total, model.elapsed))
+                Text(String(format: "%d 项 · %d 个项目 · %.0f ms",
+                            model.total, model.projectGroups.count, model.elapsed))
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundColor(Theme.subtext)
             }
@@ -108,19 +126,115 @@ struct SearchPanel: View {
         } else if model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             message(model.indexing ? model.indexNote : "", icon: "text.magnifyingglass",
                     tint: Theme.subtext)
-        } else if model.groups.isEmpty {
+        } else if model.projectGroups.isEmpty {
             message(model.indexing ? model.indexNote : "", icon: "questionmark.circle",
                     tint: Theme.subtext)
         } else {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(model.groups) { group in
-                        groupCard(group)
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.projectGroups) { p in
+                        projectSection(p)
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 10)
             }
         }
+    }
+
+    /// A project, its count, and — when it is the focused one — what matched inside it. Collapsed by
+    /// default with more than one project: the first question is which project, and answering that
+    /// before showing hits is the difference between choosing and scrolling.
+    @ViewBuilder private func projectSection(_ p: SearchModel.ProjectGroup) -> some View {
+        let open = model.focusedProject == p.id
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                model.focusedProject = open ? nil : p.id
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: open ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundColor(Theme.subtext)
+                        .frame(width: 10)
+                    Image(systemName: "folder")
+                        .font(.system(size: 10)).foregroundColor(Theme.accent)
+                    Text(p.name)
+                        .font(.system(size: 12, weight: .semibold)).foregroundColor(Theme.text)
+                    Text("\(p.count)")
+                        .font(.system(size: 9.5, weight: .semibold)).foregroundColor(Theme.subtext)
+                        .padding(.horizontal, 5).padding(.vertical, 1.5)
+                        .background(Theme.card).clipShape(Capsule())
+                    if !open && !p.sessions.isEmpty {
+                        Text("\(p.sessions.count) 个会话")
+                            .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.8))
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if open {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(p.fleet) { fleetRow($0) }
+                    ForEach(p.sessions) { groupCard($0) }
+                }
+                .padding(.horizontal, 8).padding(.bottom, 8)
+            }
+        }
+        .background(Theme.card.opacity(0.32))
+        .clipShape(RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.stroke, lineWidth: 1))
+    }
+
+    /// A project / cluster / terminal from the board. `why` is shown because a hit on an id or a cwd
+    /// is otherwise inexplicable — the name on screen won't contain what you typed.
+    private func fleetRow(_ h: SearchModel.FleetHit) -> some View {
+        let tint: Color = h.kind == .terminal
+            ? (h.status.map { Theme.statusColor($0) } ?? Theme.subtext)
+            : Theme.accent
+        return Button {
+            if h.kind == .terminal {
+                state.raiseTerminal(h.id)
+                state.closeSearch()
+            } else if let pid = h.projectId {
+                state.selectedProjectId = pid
+                state.closeSearch()
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: h.kind == .terminal ? "terminal"
+                      : (h.kind == .cluster ? "rectangle.stack" : "folder"))
+                    .font(.system(size: 11)).foregroundColor(tint).frame(width: 14)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 5) {
+                        Text(h.name)
+                            .font(.system(size: 12, weight: .semibold)).foregroundColor(Theme.text)
+                        if let c = h.clusterName {
+                            Text(c).font(.system(size: 9)).foregroundColor(Theme.subtext)
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .background(Theme.card).clipShape(Capsule())
+                        }
+                        if let a = h.agent, a != .unknown {
+                            Text(a.label).font(.system(size: 9))
+                                .foregroundColor(Theme.agentColor(a))
+                        }
+                        Text(h.why).font(.system(size: 8.5, design: .monospaced))
+                            .foregroundColor(Theme.subtext.opacity(0.7))
+                    }
+                    Text(h.detail)
+                        .font(.system(size: 10.5)).foregroundColor(Theme.subtext)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 9)).foregroundColor(Theme.subtext.opacity(0.45))
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(h.kind == .terminal ? "跳到这个终端" : "切到这个项目")
     }
 
     private func message(_ text: String, icon: String, tint: Color) -> some View {
