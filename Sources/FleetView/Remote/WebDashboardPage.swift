@@ -89,6 +89,9 @@ enum WebDashboardPage {
   html.light{color-scheme:light}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
+  /* Stops the rubber-band at the root, so a flick that the overlay did not consume cannot drag the
+     page itself — the same class of movement the overlay's own overflow now prevents. */
+  html{overscroll-behavior:none}
   body{background:var(--bg);color:var(--text);
     font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
     -webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
@@ -171,9 +174,16 @@ enum WebDashboardPage {
      `height:100%` before it is the fallback for a browser without `dvh` (the layout-viewport
      behaviour). The keyboard is a separate axis and is still syncViewport's padding — `dvh` does not
      react to it. */
+  /* `overflow:hidden` is the other half of the height, and its absence is why the overlay could
+     still be dragged around after `dvh` made it the right size. This is a flex column whose
+     siblings do not all shrink: #sinfo wraps to a second row as chips come and go, and #inputbar
+     stacks presets, keys and the composer. When their combined height passes the viewport the box
+     overflows, and an overflowing fixed element is pannable on iOS — which showed up as the title
+     bar scrolling off the top and a gap opening underneath. Only #chat should ever give, and it
+     already does (flex:1 with min-height:0); everything past that is clipped rather than reachable. */
   #term{position:fixed;top:0;left:0;right:0;height:100%;height:100dvh;
     z-index:50;background:var(--bg);
-    display:none;flex-direction:column;overscroll-behavior:none}
+    display:none;flex-direction:column;overflow:hidden;overscroll-behavior:none}
   /* Belt and braces for the fallback path, where the overlay can still be shorter than the screen. */
   body.locked{background:var(--bg)}
   #term.show{display:flex}
