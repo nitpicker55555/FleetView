@@ -23,6 +23,9 @@ struct SearchPanel: View {
         .background(Theme.panel)
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.stroke, lineWidth: 1))
+        // This panel is level 1, so it recedes under its own level-2 preview by the same numbers
+        // the dashboard recedes under it. The preview is added AFTER, so it stays crisp.
+        .receded(model.preview != nil)
         .shadow(color: .black.opacity(0.45), radius: 30, y: 12)
         .overlay { previewCard }
         // Esc peels one layer at a time: the preview first, then the panel.
@@ -212,7 +215,9 @@ struct SearchPanel: View {
         if let preview = model.preview {
             let tint = preview.hit.src == .claude ? Theme.claudeTint : Theme.codexTint
             ZStack {
-                Color.black.opacity(0.25)
+                // Catcher only — the panel underneath already receded, and a second wash on top of
+                // it was what made level 2 look like a different effect from level 1.
+                Color.black.opacity(0.001)
                     .onTapGesture { model.closePreview() }
                 VStack(spacing: 0) {
                     previewHeader(preview, tint: tint)

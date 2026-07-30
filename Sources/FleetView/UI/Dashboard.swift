@@ -4,11 +4,23 @@ import AppKit
 struct DashboardView: View {
     @EnvironmentObject var state: AppState
 
+    /// Is a level-1 surface up, so the dashboard should recede? (See LayerConfig for the depths.)
+    ///
+    /// The exception is a drag whose target IS the dashboard: dropping a tree node or a search hit
+    /// lands on the board or on a card, and you cannot aim at something blurred. A terminal drag is
+    /// not an exception — its targets are the action zones and the tree edge, never the board — and
+    /// that is the case this used to get wrong, dimming the zones along with everything else and
+    /// never blurring the board at all.
+    private var dashboardReceded: Bool {
+        if state.treeDrag != nil { return false }
+        return state.treePanelTerminalId != nil
+            || state.searchOpen
+            || state.draggingTerminalId != nil
+    }
+
     var body: some View {
         HStack(spacing: 0) {
-            // Everything but the tree panel recedes while the tree is open, so the reader has the
-            // room. Never while dragging — drop targets have to stay legible.
-            let receded = state.treePanelTerminalId != nil && state.treeDrag == nil
+            let receded = dashboardReceded
             HStack(spacing: 0) {
                 Sidebar().frame(width: state.sidebarWidth)
                 SidebarDivider()
@@ -23,9 +35,7 @@ struct DashboardView: View {
                         })
                 }
             }
-            .blur(radius: receded ? 3 : 0)
-            .overlay(Color.black.opacity(receded ? 0.28 : 0).allowsHitTesting(false))
-            .animation(.easeOut(duration: 0.2), value: receded)
+            .receded(receded)
             if state.treePanelTerminalId != nil {
                 TreePanelDivider()
                 SessionTreePanel(model: state.treeModel)
@@ -61,9 +71,14 @@ struct DashboardView: View {
         if state.searchOpen {
             let dragging = state.treeDrag?.hit != nil
             ZStack {
-                Color.black.opacity(dragging ? 0 : 0.42)
+                // Catcher only — the dashboard's own recede supplies the dimming. A click on empty
+                // space closes the deepest layer first: the preview (2) before the panel (1).
+                Color.black.opacity(0.001)
                     .ignoresSafeArea()
-                    .onTapGesture { state.closeSearch() }
+                    .onTapGesture {
+                        if state.searchModel.preview != nil { state.searchModel.closePreview() }
+                        else { state.closeSearch() }
+                    }
                     .allowsHitTesting(!dragging)
                 SearchPanel(model: state.searchModel).environmentObject(state)
                     .opacity(dragging ? 0.12 : 1)
@@ -90,7 +105,9 @@ struct DashboardView: View {
     @ViewBuilder private var dragOverlay: some View {
         ZStack {
             if let dragId = state.draggingTerminalId {
-                Color.black.opacity(0.16).ignoresSafeArea()
+                // No scrim of its own: the dashboard already receded (see dashboardReceded), and a
+                // second wash on top of it also fell over the zones, which are the thing you are
+                // aiming at.
                 SessionTreeDropEdge(hot: state.hoveredTreeZone, frame: state.sessionTreeZoneFrame)
                 VStack { Spacer(); ActionDock(terminalId: dragId).environmentObject(state) }
                 if let t = state.terminals.first(where: { $0.id == dragId }) {
