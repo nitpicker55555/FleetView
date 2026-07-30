@@ -33,6 +33,26 @@ enum WebDashboardPage {
     --markBg:#241d33; --markTint:#b58fe6;
     --quoteBgSoft:rgba(255,255,255,.78);
     --codeBg:#0e1116;
+    /* An opaque surface, so it cannot be a wash of anything — it has to be stated per appearance or
+       it stays whatever it was hard-coded to. This one is why the header stayed black. */
+    --headerBg:rgba(28,31,37,.92);
+    /* Tints and edges. Each is a wash of a palette hue, and the hue itself differs per appearance:
+       the dark blue is #7a9eff and the light one #0969da, so a literal rgba() of the dark one is
+       washed out on a light page even though it is "the same" colour. */
+    --accentSoft:rgba(122,158,255,.13); --accentFaint:rgba(122,158,255,.055);
+    --accentEdge:rgba(122,158,255,.28); --accentEdgeOn:rgba(122,158,255,.5);
+    --amberSoft:rgba(250,184,82,.12);   --amberEdge:rgba(250,184,82,.34);
+    --greenSoft:rgba(92,209,140,.12);   --greenEdge:rgba(92,209,140,.28); --greenFg:#9fe3bd;
+    --redSoft:rgba(217,107,115,.14);    --redEdge:rgba(217,107,115,.45);  --redFg:#f0a8ad;
+    /* Inline code outside the quote card, and the loading shimmer: both are a film of the opposite
+       end, so both invert. */
+    --codeInline:rgba(255,255,255,.08);
+    --skel1:rgba(255,255,255,.05); --skel2:rgba(255,255,255,.11);
+    --skelU1:rgba(255,255,255,.10); --skelU2:rgba(255,255,255,.20);
+    /* Inside the quote card, which is itself inverted — light glass here, dark glass there — so its
+       contents invert with it rather than with the page. */
+    --quoteCode:rgba(0,0,0,.07); --quoteCodeFg:#12151a; --quoteLink:#1b4bd0;
+    --quoteEdgeSoft:rgba(21,24,29,.28);
     --scheme:dark;
   }
   /* Light: GitHub Primer, which is built for dense text-heavy tool UI and whose semantic colours
@@ -49,6 +69,19 @@ enum WebDashboardPage {
     --markBg:#f7f0ff; --markTint:#8250df;
     --quoteBgSoft:rgba(28,32,38,.82);
     --codeBg:#f6f8fa;
+    --headerBg:rgba(247,248,250,.92);
+    /* Dark-on-light reads stronger than light-on-dark at the same alpha, so the washes are lighter
+       and the edges heavier — matching weight, not matching numbers. */
+    --accentSoft:rgba(9,105,218,.10);   --accentFaint:rgba(9,105,218,.045);
+    --accentEdge:rgba(9,105,218,.32);   --accentEdgeOn:rgba(9,105,218,.55);
+    --amberSoft:rgba(154,103,0,.10);    --amberEdge:rgba(154,103,0,.38);
+    --greenSoft:rgba(26,127,55,.10);    --greenEdge:rgba(26,127,55,.32);  --greenFg:#116329;
+    --redSoft:rgba(209,36,47,.10);      --redEdge:rgba(209,36,47,.42);    --redFg:#a40e26;
+    --codeInline:rgba(31,35,40,.07);
+    --skel1:rgba(31,35,40,.05); --skel2:rgba(31,35,40,.11);
+    --skelU1:rgba(255,255,255,.10); --skelU2:rgba(255,255,255,.20);
+    --quoteCode:rgba(255,255,255,.10); --quoteCodeFg:#f2f4f7; --quoteLink:#9fc4ff;
+    --quoteEdgeSoft:rgba(255,255,255,.22);
     --scheme:light;
   }
   /* Tells the browser to render form controls, scrollbars and the like to match. */
@@ -69,7 +102,7 @@ enum WebDashboardPage {
   #panel .pcollapse{position:absolute;right:8px;top:6px;z-index:6;background:var(--card);color:var(--sub);
     border:1px solid var(--stroke);border-radius:6px;font-size:11px;padding:2px 8px;cursor:pointer}
   header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-    padding:12px 16px;background:rgba(28,31,37,.92);backdrop-filter:blur(8px);
+    padding:12px 16px;background:var(--headerBg);backdrop-filter:blur(8px);
     border-bottom:1px solid var(--stroke);padding-top:max(12px,env(safe-area-inset-top))}
   .logo{font-weight:600;font-size:15px}.logo b{color:var(--accent)}
   .muted{color:var(--sub);font-size:13px}
@@ -82,9 +115,9 @@ enum WebDashboardPage {
   .projhead{display:flex;align-items:center;gap:8px;margin-bottom:10px}
   .projhead .name{font-size:15px;font-weight:600}
   .projhead .count{font-size:11px;font-weight:600;color:var(--sub);background:var(--card);padding:1px 7px;border-radius:999px}
-  .projhead .tok{font-size:11px;font-weight:600;color:var(--accent);background:rgba(122,158,255,.12);padding:1px 7px;border-radius:999px}
-  .addbtn{margin-left:auto;font-size:12px;font-weight:600;color:var(--accent);background:rgba(122,158,255,.12);
-    border:1px solid rgba(122,158,255,.28);border-radius:7px;padding:5px 10px;cursor:pointer}
+  .projhead .tok{font-size:11px;font-weight:600;color:var(--accent);background:var(--accentSoft);padding:1px 7px;border-radius:999px}
+  .addbtn{margin-left:auto;font-size:12px;font-weight:600;color:var(--accent);background:var(--accentSoft);
+    border:1px solid var(--accentEdge);border-radius:7px;padding:5px 10px;cursor:pointer}
   .addbtn:active{transform:scale(.96)}
   .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
   .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:13px 14px;
@@ -109,11 +142,11 @@ enum WebDashboardPage {
   .prompt .sig{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;flex:none}
   .prompt .txt{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
   .ago{font-size:10px;color:var(--sub);opacity:.75;text-align:right;margin-top:-3px}
-  .cluster{border:1px solid rgba(122,158,255,.28);background:rgba(122,158,255,.055);border-radius:14px;padding:12px;margin-bottom:12px}
-  .cluster .clabel{font-size:9px;font-weight:700;color:var(--accent);background:rgba(122,158,255,.14);padding:2px 6px;border-radius:999px;margin-right:6px}
+  .cluster{border:1px solid var(--accentEdge);background:var(--accentFaint);border-radius:14px;padding:12px;margin-bottom:12px}
+  .cluster .clabel{font-size:9px;font-weight:700;color:var(--accent);background:var(--accentSoft);padding:2px 6px;border-radius:999px;margin-right:6px}
   .cluster .chead{display:flex;align-items:center;margin-bottom:10px}
   .cluster .cname{font-weight:600;font-size:14px}
-  .banner{background:rgba(250,184,82,.13);border:1px solid rgba(250,184,82,.3);color:var(--amber);padding:10px 12px;border-radius:10px;font-size:12px;margin-bottom:16px}
+  .banner{background:var(--amberSoft);border:1px solid var(--amberEdge);color:var(--amber);padding:10px 12px;border-radius:10px;font-size:12px;margin-bottom:16px}
   .empty{color:var(--sub);text-align:center;padding:60px 20px}
   /* drag chip + action dock */
   #chip{position:fixed;z-index:60;pointer-events:none;display:none;background:var(--card);border:1px solid var(--accent);
@@ -123,7 +156,7 @@ enum WebDashboardPage {
   .zone{min-width:88px;text-align:center;padding:14px 12px;border-radius:12px;font-size:13px;font-weight:600;
     background:var(--card);border:1px solid var(--stroke);color:var(--text)}
   .zone.hot{background:var(--accent);color:var(--onAccent);border-color:var(--accent);transform:scale(1.06)}
-  .zone.danger{color:var(--red);border-color:rgba(217,107,115,.4)}
+  .zone.danger{color:var(--red);border-color:var(--redEdge)}
   .zone.danger.hot{background:var(--red);color:#fff}
   /* terminal overlay */
   /* The height has been wrong in both directions, so it is worth saying what it is now.
@@ -198,7 +231,7 @@ enum WebDashboardPage {
   .msg.user .mtext{background:var(--quoteBg);color:var(--quoteFg);
     padding:12px 15px;border-radius:12px;font-size:14px;line-height:1.55;
     border:1px solid var(--quoteEdge);box-shadow:0 6px 16px rgba(0,0,0,.32)}
-  .msg.user .mtext code{background:rgba(0,0,0,.07);color:#12151a}
+  .msg.user .mtext code{background:var(--quoteCode);color:var(--quoteCodeFg)}
   /* Sending should feel like the card is pushed up out of the composer, so it starts squashed
      against the bottom edge and settles with a slight overshoot. */
   @keyframes extrude{
@@ -209,17 +242,17 @@ enum WebDashboardPage {
   .msg.user.sending .mtext{transform-origin:bottom center;
     animation:extrude .34s cubic-bezier(.2,.9,.25,1.2) both}
   @media (prefers-reduced-motion:reduce){ .msg.user.sending .mtext{animation:none} }
-  .msg.user .mtext a{color:#1b4bd0}
+  .msg.user .mtext a{color:var(--quoteLink)}
   .msg.asst .mtext{color:var(--text);padding:0 2px}
   .msg.sub{opacity:.72}
   .msg .tag{font-size:9px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:2px}
   /* typed while the agent was working: the same card, just drawn with a broken edge */
   .msg.user.queued .mtext{background:var(--quoteBgSoft);
-    border-style:dashed;border-color:rgba(21,24,29,.28)}
+    border-style:dashed;border-color:var(--quoteEdgeSoft)}
   .msg.think,.msg.tool{background:var(--card);border:1px solid var(--stroke);border-radius:10px;
     padding:10px 12px;cursor:pointer;margin-left:10px}
   .msg.think{opacity:.7}
-  .msg.tool.bad{border-color:rgba(217,107,115,.5)}
+  .msg.tool.bad{border-color:var(--redEdge)}
   .mhead{display:flex;gap:7px;align-items:baseline;font-size:12px}
   .mhead .sum{color:var(--sub);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
@@ -237,10 +270,10 @@ enum WebDashboardPage {
   .skel .sk-user{margin:26px 0 16px}
   .skel .sk-asst{margin:0 0 26px;padding:0 2px}
   .skel .row{height:12px;border-radius:7px;margin-bottom:8px;
-    background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.11),rgba(255,255,255,.05));
+    background:linear-gradient(90deg,var(--skel1),var(--skel2),var(--skel1));
     background-size:220% 100%;animation:shim 1.2s linear infinite}
   .skel .sk-user .row{height:44px;border-radius:12px;
-    background:linear-gradient(90deg,rgba(255,255,255,.10),rgba(255,255,255,.20),rgba(255,255,255,.10));
+    background:linear-gradient(90deg,var(--skelU1),var(--skelU2),var(--skelU1));
     background-size:220% 100%}
   @keyframes shim{0%{background-position:220% 0}100%{background-position:-120% 0}}
   /* The conversation arrives rather than appearing: each card comes up from below with a strong
@@ -281,7 +314,7 @@ enum WebDashboardPage {
   .md blockquote{margin:6px 0;padding:2px 0 2px 10px;border-left:2px solid var(--stroke);color:var(--sub)}
   .md hr{border:0;border-top:1px solid var(--stroke);margin:10px 0}
   .md a{color:var(--accent)}
-  .md code{background:rgba(255,255,255,.08);padding:1px 4px;border-radius:4px;
+  .md code{background:var(--codeInline);padding:1px 4px;border-radius:4px;
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
   .md pre.code{background:var(--codeBg);border:1px solid var(--stroke);border-radius:8px;padding:9px 10px;
     margin:8px 0;overflow-x:auto;white-space:pre;position:relative;
@@ -295,8 +328,8 @@ enum WebDashboardPage {
   .diff{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.5;
     overflow-x:auto;border-radius:6px;background:var(--codeBg);padding:6px 0;margin-top:7px}
   .dl{white-space:pre;padding:0 10px}
-  .dl.add{background:rgba(92,209,140,.14);color:#9fe3bd}
-  .dl.del{background:rgba(217,107,115,.14);color:#f0a8ad}
+  .dl.add{background:var(--greenSoft);color:var(--greenFg)}
+  .dl.del{background:var(--redSoft);color:var(--redFg)}
   .dl.ctx{color:var(--sub)}
   .dl.ph{color:var(--accent);font-weight:700}
   .dgap{color:var(--sub);opacity:.55;padding:2px 10px;font-size:10px}
@@ -309,8 +342,8 @@ enum WebDashboardPage {
     border-bottom:1px solid var(--stroke);font-size:10px;color:var(--sub)}
   #sinfo:empty{display:none}
   #sinfo .chip{background:var(--card);border:1px solid var(--stroke);border-radius:999px;padding:2px 8px;font-weight:600}
-  #sinfo .chip.warn{color:var(--amber);border-color:rgba(250,184,82,.45)}
-  #sinfo .chip.danger{color:var(--red);border-color:rgba(217,107,115,.5)}
+  #sinfo .chip.warn{color:var(--amber);border-color:var(--amberEdge)}
+  #sinfo .chip.danger{color:var(--red);border-color:var(--redEdge)}
   #sinfo .bar{height:4px;width:74px;background:var(--card);border-radius:2px;overflow:hidden}
   #sinfo .bar i{display:block;height:100%;background:var(--accent)}
   #sinfo .bar.warn i{background:var(--amber)}
@@ -321,13 +354,13 @@ enum WebDashboardPage {
   @keyframes live{0%{box-shadow:0 0 0 0 rgba(92,209,140,.55)}100%{box-shadow:0 0 0 6px rgba(92,209,140,0)}}
   /* what the agent is doing right now, pinned under the last message */
   .runbar{display:flex;align-items:center;gap:8px;padding:9px 11px;margin:2px 0 10px;
-    background:rgba(92,209,140,.09);border:1px solid rgba(92,209,140,.28);border-radius:10px;
+    background:var(--greenSoft);border:1px solid var(--greenEdge);border-radius:10px;
     font-size:12px;color:var(--green)}
   .runbar .what{color:var(--sub);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
     font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .runbar.wait{background:rgba(250,184,82,.1);border-color:rgba(250,184,82,.32);color:var(--amber)}
+  .runbar.wait{background:var(--amberSoft);border-color:var(--amberEdge);color:var(--amber)}
   /* a tool still running (no result yet) */
-  .msg.tool.run{border-color:rgba(122,158,255,.5)}
+  .msg.tool.run{border-color:var(--accentEdgeOn)}
   .spin{display:inline-block;width:9px;height:9px;border:1.5px solid var(--accent);border-right-color:transparent;
     border-radius:50%;animation:sp .7s linear infinite;flex:none}
   @keyframes sp{to{transform:rotate(360deg)}}
@@ -335,7 +368,7 @@ enum WebDashboardPage {
   .msg .cp{font-size:9px;color:var(--sub);opacity:.45;cursor:pointer;padding:0 5px;float:right}
   .msg .cp:active{opacity:1;color:var(--accent)}
   /* permission / question card */
-  #perm{display:none;background:rgba(250,184,82,.1);border-top:1px solid rgba(250,184,82,.4);padding:10px 12px}
+  #perm{display:none;background:var(--amberSoft);border-top:1px solid rgba(250,184,82,.4);padding:10px 12px}
   #perm.on{display:block}
   #perm .q{font-size:12px;font-weight:600;color:var(--amber);margin-bottom:8px}
   #perm .what{font-size:11px;color:var(--sub);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -370,7 +403,7 @@ enum WebDashboardPage {
     padding:6px 10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;cursor:pointer}
   #presets button:active{background:var(--accent);color:var(--onAccent)}
   #presets button.meta{color:var(--accent);font-family:inherit;font-weight:600}
-  #presets button.del{color:var(--red);border-color:rgba(217,107,115,.4);font-family:inherit}
+  #presets button.del{color:var(--red);border-color:var(--redEdge);font-family:inherit}
   #keys{display:flex;gap:6px;overflow-x:auto;margin-bottom:8px}
   #keys button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:7px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer}
   #keys button:active{background:var(--accent);color:var(--onAccent)}
