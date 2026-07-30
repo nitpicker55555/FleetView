@@ -91,14 +91,22 @@ enum WebDashboardPage {
   .zone.danger{color:var(--red);border-color:rgba(217,107,115,.4)}
   .zone.danger.hot{background:var(--red);color:#fff}
   /* terminal overlay */
-  /* Sizing this to the visible viewport is what left a gap: the value comes from JS, and whenever it
-     lagged the browser chrome the overlay was short and you could see — and scroll — the dashboard
-     underneath. It now always spans the layout viewport, and syncViewport pads the band the chrome
-     and keyboard occupy, so the background covers the screen no matter what the measurement says. */
-  #term{position:fixed;inset:0;z-index:50;background:var(--bg);
+  /* The height has been wrong in both directions, so it is worth saying what it is now.
+     Measuring the visible viewport in JS left a gap: whenever the value lagged the browser chrome
+     the overlay came up short and the dashboard showed through — and could be scrolled — underneath.
+     Spanning the layout viewport with `inset:0` fixed that and introduced the opposite fault: on iOS
+     Safari the layout viewport is TALLER than the screen for as long as the URL bar is showing, so
+     the overlay hung off the bottom and that strip could be panned to. Dragging the composer
+     scrolled a "full screen" page, and dismissing the keyboard left it parked mid-pan.
+     `dvh` is the visible height with browser chrome already deducted, worked out by the browser
+     rather than by us: exactly the screen, nothing to pan to, and no measurement to lag. The plain
+     `height:100%` before it is the fallback for a browser without `dvh` (the layout-viewport
+     behaviour). The keyboard is a separate axis and is still syncViewport's padding — `dvh` does not
+     react to it. */
+  #term{position:fixed;top:0;left:0;right:0;height:100%;height:100dvh;
+    z-index:50;background:var(--bg);
     display:none;flex-direction:column;overscroll-behavior:none}
-  /* The JS height comes from visualViewport; if that is ever stale the overlay is short and the
-     page shows through underneath, so paint the same background behind it as well. */
+  /* Belt and braces for the fallback path, where the overlay can still be shorter than the screen. */
   body.locked{background:var(--bg)}
   #term.show{display:flex}
   /* inset:0 rather than width alone: a body left at its scrolled offset is another way the page
@@ -668,12 +676,15 @@ function syncViewport(){
   // scrollTop while it shrinks pushes whatever you were reading below the fold. Measure the
   // distance from the bottom first and restore it after, so the line above the composer stays
   // above the composer and the conversation rides up with the input.
-  const H=t.offsetHeight||window.innerHeight;    // border-box, so this is the full layout viewport
+  // The overlay's own height — `dvh`, so the screen with browser chrome already deducted. It used to
+  // be the layout viewport, which meant this measurement carried the chrome height around with it
+  // and the threshold below existed largely to subtract it back out again.
+  const H=t.offsetHeight||window.innerHeight;
   // Only a keyboard gets padded off. visualViewport is not trustworthy on its own here: iPadOS can
   // leave its height at the keyboard-era value after the keyboard is gone, and that stale number
   // was the strip of dead space under the composer that never went away. So the measurement has to
   // agree with two other things — that a field is actually focused, and that the shortfall is big
-  // enough to be a keyboard rather than browser chrome (which inset:0 already accounts for).
+  // enough to be a keyboard rather than rounding between `dvh` and visualViewport.
   const a=document.activeElement, ta=document.getElementById('inputtext');
   const typing=a===ta||a===document.getElementById('pfind');
   const short=Math.max(0,Math.round(H-vv.height-vv.offsetTop));
