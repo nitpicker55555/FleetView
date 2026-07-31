@@ -611,7 +611,7 @@ function showCached(c){
   renderInfo(curInfo);
 }
 function openTerm(id,name){
-  curId=id;curUrl='';termLoaded=false;
+  curId=id;curUrl='';termLoaded=false;chatFails=0;
   const cached=cacheGet(id);
   if(cached&&cached.messages&&cached.messages.length) showCached(cached); else showSkeleton();
   document.getElementById('termname').textContent=name;
@@ -717,12 +717,29 @@ async function popTerm(){await ensureTerm();if(curUrl)window.open(curUrl,'_blank
 const TOOLICON={terminal:'$',edit:'✎',read:'▤',search:'⌕',web:'⬡',task:'⚙',other:'•'};
 function startChatPoll(){stopChatPoll();chatTimer=setInterval(loadChat,3000);}
 function stopChatPoll(){if(chatTimer){clearInterval(chatTimer);chatTimer=null;}}
+/* Consecutive failures, so a persistent one can be told apart from a slow one. It used to be
+   neither: renderChat lives inside the try and the catch was empty, so the skeleton was only ever
+   replaced on success — a request that kept failing left an animation shimmering forever, identical
+   to still-loading and with nothing said. The poll itself was never the problem: it is a plain
+   setInterval and keeps retrying regardless, which is why this recovers on its own. */
+let chatFails=0;
+function showChatError(msg){
+  const el=document.getElementById('chat');
+  // Only take over the skeleton. If cached messages are on screen they are still worth reading,
+  // and replacing them with an error would lose the one useful thing there.
+  if(!el.querySelector('.skel'))return;
+  el.dataset.sig='';
+  el.innerHTML='<div id="chatnote">'+esc(msg)+'<br><span style="opacity:.6">重试中…</span></div>';
+}
 async function loadChat(){
   if(!curId)return;
   const want=curId;
   try{
-    const j=await(await fetch('/conversation?id='+encodeURIComponent(want)+'&limit=150',{cache:'no-store'})).json();
+    const r=await fetch('/conversation?id='+encodeURIComponent(want)+'&limit=150',{cache:'no-store'});
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const j=await r.json();
     if(want!==curId)return;           // you switched terminals while this was in flight
+    chatFails=0;
     curInfo=j.info||{};
     if(sentAt){                       // hold 'running' until the hook catches up, then let go
       if(performance.now()-sentAt>4000||curInfo.status!=='idle') sentAt=0;
@@ -735,7 +752,12 @@ async function loadChat(){
     renderInfo(curInfo);
     renderPerm(curInfo);
     syncSendBtn();
-  }catch(e){}
+  }catch(e){
+    if(want!==curId)return;
+    // One miss is a blip and not worth a message; two in a row (≈6s) is a state you should be told
+    // about. Polling continues either way, so this clears itself the moment a request succeeds.
+    if(++chatFails>=2) showChatError('读取会话失败：'+(e.message||e));
+  }
 }
 /* iOS/iPadOS scrolls the whole document to reveal a focused field and doesn't undo it when the
    keyboard goes away, which left the overlay shifted up with a gap beneath. Track the visual

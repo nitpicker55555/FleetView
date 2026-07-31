@@ -99,18 +99,35 @@ enum Conversation {
         return Double(min(head + tail, a.count)) >= 0.8 * Double(a.count)
     }
 
-    private static func queuedPrompts(sessionId: String, after: Double) -> [QueuedPrompt] {
-        let url = FV.home.appendingPathComponent(".claude/history.jsonl")
-        // The whole file: the earliest sighting of a prompt is what says whether a later one is a
-        // recall, and that can predate any tail window. Only lines naming this session are parsed.
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+    /// Every prompt in `~/.claude/history.jsonl`, parsed once per version of the file.
+    ///
+    /// This runs on the main actor for every `/conversation`, which each open web conversation polls
+    /// every 3 s — and the file is megabytes of every prompt ever typed, so re-reading and
+    /// re-parsing it per request was a fixed ~270 ms of main-thread work no matter how small the
+    /// transcript being viewed. Keyed on size+mtime, so an append is picked up and nothing else is.
+    private struct HistoryLine { let session: String; let text: String; let ms: Double }
+    private static var historyCache: (size: Int, mtime: TimeInterval, lines: [HistoryLine])?
+    private static let historyLock = NSLock()
 
-        var all: [QueuedPrompt] = []
+    private static func historyLines() -> [HistoryLine] {
+        let url = FV.home.appendingPathComponent(".claude/history.jsonl")
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attrs?[.size] as? Int) ?? 0
+        let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+
+        historyLock.lock()
+        if let c = historyCache, c.size == size, c.mtime == mtime {
+            historyLock.unlock()
+            return c.lines
+        }
+        historyLock.unlock()
+
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        var out: [HistoryLine] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard line.first == "{", line.contains(sessionId),
-                  let d = line.data(using: .utf8),
+            guard line.first == "{", let d = line.data(using: .utf8),
                   let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
-                  (obj["sessionId"] as? String) == sessionId,
+                  let session = obj["sessionId"] as? String,
                   let display = obj["display"] as? String, !display.isEmpty else { continue }
             let t = display.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !t.isEmpty, !t.hasPrefix("/"),
@@ -119,8 +136,20 @@ enum Conversation {
             let ms = (obj["timestamp"] as? NSNumber)?.doubleValue
                 ?? Double(obj["timestamp"] as? String ?? "") ?? 0
             guard ms > 0 else { continue }
-            all.append(QueuedPrompt(text: t, ms: ms))
+            out.append(HistoryLine(session: session, text: t, ms: ms))
         }
+        historyLock.lock()
+        historyCache = (size, mtime, out)
+        historyLock.unlock()
+        return out
+    }
+
+    private static func queuedPrompts(sessionId: String, after: Double) -> [QueuedPrompt] {
+        // The whole file, not a tail: the earliest sighting of a prompt is what says whether a later
+        // one is a recall, and that can predate any window.
+        var all = historyLines()
+            .filter { $0.session == sessionId }
+            .map { QueuedPrompt(text: $0.text, ms: $0.ms) }
         all.sort { $0.ms < $1.ms }
 
         // Keep the first sighting of each text only — a second one is the up-arrow bringing an old
