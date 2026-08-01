@@ -49,6 +49,12 @@ enum FV {
         }
     }
 
+    /// Just the marketing version ("0.1.0"), which is what a release tag is compared against —
+    /// `version` carries the build number too and would not parse.
+    static var shortVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
+    }
+
     static func ensureSupportDir() {
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
     }

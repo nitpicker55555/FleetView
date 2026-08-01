@@ -149,7 +149,12 @@ struct DashboardView: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = true
+        // Starting a project you haven't created yet is a normal thing to want, and the panel's own
+        // New Folder button does it without FleetView inventing a second dialog for naming and
+        // placing a directory — it is the same control every other Mac app offers here.
+        panel.canCreateDirectories = true
         panel.prompt = "Open Project"
+        panel.message = "Pick a folder for this project — or make a new one."
         if panel.runModal() == .OK { for url in panel.urls { state.addProject(path: url.path) } }
     }
 }
@@ -378,11 +383,40 @@ struct TopBar: View {
             if working > 0 { pill("\(working) working", .working) }
             if needs > 0 { pill("\(needs) needs you", .needsYou) }
             Spacer()
+            updateButton
             searchButton
             webButton
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
         .background(Theme.panel.opacity(0.55))
+    }
+
+    /// Shown only when a newer release exists. A pill rather than a dialog: an update is worth
+    /// noticing, not worth interrupting a fleet of running agents for. Clicking opens the release
+    /// page; the × means "not this version" and it will not come back until the next one.
+    @ViewBuilder private var updateButton: some View {
+        if let r = state.updates.available {
+            HStack(spacing: 5) {
+                Button { state.updates.openReleasePage() } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(r.version).font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(Theme.onAccent)
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+                .help("FleetView \(r.version) 已发布 — 点击查看")
+                Button { state.updates.dismiss() } label: {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                        .foregroundColor(Theme.onAccent.opacity(0.7))
+                }
+                .buttonStyle(.plain).padding(.trailing, 7)
+                .help("忽略这个版本")
+            }
+            .background(Theme.accent).clipShape(Capsule())
+        }
     }
 
     /// The only on-screen way in to conversation search (⌘K also opens it). Icon-only, matching

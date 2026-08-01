@@ -49,6 +49,9 @@ final class AppState: ObservableObject {
     @Published var searchOpen = false
     let searchModel = SearchModel()
 
+    /// Offers a newer release when there is one (see UpdateCheck).
+    let updates = UpdateCheck()
+
     /// A node being dragged toward the board — from the tree panel, or from a search result.
     /// A search drag carries the hit instead of a uuid: it has to be resolved against its own
     /// project (which may have no terminal open at all), not against the tree panel's.

@@ -31,6 +31,11 @@ struct AuditConfig: Codable {
 
     var retentionDays = 90
 
+    /// Ask GitHub whether a newer FleetView has been released. On by default because being a
+    /// version behind is its own cost, but it IS an outbound call — one unauthenticated GET every
+    /// six hours — so it is stated here and can be turned off.
+    var updates = true
+
     static var current: AuditConfig = load()
 
     static func load() -> AuditConfig {

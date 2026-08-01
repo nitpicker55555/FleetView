@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // transcript on disk (~15 s); every refresh after that is incremental and near-free, so
         // doing it at launch means ⌘K is instant instead of waiting on a cold index.
         SearchIndex.refresh()
+        state.updates.check()        // one GET, at most every six hours; off via logging.json
         let w = EventWatcher()
         w.onEvent = { [weak self] ev in
             Task { @MainActor in self?.state.handleHookEvent(ev) }
