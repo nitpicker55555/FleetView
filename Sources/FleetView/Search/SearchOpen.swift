@@ -30,7 +30,10 @@ enum SearchOpen {
             switch self {
             case .notClaudeProject(let p): return "not inside ~/.claude/projects: \(p)"
             case .treeflowMissing:
-                return "treeflow not found — install it to open Codex conversations"
+                // Say the command, not just the name: this is the only thing standing between the
+                // user and a Codex conversation opening, and it is one line.
+                return "打开 Codex 会话需要 treeflow：\n"
+                     + "pip3 install 'git+https://github.com/nitpicker55555/Agent-Treeflow.git'"
             case .treeflow(let m): return "treeflow: \(m)"
             case .noCwd: return "could not determine the session's working directory"
             }

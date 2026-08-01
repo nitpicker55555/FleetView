@@ -54,4 +54,23 @@ if [[ "${1:-}" == "--install" ]]; then
     echo "▸ Installed /Applications/FleetView.app"
 fi
 
+# treeflow is what opens a Codex conversation at a past node — FleetView has its own Swift port of
+# the Claude side but nothing equivalent for Codex, so without it Codex search hits cannot be
+# opened. Offered rather than installed silently: it is a pip install into the user's own Python,
+# which is not a thing a build script should do behind your back. Skip with SKIP_TREEFLOW=1.
+if [[ -z "${SKIP_TREEFLOW:-}" ]] && ! command -v treeflow >/dev/null 2>&1; then
+    echo
+    echo "▸ treeflow isn't installed — it's what opens Codex conversations at a past node."
+    echo "  Install it from GitHub? (pip install into your current Python)"
+    read -r -p "  [y/N] " reply
+    if [[ "$reply" =~ ^[Yy]$ ]]; then
+        pip3 install "git+https://github.com/nitpicker55555/Agent-Treeflow.git" \
+            && echo "▸ treeflow installed" \
+            || echo "! treeflow install failed — Codex node opening will be unavailable"
+    else
+        echo "  Skipped. Install later with:"
+        echo "    pip3 install 'git+https://github.com/nitpicker55555/Agent-Treeflow.git'"
+    fi
+fi
+
 echo "✓ Done."
