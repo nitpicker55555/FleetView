@@ -255,10 +255,31 @@ final class AppState: ObservableObject {
         refreshPanel()
         panelTimer?.invalidate()
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshPanel() }
+            Task { @MainActor in
+                self?.refreshPanel()
+                self?.refreshCodexStatus()
+            }
         }
         RunLoop.main.add(t, forMode: .common)   // keep ticking during menu tracking / scrolling
         panelTimer = t
+    }
+
+    /// Codex terminals get their status from their rollout, because no Codex hook ever fires (see
+    /// CodexSession). Without this they sat on `idle` no matter what they were doing — a card that
+    /// says idle while the agent is mid-turn is worse than no status at all, and it is also what
+    /// made the web chat look unresponsive: you send, nothing changes, and the reply only appears
+    /// when the transcript catches up.
+    ///
+    /// Only `working` and `idle` are decided here. `needsYou` comes from the screen, which is the
+    /// only place an approval prompt shows up, and is left alone.
+    private func refreshCodexStatus() {
+        for (i, t) in terminals.enumerated()
+        where t.agentKind == .codex && t.status != .closed && t.status != .needsYou {
+            guard let path = transcriptPath(for: t.id),
+                  let working = CodexSession.isWorking(rollout: path) else { continue }
+            let next: TermStatus = working ? .working : .idle
+            if terminals[i].status != next { terminals[i].status = next }
+        }
     }
 
     private func refreshPanel() {
@@ -1105,9 +1126,19 @@ final class AppState: ObservableObject {
     /// conversation belonging to a completely different one.
     func transcriptPath(for id: UUID) -> String? {
         guard let t = terminals.first(where: { $0.id == id }) else { return nil }
-        // The pointer hook.sh writes for this terminal wins: it is rewritten on every hook event, so
-        // it survives a missed event or a `claude --resume` that switched sessions, both of which
-        // leave the value we cached from the event stream pointing at the wrong conversation.
+        // Codex is resolved from its rollouts FIRST, ahead of the hook pointer, because that pointer
+        // goes stale and stays stale: Codex silently skips hooks it has not been told to trust (see
+        // CodexSession), and once they stop firing the pointer is frozen at whatever rollout was
+        // current at the time while Codex goes on to open new ones. One terminal here was pinned to
+        // a rollout from two days earlier and the web chat showed that conversation instead of the
+        // live one. The rollouts cannot go stale — asking them is what makes a running session
+        // correct — and when hooks ARE working both answers are the same file anyway.
+        if t.agentKind == .codex {
+            let claimed = Set(terminals.filter { $0.id != id }.compactMap { $0.transcriptPath })
+            if let live = CodexSession.currentRollout(cwd: t.cwd, excluding: claimed) { return live }
+        }
+        // The pointer hook.sh writes for this terminal wins for Claude: it is rewritten on every
+        // hook event, so it survives a missed event or a `--resume` that switched sessions.
         if let live = hookSessionPath(for: id) { return live }
         if let tp = t.transcriptPath, FileManager.default.fileExists(atPath: tp) { return tp }
         // A plain shell has no conversation at all — never guess one for it, or it would inherit
