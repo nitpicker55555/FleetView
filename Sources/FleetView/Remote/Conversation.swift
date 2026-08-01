@@ -568,15 +568,25 @@ enum Conversation {
     // MARK: - Helpers
 
     /// Read only the last `tailBytes` of the file, dropping a partial first line.
+    ///
+    /// The partial line is dropped as BYTES, before decoding. Decoding first and trimming after
+    /// looks equivalent and is not: the window starts at an arbitrary offset, so in a transcript
+    /// with any CJK in it that offset lands mid-character about two times in three, and decoding
+    /// the whole window then fails — not partially, entirely. `String(data:encoding:)` returns nil
+    /// for one bad byte anywhere, so the conversation came back empty and the web chat said there
+    /// was none, for a 15 MB transcript that was perfectly readable. It also moved as the file grew,
+    /// which is what made it look intermittent.
     private static func tail(_ path: String) -> String? {
         guard let h = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
         defer { try? h.close() }
         guard let size = try? h.seekToEnd() else { return nil }
         let start = size > tailBytes ? size - tailBytes : 0
         try? h.seek(toOffset: start)
-        guard let data = try? h.readToEnd(), var s = String(data: data, encoding: .utf8) else { return nil }
-        if start > 0, let nl = s.firstIndex(of: "\n") { s = String(s[s.index(after: nl)...]) }
-        return s
+        guard var data = try? h.readToEnd() else { return nil }
+        if start > 0, let nl = data.firstIndex(of: 0x0A) {
+            data = data.subdata(in: data.index(after: nl)..<data.endIndex)
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     /// Merge consecutive same-role text so a streamed reply reads as one message.

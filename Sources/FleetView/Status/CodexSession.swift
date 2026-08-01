@@ -107,8 +107,16 @@ enum CodexSession {
         // A turn boundary is written frequently; the tail is always enough and keeps this cheap
         // enough to poll.
         let window: UInt64 = 256_000
-        try? h.seek(toOffset: size > window ? size - window : 0)
-        guard let data = try? h.readToEnd(), let text = String(data: data, encoding: .utf8) else { return nil }
+        let start = size > window ? size - window : 0
+        try? h.seek(toOffset: start)
+        // Drop the partial first line as BYTES before decoding: the window starts at an arbitrary
+        // offset, and one split multi-byte character makes String(data:encoding:) return nil for
+        // the whole block rather than for the bad part.
+        guard var data = try? h.readToEnd() else { return nil }
+        if start > 0, let nl = data.firstIndex(of: 0x0A) {
+            data = data.subdata(in: data.index(after: nl)..<data.endIndex)
+        }
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
 
         var working: Bool?
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
