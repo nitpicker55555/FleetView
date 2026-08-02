@@ -72,7 +72,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
         appItem.submenu = appMenu
-        appMenu.addItem(withTitle: "About FleetView", action: nil, keyEquivalent: "")
+        // The About panel reads the bundle's version, which is the other half of "what am I running";
+        // it had no action at all, so the item was decoration.
+        appMenu.addItem(withTitle: "About FleetView",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                        keyEquivalent: "")
+        let update = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
+        update.target = self
+        appMenu.addItem(update)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide FleetView", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
@@ -118,5 +125,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSearch() {
         state.openSearch()
+    }
+
+    /// Forced, so it ignores both the six-hour throttle and a version dismissed from the pill: the
+    /// answer to a question someone just asked is never "I checked recently".
+    @objc private func checkForUpdates() {
+        state.updates.check(force: true) { [weak self] outcome in
+            self?.report(outcome)
+        }
+    }
+
+    private func report(_ outcome: UpdateCheck.Outcome) {
+        let a = NSAlert()
+        switch outcome {
+        case .newer(let r):
+            a.messageText = "FleetView \(r.version) 已发布"
+            a.informativeText = "当前版本 \(FV.shortVersion)。"
+                + (r.notes.isEmpty ? "" : "\n\n" + String(r.notes.prefix(600)))
+            a.addButton(withTitle: "查看发布页")
+            a.addButton(withTitle: "以后再说")
+            if a.runModal() == .alertFirstButtonReturn { state.updates.openReleasePage() }
+            return
+        case .current(let v):
+            a.messageText = "已是最新版本"
+            a.informativeText = "FleetView \(v)。"
+        case .failed(let why):
+            a.messageText = "检查更新失败"
+            a.informativeText = why
+        }
+        a.runModal()
     }
 }
