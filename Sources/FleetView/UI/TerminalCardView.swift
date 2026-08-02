@@ -136,22 +136,11 @@ struct TerminalCardView: View {
                     .background(Theme.markTint.opacity(0.18)).foregroundColor(Theme.markTint)
                     .clipShape(Capsule())
             }
-            // While it runs, how long it has been running is the number you want; "last activity"
-            // then only ever says "just now" and costs the card a second chip to read past.
-            if terminal.status == .working, let since = terminal.runningSince {
-                TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    HStack(spacing: 3) {
-                        Image(systemName: "timer").font(.system(size: 9, weight: .bold))
-                        Text(RelativeTime.clock(since: since, now: ctx.date))
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    }
-                    .foregroundColor(Theme.statusColor(.working))
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(Theme.statusColor(.working).opacity(0.14))
-                    .clipShape(Capsule())
-                    .help("Running for \(RelativeTime.clock(since: since, now: ctx.date))")
-                }
-            } else if terminal.lastActivity != nil {
+            runChip
+            // While it runs, the clock is the only number worth the space — "last activity" then
+            // says nothing but "just now". Afterwards the two answer different questions: how long
+            // it took, and how long ago that was.
+            if terminal.status != .working, terminal.lastActivity != nil {
                 TimelineView(.periodic(from: .now, by: 15)) { ctx in
                     Text(RelativeTime.short(terminal.lastActivity, now: ctx.date) ?? "")
                         .font(.system(size: 10))
@@ -162,6 +151,32 @@ struct TerminalCardView: View {
             Spacer(minLength: 4)
             controls
         }
+    }
+
+    /// The run clock: green and ticking while the agent works, then the same figure left on the card
+    /// in grey. Blanking it would throw away the answer you came back to the board for; changing its
+    /// colour is enough to say the run is over — the status label and dot already say which way.
+    @ViewBuilder private var runChip: some View {
+        if terminal.status == .working, let since = terminal.runningSince {
+            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                chip(RelativeTime.clock(since: since, now: ctx.date), Theme.statusColor(.working))
+                    .help("Running for \(RelativeTime.clock(since: since, now: ctx.date))")
+            }
+        } else if let secs = terminal.lastRunSeconds {
+            chip(RelativeTime.clock(seconds: secs), Theme.subtext)
+                .help("Last run took \(RelativeTime.clock(seconds: secs))")
+        }
+    }
+
+    private func chip(_ text: String, _ tint: Color) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "timer").font(.system(size: 9, weight: .bold))
+            Text(text).font(.system(size: 10, weight: .medium, design: .monospaced))
+        }
+        .foregroundColor(tint)
+        .padding(.horizontal, 6).padding(.vertical, 1)
+        .background(tint.opacity(0.14))
+        .clipShape(Capsule())
     }
 
     private var controls: some View {

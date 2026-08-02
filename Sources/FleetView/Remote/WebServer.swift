@@ -18,6 +18,7 @@ struct WebSnapshot: Codable {
         let done: Bool            // subtask marked done
         let idle: Int             // seconds since last real interaction, -1 if never
         let running: Int          // seconds the current run has been going, -1 if it isn't running
+        let lastRun: Int          // seconds the last finished run took, -1 if it has never run
         let cwd: String
         let transcript: String?   // agent conversation-history file (Claude/Codex), if a hook reported it
     }

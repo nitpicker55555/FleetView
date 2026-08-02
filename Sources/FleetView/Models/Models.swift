@@ -82,6 +82,12 @@ struct TerminalSession: Identifiable, Codable, Hashable {
     /// stray `status = .idle` is one that never stops. Not restored on launch (see `load`), because
     /// a run that outlived FleetView is not one this clock can honestly measure.
     var runningSince: Date? = nil
+
+    /// How long the last finished run took. It stays on the card (dimmed) once the run ends rather
+    /// than blanking: "that took 6:12" is the answer you come back to the board for, and it is the
+    /// one thing a transcript never records — it says what happened, never how long it took. The
+    /// next run replaces it.
+    var lastRunSeconds: Int? = nil
 }
 
 struct Cluster: Identifiable, Codable, Hashable {

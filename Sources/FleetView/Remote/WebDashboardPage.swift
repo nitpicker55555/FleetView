@@ -147,6 +147,8 @@ enum WebDashboardPage {
   .ago{font-size:10px;color:var(--sub);opacity:.75;text-align:right;margin-top:-3px}
   /* tabular-nums so a ticking clock doesn't shuffle the card's right edge every second */
   .run{color:var(--green);font-weight:600;font-variant-numeric:tabular-nums}
+  /* The run is over: same figure, no longer green — the status label already says how it ended. */
+  .run.done{color:var(--sub);opacity:.9}
   .cluster{border:1px solid var(--accentEdge);background:var(--accentFaint);border-radius:14px;padding:12px;margin-bottom:12px}
   .cluster .clabel{font-size:9px;font-weight:700;color:var(--accent);background:var(--accentSoft);padding:2px 6px;border-radius:999px;margin-right:6px}
   .cluster .chead{display:flex;align-items:center;margin-bottom:10px}
@@ -1586,7 +1588,7 @@ function card(t){
     </div>
     <div class="prompt"><span class="sig">${sig}</span><span class="txt">${t.prompt?esc(t.prompt):'—'}</span></div>
     ${t.running>=0?`<div class="ago"><span class="run" data-run="${t.id}"></span></div>`
-                  :(t.idle>=0?`<div class="ago">${ago(t.idle)}</div>`:'')}
+                  :((t.lastRun>=0||t.idle>=0)?`<div class="ago">${t.lastRun>=0?`<span class="run done">⏱ ${clockText(t.lastRun*1000)}</span> `:''}${ago(t.idle)}</div>`:'')}
   </div>`;
 }
 /* How long the current run has been going. The number is deliberately NOT in the markup above: the
@@ -1613,8 +1615,11 @@ function syncRuns(terms){
   for(const id in runStart){ if(!live[id]) delete runStart[id]; }
   paintRuns();
 }
+/* `[data-run]` only: a finished run's chip carries the same class but its figure is fixed and
+   already in the markup, and blanking it a second after it rendered is exactly what a blind
+   `.run` sweep would do. */
 function paintRuns(){
-  for(const el of document.querySelectorAll('.run')){
+  for(const el of document.querySelectorAll('.run[data-run]')){
     const st=runStart[el.dataset.run];
     el.textContent=st?('⏱ '+clockText(Date.now()-st)):'';
   }

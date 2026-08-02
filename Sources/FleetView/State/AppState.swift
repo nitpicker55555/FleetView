@@ -794,9 +794,32 @@ final class AppState: ObservableObject {
         case .needsYou:
             break                                   // same turn, waiting on you — keep counting
         case .idle, .shell, .closed, .exited:
-            terminals[idx].runningSince = nil
+            finishRun(at: idx, endedBy: s.label)
         }
         terminals[idx].status = s
+    }
+
+    /// A run ended: freeze its length on the card and write it down.
+    ///
+    /// Logged here rather than derived later because this is the only moment it is known — the
+    /// transcript records what the agent did, never how long it took, and the start time is about
+    /// to be cleared. `endedBy` says what stopped it (returned, needs-you never appears here, the
+    /// window closed, a new prompt arrived), which is the difference between a turn that finished
+    /// and one that was cut off.
+    func finishRun(at idx: Int, endedBy: String) {
+        guard let since = terminals[idx].runningSince else { return }
+        let seconds = max(0, Int(Date().timeIntervalSince(since)))
+        terminals[idx].runningSince = nil
+        terminals[idx].lastRunSeconds = seconds
+        let t = terminals[idx]
+        FV.log("run finished: term=\(t.name) after=\(RelativeTime.clock(seconds: seconds)) " +
+               "(\(seconds)s) ended=\(endedBy)")
+        audit.emit("fleetview.terminal.run_finished",
+                   categories: ["process"],
+                   message: "\(t.name) ran for \(RelativeTime.clock(seconds: seconds))",
+                   target: auditTarget(terminal: t.id),
+                   data: ["run.seconds": .int(seconds), "run.ended_by": .string(endedBy)],
+                   durationNanos: seconds * 1_000_000_000)
     }
 
     /// The user pressed Escape (Claude's interrupt) — if the agent was working, the turn just ended,
@@ -835,7 +858,9 @@ final class AppState: ObservableObject {
         switch ev.event {
         case "UserPromptSubmit":
             // A new prompt is a new run even if the card never left `working` (a queued follow-up),
-            // so this one restarts the clock rather than going through `enterStatus`'s transition.
+            // so close the old one out — otherwise its length would be overwritten unrecorded — and
+            // start the clock again rather than going through `enterStatus`'s transition.
+            finishRun(at: idx, endedBy: "new prompt")
             terminals[idx].runningSince = Date()
             terminals[idx].status = .working
             if let p = ev.prompt {
@@ -1266,6 +1291,7 @@ final class AppState: ObservableObject {
                              running: t.status == .working
                                  ? (t.runningSince.map { max(0, Int(Date().timeIntervalSince($0))) } ?? -1)
                                  : -1,
+                             lastRun: t.lastRunSeconds ?? -1,
                              cwd: t.cwd,
                              transcript: t.transcriptPath)
         }
