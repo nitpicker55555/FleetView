@@ -191,14 +191,87 @@ enum SessionForge {
         if start > 0, let nl = data.firstIndex(of: 0x0A) {
             data = data.subdata(in: data.index(after: nl)..<data.endIndex)
         }
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
-            guard line.first == "{", let d = line.data(using: .utf8),
-                  let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+        // Split on newlines and decode a line at a time. Decoding the window as one string threw the
+        // whole thing away for a single bad byte, and the file may be *being written* as we read: the
+        // last line is then a partial record, often ending mid-character. That is the same failure
+        // the leading-partial-line fix was about, at the other end of the window — and here it does
+        // not announce itself, it just reports that the session has no folder.
+        for line in data.split(separator: 0x0A, omittingEmptySubsequences: true).reversed() {
+            guard line.first == UInt8(ascii: "{"),
+                  let obj = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
                   let cwd = obj["cwd"] as? String, !cwd.isEmpty else { continue }
             return cwd
         }
         return nil
+    }
+
+    /// Claude's project-directory name for a path: every character that is not an ASCII letter or
+    /// digit becomes `-`. It is what makes the mapping one-way — `datagen_vision2web` and a real
+    /// `datagen-vision2web` produce the same slug — and it is exactly the check for "would resuming
+    /// from here look in this project directory".
+    static func slugify(_ path: String) -> String {
+        String(path.map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "-" })
+    }
+
+    /// The directory to resume a project's sessions from.
+    ///
+    /// It has to be a folder whose slug IS this project directory: `--resume <sid>` looks the
+    /// session up under the slug of the *current* folder, so anywhere else answers "No conversation
+    /// found" however truthful it is. A transcript's own `cwd` is not automatically that folder —
+    /// `cwd` is per record and follows the agent, so a subagent started after a `cd`, or a session
+    /// that moved during its run, records a subdirectory while its file stays filed under the slug
+    /// it started in. On this machine that is 52 of 70 recorded cwds, so it is the normal case, not
+    /// the exception.
+    ///
+    /// Hence: decode the slug back into a real path, resolved against the filesystem because the
+    /// encoding is not reversible on its own.
+    static func projectCwd(projectDir: URL) -> String? {
+        if let p = cwdFromSlug(projectDir.lastPathComponent) { return p }
+        // Nothing on disk answers to that slug any more — the folder was renamed, moved or deleted.
+        // Nothing will make `--resume` find these sessions, but opening the terminal somewhere the
+        // work actually happened still beats refusing to open one at all.
+        let files = ((try? FileManager.default.contentsOfDirectory(
+            at: projectDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
+            .filter { $0.pathExtension == "jsonl" }
+            .sorted { mtime($0) > mtime($1) }     // newest first — most likely to still be intact
+        for f in files.prefix(8) {
+            if let cwd = sessionCwd(transcriptPath: f.path) { return cwd }
+        }
+        return nil
+    }
+
+    private static func mtime(_ url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+    }
+
+    /// Turn `-Users-puzhen-PycharmProjects-datagen-vision2web` back into a real path.
+    ///
+    /// The slug cannot be decoded by rule — every `/`, `_` and `.` arrives as the same `-` — so it is
+    /// matched against the filesystem one level at a time: a child directory belongs at this
+    /// position if its own slug sits at the front of what is left. Longest match first, so
+    /// `datagen-vision2web` wins over a `datagen` that also exists, with backtracking when the long
+    /// one leads nowhere. Nil rather than a plausible guess: a wrong directory does not fail, it
+    /// opens the fork on "No conversation found", which is much harder to work out from.
+    static func cwdFromSlug(_ slug: String) -> String? {
+        guard slug.hasPrefix("-") else { return nil }
+        let fm = FileManager.default
+        func walk(_ prefix: String, _ rest: Substring) -> String? {
+            if rest.isEmpty { return prefix }
+            let names = ((try? fm.contentsOfDirectory(atPath: prefix.isEmpty ? "/" : prefix)) ?? [])
+                .sorted { $0.count > $1.count }
+            for name in names {
+                let s = slugify(name)
+                guard rest.hasPrefix(s) else { continue }
+                let after = rest.dropFirst(s.count)
+                guard after.isEmpty || after.hasPrefix("-") else { continue }   // component boundary
+                let path = prefix + "/" + name
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { continue }
+                if let hit = walk(path, after.isEmpty ? after : after.dropFirst()) { return hit }
+            }
+            return nil
+        }
+        return walk("", slug.dropFirst())
     }
 
     /// Flags the source terminal's live claude process was started with, filtered to a safe

@@ -204,28 +204,31 @@ enum SearchIndex {
         guard let db = open() else { return }
         let started = Date()
 
-        // What we already know, so unchanged files are skipped without opening them.
-        var seen: [String: (done: Int, prompts: Int)] = [:]
+        // What we already know, so unchanged files are skipped without opening them. `project` is
+        // carried along too — see the write loop: a later pass must not be able to forget it.
+        var seen: [String: (done: Int, prompts: Int, project: String)] = [:]
         var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, "SELECT path, done, prompts FROM file", -1, &stmt, nil) == SQLITE_OK {
+        if sqlite3_prepare_v2(db, "SELECT path, done, prompts, project FROM file",
+                              -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
                 let p = String(cString: sqlite3_column_text(stmt, 0))
-                seen[p] = (Int(sqlite3_column_int64(stmt, 1)), Int(sqlite3_column_int(stmt, 2)))
+                seen[p] = (Int(sqlite3_column_int64(stmt, 1)), Int(sqlite3_column_int(stmt, 2)),
+                           String(cString: sqlite3_column_text(stmt, 3)))
             }
         }
         sqlite3_finalize(stmt)
 
         // Claude keeps three layouts under a project slug — <sid>.jsonl, <sid>/*.jsonl and
         // <sid>/subagents/agent-*.jsonl — so enumerate rather than glob a fixed depth.
-        var jobs: [(url: URL, src: Source, from: Int, prompts: Int)] = []
+        var jobs: [(url: URL, src: Source, from: Int, prompts: Int, project: String)] = []
         for (root, src) in [(claudeRoot, Source.claude), (codexRoot, Source.codex)] {
             let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey])
             while let url = e?.nextObject() as? URL {
                 guard url.pathExtension == "jsonl" else { continue }
                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                let prior = seen[url.path] ?? (0, 0)
+                let prior = seen[url.path] ?? (0, 0, "")
                 if size > prior.done {
-                    jobs.append((url, src, prior.done, prior.prompts))
+                    jobs.append((url, src, prior.done, prior.prompts, prior.project))
                 }
             }
         }
@@ -287,7 +290,7 @@ enum SearchIndex {
             sqlite3_bind_int(upsertFile, 4, Int32(result.prompts))
             bind(upsertFile, 5, result.session.isEmpty
                  ? job.url.deletingPathExtension().lastPathComponent : result.session)
-            bind(upsertFile, 6, result.project)
+            bind(upsertFile, 6, resolvedProject(result, job))
             sqlite3_step(upsertFile)
         }
         sqlite3_finalize(insertMsg)
@@ -303,6 +306,28 @@ enum SearchIndex {
 
     private static func bind(_ stmt: OpaquePointer?, _ i: Int32, _ s: String) {
         sqlite3_bind_text(stmt, i, s, -1, transient)
+    }
+
+    /// The folder to file this transcript under, which an incremental pass usually cannot see.
+    ///
+    /// `cwd` is not on every record: Claude repeats it on user/assistant lines but a chunk can be
+    /// pure tool traffic, and Codex writes it exactly once, on the `session_meta` line at the head —
+    /// so every pass after the first one over a growing rollout finds none. Overwriting the stored
+    /// value with that emptiness is what left conversations un-openable ("could not determine the
+    /// session's working directory") long after their folder had been recorded correctly.
+    ///
+    /// So: what this pass learned, else what was already known, else — only for a file that has
+    /// never yielded one — one direct read of the file's head/tail. That last step is what heals a
+    /// row already wiped by the old behaviour, and it costs nothing on the common path.
+    private static func resolvedProject(_ result: Parsed,
+                                        _ job: (url: URL, src: Source, from: Int,
+                                                prompts: Int, project: String)) -> String {
+        if !result.project.isEmpty { return result.project }
+        if !job.project.isEmpty { return job.project }
+        switch job.src {
+        case .claude: return SessionForge.sessionCwd(transcriptPath: job.url.path) ?? ""
+        case .codex:  return CodexSession.rolloutCwd(job.url.path) ?? ""
+        }
     }
 
     // MARK: - Extraction

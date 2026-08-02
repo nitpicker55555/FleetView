@@ -24,7 +24,7 @@ enum SearchOpen {
         case notClaudeProject(String)
         case treeflowMissing
         case treeflow(String)
-        case noCwd
+        case noCwd(String)
 
         var errorDescription: String? {
             switch self {
@@ -35,7 +35,9 @@ enum SearchOpen {
                 return "打开 Codex 会话需要 treeflow：\n"
                      + "pip3 install 'git+https://github.com/nitpicker55555/Agent-Treeflow.git'"
             case .treeflow(let m): return "treeflow: \(m)"
-            case .noCwd: return "could not determine the session's working directory"
+            // Name the file: every remaining way to reach this is a property of one transcript
+            // (deleted, or never recorded a cwd anywhere), and without it the report is unactionable.
+            case .noCwd(let p): return "could not determine the session's working directory\n\(p)"
             }
         }
     }
@@ -73,20 +75,35 @@ enum SearchOpen {
             .nodes[anchor]?.nativeSessionId
         let fork = try SessionForge.fork(projectDir: projectDir, targetUuid: anchor,
                                          nativeSessionId: native)
-        // A fork duplicates an existing conversation, so indexing it would show every prompt
-        // twice. Registering it seeds the index's byte offset past the copied prefix — work done
-        // in the resumed session *after* this point is new, and is indexed normally.
+        // Where to open the terminal. Two things have to hold, and only one of them was checked:
+        //
+        // 1. There has to *be* an answer. The index records the cwd it saw, but an incremental pass
+        //    over pure tool traffic (Claude) or anything past line 0 (Codex) sees none — and that
+        //    emptiness used to be written over the folder already stored. So a missing index value
+        //    is normal, not a corruption, and the transcript is read directly instead.
+        // 2. It has to be the folder this file is *filed under*. `--resume <sid>` looks the session
+        //    up beneath the slug of the current directory, so a truthful-but-different cwd — the
+        //    subdirectory a subagent was started in, say — opens the fork on "No conversation
+        //    found" without ever mentioning the directory. Recorded cwds fail that test far more
+        //    often than they pass it, so the slug is decoded when they disagree.
+        let recorded = hit.project.isEmpty
+            ? SessionForge.sessionCwd(transcriptPath: hit.path)
+            : hit.project
+        let filedUnder = projectDir.lastPathComponent
+        let cwd = (recorded.map { SessionForge.slugify($0) == filedUnder } == true)
+            ? recorded!
+            : (SessionForge.projectCwd(projectDir: projectDir) ?? recorded ?? "")
+        guard !cwd.isEmpty else { throw OpenError.noCwd(hit.path) }
+        // A fork duplicates an existing conversation, so indexing it would show every prompt twice.
+        // Registering it seeds the index's byte offset past the copied prefix — work done in the
+        // resumed session *after* this point is new, and is indexed normally. Registered with the
+        // resolved `cwd` rather than `hit.project`: a fork inherits its parent's folder, and writing
+        // the empty string this hit may have carried would hand the same un-openable state to the
+        // next drag — which is how one un-openable hit used to breed more of them.
         if let written = fork.wroteFile {
             SearchIndex.excludeCopiedPrefix(path: written.path, src: .claude,
-                                            session: fork.sessionId, project: hit.project)
+                                            session: fork.sessionId, project: cwd)
         }
-        // The index recorded the cwd the session ran in; fall back to reading it off the
-        // transcript. `--resume` resolves against the *current* directory's project slug, so
-        // opening in the wrong directory yields "No conversation found".
-        let cwd = hit.project.isEmpty
-            ? (SessionForge.sessionCwd(transcriptPath: hit.path) ?? "")
-            : hit.project
-        guard !cwd.isEmpty else { throw OpenError.noCwd }
         let command = SessionForge.resumeCommand(sessionId: fork.sessionId,
                                                  inheritedFlags: inheritedFlags,
                                                  skipPermissions: true, cwd: cwd)
@@ -132,11 +149,17 @@ enum SearchOpen {
 
     private static func planCodex(_ hit: SearchIndex.Hit) throws -> Plan {
         guard let tool = treeflowPath() else { throw OpenError.treeflowMissing }
-        guard !hit.project.isEmpty else { throw OpenError.noCwd }
+        // A rollout's cwd is on its `session_meta` record — the very first line — so every
+        // incremental index pass after the first one starts past it and learns nothing. Reading the
+        // head here is the same fallback the Claude side gets from reading the tail, and without it
+        // a Codex hit in a session that was still being written when it was first indexed could
+        // never be opened at all.
+        let cwd = hit.project.isEmpty ? (CodexSession.rolloutCwd(hit.path) ?? "") : hit.project
+        guard !cwd.isEmpty else { throw OpenError.noCwd(hit.path) }
         // treeflow scopes Codex sessions by cwd and has no way to be told a session id directly,
         // so the project path is not optional here.
-        let out = try run(tool, ["-p", hit.project, "--codex", "resume", hit.node, "--json"],
-                          cwd: hit.project)
+        let out = try run(tool, ["-p", cwd, "--codex", "resume", hit.node, "--json"],
+                          cwd: cwd)
         guard let data = out.data(using: .utf8),
               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let command = obj["command"] as? String else {
@@ -148,11 +171,12 @@ enum SearchOpen {
         // Same reasoning as the Claude side: treeflow wrote a copy of the rollout, and it must not
         // come back as a second set of hits.
         if synthesized, let file = obj["file"] as? String {
-            SearchIndex.excludeCopiedPrefix(path: file, src: .codex,
-                                            session: sid, project: hit.project)
+            // `cwd`, not `hit.project`: registering the copy with the empty string this hit may have
+            // carried would hand the same un-openable state straight to the next drag.
+            SearchIndex.excludeCopiedPrefix(path: file, src: .codex, session: sid, project: cwd)
         }
-        return Plan(command: "cd \(shellQuote(hit.project)) && \(command)",
-                    cwd: hit.project, label: label(hit), synthesized: synthesized,
+        return Plan(command: "cd \(shellQuote(cwd)) && \(command)",
+                    cwd: cwd, label: label(hit), synthesized: synthesized,
                     detail: "codex node=\(hit.node) sid=\(sid.prefix(8)) chain=\(chain)")
     }
 

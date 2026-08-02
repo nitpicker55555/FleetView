@@ -201,9 +201,16 @@ final class AppState: ObservableObject {
             do {
                 let fork = try SessionForge.fork(projectDir: dir, targetUuid: nodeUuid,
                                                  nativeSessionId: nativeSid)
-                let sessionCwd = SessionForge.sessionCwd(
+                // The fork file was written into `dir`, so the terminal has to start somewhere whose
+                // project slug IS `dir` — `--resume` searches by the current directory's slug, and a
+                // recorded `cwd` is often a subdirectory the agent cd'd into, which lands under a
+                // different slug and answers "No conversation found".
+                let recorded = SessionForge.sessionCwd(
                     transcriptPath: dir.appendingPathComponent("\(fork.sessionId).jsonl").path)
                     ?? SessionForge.sessionCwd(transcriptPath: srcTranscript ?? "")
+                let sessionCwd = (recorded.map {
+                    SessionForge.slugify($0) == dir.lastPathComponent
+                } == true) ? recorded : (SessionForge.projectCwd(projectDir: dir) ?? recorded)
                 let cmd = SessionForge.resumeCommand(sessionId: fork.sessionId, inheritedFlags: flags,
                                                      skipPermissions: true,
                                                      cwd: sessionCwd == termCwd ? nil : sessionCwd)
