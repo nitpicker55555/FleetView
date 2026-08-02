@@ -5,6 +5,8 @@ Talks to FleetView's embedded HTTP API (the same one the web dashboard uses), so
 locally and over the network (e.g. Tailscale). Point it elsewhere with FLEETVIEW_URL, otherwise it
 auto-discovers the local server via ~/.fleetview/web-port.
 
+  project-manager peers                    find FleetView instances on this network
+  project-manager -u <URL> <cmd>           run any command against another instance
   project-manager ls [-m]                  list every terminal + live status (-m: only marked)
   project-manager watch [-n SEC] [-m]      live-refreshing list
   project-manager show <sel> [-l N]        one terminal: status + recent output (conversation)
@@ -21,7 +23,7 @@ auto-discovers the local server via ~/.fleetview/web-port.
 
 <sel> matches a terminal by name substring (case-insensitive) or id prefix.
 """
-import argparse, json, os, re, sys, time, urllib.parse, urllib.request
+import argparse, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 
 HOME = os.path.expanduser("~")
 
@@ -35,7 +37,7 @@ def base_url():
     except OSError:
         return "http://127.0.0.1:8080"
 
-BASE = base_url()
+BASE = base_url()          # rebound by --url before any command runs
 
 # Identify ourselves so the audit log attributes these calls to the CLI rather than to an
 # anonymous browser on the LAN.
@@ -119,6 +121,69 @@ def resolve(st, sel):
     sys.exit(2)
 
 # ---- commands ----
+def cmd_peers(a):
+    """Find the other FleetView instances on this network.
+
+    There is no announcement to listen for, so this probes: every address on the local /24, on the
+    ports FleetView picks from (8080 upward — it takes the next free one, so a machine that had a
+    port taken is not on 8080). Answering /state with the right shape is the identification; nothing
+    else on these ports would.
+    """
+    import concurrent.futures
+    import socket as _socket
+
+    def own_ips():
+        out = set()
+        for iface in ("en0", "en1", "en2"):
+            try:
+                ip = subprocess.run(["ipconfig", "getifaddr", iface],
+                                    capture_output=True, text=True, timeout=2).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if ip:
+                out.add(ip)
+        return out
+
+    mine = own_ips()
+    if not mine:
+        sys.exit("no IPv4 address on en0/en1/en2 — not on a network?")
+    prefixes = {ip.rsplit(".", 1)[0] for ip in mine}
+    ports = [int(p) for p in (a.ports or "8080,8081,8082").split(",")]
+
+    def probe(hostport):
+        host, port = hostport
+        try:
+            req = urllib.request.Request("http://%s:%d/state" % (host, port),
+                                         headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=a.timeout) as r:
+                d = json.loads(r.read().decode("utf-8", "replace"))
+            if not isinstance(d, dict) or "terminals" not in d or "projects" not in d:
+                return None
+            return (host, port, d)
+        except Exception:
+            return None
+
+    targets = [("%s.%d" % (pre, h), p) for pre in prefixes for h in range(1, 255) for p in ports]
+    found = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as ex:
+        for r in ex.map(probe, targets):
+            if r:
+                found.append(r)
+    if not found:
+        print("no FleetView instances found on %s.0/24" % ",".join(sorted(prefixes)))
+        return
+    found.sort(key=lambda r: (r[0], r[1]))
+    print("%-22s %-5s %-9s %s" % ("URL", "TERMS", "WORKING", "PROJECTS"))
+    for host, port, d in found:
+        terms = d.get("terminals", [])
+        working = sum(1 for t in terms if t.get("status") == "working")
+        projects = ", ".join(p.get("name", "") for p in d.get("projects", []))[:44]
+        self_mark = c("32", " ←self") if host in mine else ""
+        print("%-22s %-5d %-9d %s%s" % ("http://%s:%d" % (host, port), len(terms),
+                                        working, projects, self_mark))
+    print(c("90", "\nuse:  project-manager -u <URL> ls        (or FLEETVIEW_URL=<URL>)"))
+
+
 def cmd_ls(a):
     st = state()
     rows = st["terminals"]
@@ -297,7 +362,13 @@ def cmd_rm(a):
 
 def main():
     p = argparse.ArgumentParser(prog="project-manager", description="Control a running FleetView instance.")
+    p.add_argument("-u", "--url", help="target another FleetView (same as FLEETVIEW_URL)")
     sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("peers", help="find FleetView instances on this network")
+    s.add_argument("--ports", help="ports to probe (default 8080,8081,8082)")
+    s.add_argument("--timeout", type=float, default=0.6)
+    s.add_argument("--jobs", type=int, default=128)
+    s.set_defaults(fn=cmd_peers)
     s = sub.add_parser("ls", help="list terminals")
     s.add_argument("-m", "--marked", action="store_true", help="only terminals you marked")
     s.set_defaults(fn=cmd_ls)
@@ -317,6 +388,9 @@ def main():
     s = sub.add_parser("new"); s.add_argument("sel", help="project"); s.set_defaults(fn=cmd_new)
     s = sub.add_parser("rm"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
     a = p.parse_args()
+    if a.url:
+        global BASE
+        BASE = a.url.rstrip("/")
     a.fn(a)
 
 if __name__ == "__main__":
