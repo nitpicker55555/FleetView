@@ -17,9 +17,16 @@ final class UpdateCheck: ObservableObject {
         let version: String       // "0.2.0" — the tag with any leading v stripped
         let url: String           // the release page
         let notes: String
+        /// The .zip asset, when the release ships one. Without it there is nothing to install and
+        /// the offer is reduced to opening the page — which is what a source-only release deserves.
+        let assetURL: String?
     }
 
     @Published private(set) var available: Release?
+
+    /// Non-nil while a self-update is running ("下载中…"). Drives the pill, which is the only place
+    /// left to say anything once the alert has been dismissed.
+    @Published var status: String?
 
     /// What a check concluded. The pill can only ever say "there is a newer one", which is the right
     /// amount of noise for a check nobody asked for — but a menu item someone clicked has to answer
@@ -68,12 +75,15 @@ final class UpdateCheck: ObservableObject {
             let notes = (obj["body"] as? String) ?? ""
             let page = (obj["html_url"] as? String)
                 ?? "https://github.com/nitpicker55555/FleetView/releases"
+            let asset = (obj["assets"] as? [[String: Any]])?.first {
+                ($0["name"] as? String)?.hasSuffix(".zip") == true
+            }?["browser_download_url"] as? String
             Task { @MainActor in
                 guard let self else { return }
                 guard Self.isNewer(latest, than: Self.normalise(FV.shortVersion)) else {
                     then?(.current(FV.shortVersion)); return
                 }
-                let release = Release(version: latest, url: page, notes: notes)
+                let release = Release(version: latest, url: page, notes: notes, assetURL: asset)
                 // "Not this version" silences the pill, not a question you just asked by hand.
                 if force || latest != UserDefaults.standard.string(forKey: self.dismissedKey) {
                     self.available = release

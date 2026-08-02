@@ -439,9 +439,18 @@ struct TopBar: View {
     /// noticing, not worth interrupting a fleet of running agents for. Clicking opens the release
     /// page; the × means "not this version" and it will not come back until the next one.
     @ViewBuilder private var updateButton: some View {
-        if let r = state.updates.available {
+        if let s = state.updates.status {
+            // Mid-install: the alert is gone and this is the only place left to say so.
             HStack(spacing: 5) {
-                Button { state.updates.openReleasePage() } label: {
+                ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 10, height: 10)
+                Text(s).font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.onAccent)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(Theme.accent).clipShape(Capsule())
+        } else if let r = state.updates.available {
+            HStack(spacing: 5) {
+                // Same alert the menu item shows — one offer, not two that can drift apart.
+                Button { UpdateUI.present(.newer(r), updates: state.updates) } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.system(size: 11, weight: .semibold))
@@ -451,7 +460,7 @@ struct TopBar: View {
                     .padding(.horizontal, 9).padding(.vertical, 4)
                 }
                 .buttonStyle(.plain)
-                .help("FleetView \(r.version) 已发布 — 点击查看")
+                .help("FleetView \(r.version) 已发布 — 点击安装")
                 Button { state.updates.dismiss() } label: {
                     Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
                         .foregroundColor(Theme.onAccent.opacity(0.7))

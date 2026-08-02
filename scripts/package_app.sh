@@ -10,7 +10,7 @@ cd "$ROOT"
 # The version the bundle claims. "Check for Updates" compares the GitHub release tag against it and
 # every audit line carries it, so a build that lies about its version is a build whose logs lie too.
 # Override when cutting a release: FV_VERSION=0.2.0 ./scripts/package_app.sh --install
-VERSION="${FV_VERSION:-0.1.1}"
+VERSION="${FV_VERSION:-0.1.2}"
 # Commit count as the build number: monotonic, needs no bookkeeping, and tells two builds of the
 # same version apart — which is the normal case here, where installs run far ahead of releases.
 BUILD="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"

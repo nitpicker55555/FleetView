@@ -131,28 +131,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// answer to a question someone just asked is never "I checked recently".
     @objc private func checkForUpdates() {
         state.updates.check(force: true) { [weak self] outcome in
-            self?.report(outcome)
+            guard let self else { return }
+            UpdateUI.present(outcome, updates: self.state.updates)
         }
-    }
-
-    private func report(_ outcome: UpdateCheck.Outcome) {
-        let a = NSAlert()
-        switch outcome {
-        case .newer(let r):
-            a.messageText = "FleetView \(r.version) 已发布"
-            a.informativeText = "当前版本 \(FV.shortVersion)。"
-                + (r.notes.isEmpty ? "" : "\n\n" + String(r.notes.prefix(600)))
-            a.addButton(withTitle: "查看发布页")
-            a.addButton(withTitle: "以后再说")
-            if a.runModal() == .alertFirstButtonReturn { state.updates.openReleasePage() }
-            return
-        case .current(let v):
-            a.messageText = "已是最新版本"
-            a.informativeText = "FleetView \(v)。"
-        case .failed(let why):
-            a.messageText = "检查更新失败"
-            a.informativeText = why
-        }
-        a.runModal()
     }
 }
