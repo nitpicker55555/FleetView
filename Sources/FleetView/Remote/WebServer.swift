@@ -17,6 +17,7 @@ struct WebSnapshot: Codable {
         let canOpen: Bool         // is a live session attachable over the web right now?
         let done: Bool            // subtask marked done
         let idle: Int             // seconds since last real interaction, -1 if never
+        let running: Int          // seconds the current run has been going, -1 if it isn't running
         let cwd: String
         let transcript: String?   // agent conversation-history file (Claude/Codex), if a hook reported it
     }

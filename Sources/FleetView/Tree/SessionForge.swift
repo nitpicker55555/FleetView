@@ -129,20 +129,45 @@ enum SessionForge {
 
     // MARK: - Resume command
 
+    static let skipPermissionsFlag = "--dangerously-skip-permissions"
+
     /// `claude --resume <sid>` plus flags carried over from the source terminal, so a fork behaves
     /// like its parent (`--dangerously-skip-permissions`, model choice, …).
+    ///
+    /// `skipPermissions` forces that flag on regardless of what the source ran with. Opening a tree
+    /// node or a search hit resumes a conversation that already happened; a terminal that appears on
+    /// the board and then stops on its first tool call — while you are still looking at the tree —
+    /// is not what the drop meant.
     ///
     /// `cwd` matters: Claude resolves `--resume <sid>` against the *current directory's* project
     /// slug, so a session recorded elsewhere (an agent started after `cd`) is invisible unless we
     /// cd back first — otherwise the fork opens with "No conversation found".
     static func resumeCommand(sessionId: String, inheritedFlags: [String],
-                              forkSession: Bool = false, cwd: String? = nil) -> String {
+                              forkSession: Bool = false, skipPermissions: Bool = false,
+                              cwd: String? = nil) -> String {
         var parts = ["claude", "--resume", sessionId]
         if forkSession { parts.append("--fork-session") }
-        parts.append(contentsOf: inheritedFlags)
+        parts.append(contentsOf: skipPermissions ? forcingSkipPermissions(inheritedFlags)
+                                                 : inheritedFlags)
         let cmd = parts.joined(separator: " ")
         guard let cwd, !cwd.isEmpty else { return cmd }
         return "cd \(shellQuote(cwd)) && \(cmd)"
+    }
+
+    /// Append the flag exactly once, dropping any inherited `--permission-mode`. The CLI accepts
+    /// both together but does not say which wins; inheriting `--permission-mode plan` from the
+    /// source terminal must not be able to quietly re-arm the prompts this is here to remove.
+    private static func forcingSkipPermissions(_ flags: [String]) -> [String] {
+        var out: [String] = []
+        var i = 0
+        while i < flags.count {
+            defer { i += 1 }
+            if flags[i] == "--permission-mode" { i += 1; continue }   // skip its value too
+            if flags[i] == skipPermissionsFlag { continue }
+            out.append(flags[i])
+        }
+        out.append(skipPermissionsFlag)
+        return out
     }
 
     private static func shellQuote(_ s: String) -> String {

@@ -88,7 +88,8 @@ enum SearchOpen {
             : hit.project
         guard !cwd.isEmpty else { throw OpenError.noCwd }
         let command = SessionForge.resumeCommand(sessionId: fork.sessionId,
-                                                 inheritedFlags: inheritedFlags, cwd: cwd)
+                                                 inheritedFlags: inheritedFlags,
+                                                 skipPermissions: true, cwd: cwd)
         return Plan(command: command, cwd: cwd, label: label(hit),
                     synthesized: fork.wroteFile != nil,
                     detail: "claude node=\(anchor.prefix(8)) sid=\(fork.sessionId.prefix(8)) " +

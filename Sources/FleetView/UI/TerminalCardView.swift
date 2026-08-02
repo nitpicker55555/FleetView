@@ -136,7 +136,22 @@ struct TerminalCardView: View {
                     .background(Theme.markTint.opacity(0.18)).foregroundColor(Theme.markTint)
                     .clipShape(Capsule())
             }
-            if terminal.lastActivity != nil {
+            // While it runs, how long it has been running is the number you want; "last activity"
+            // then only ever says "just now" and costs the card a second chip to read past.
+            if terminal.status == .working, let since = terminal.runningSince {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    HStack(spacing: 3) {
+                        Image(systemName: "timer").font(.system(size: 9, weight: .bold))
+                        Text(RelativeTime.clock(since: since, now: ctx.date))
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    }
+                    .foregroundColor(Theme.statusColor(.working))
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Theme.statusColor(.working).opacity(0.14))
+                    .clipShape(Capsule())
+                    .help("Running for \(RelativeTime.clock(since: since, now: ctx.date))")
+                }
+            } else if terminal.lastActivity != nil {
                 TimelineView(.periodic(from: .now, by: 15)) { ctx in
                     Text(RelativeTime.short(terminal.lastActivity, now: ctx.date) ?? "")
                         .font(.system(size: 10))

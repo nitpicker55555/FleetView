@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct DashboardView: View {
     @EnvironmentObject var state: AppState
@@ -157,6 +158,36 @@ struct DashboardView: View {
         panel.message = "Pick a folder for this project — or make a new one."
         if panel.runModal() == .OK { for url in panel.urls { state.addProject(path: url.path) } }
     }
+
+    /// Make a folder and open it as a project. The open panel's own New Folder button does this too,
+    /// but only for people who know it is there — starting a project from nothing is common enough
+    /// to be worth a button of its own.
+    static func newFolder(into state: AppState) {
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldLabel = "Folder name:"
+        panel.nameFieldStringValue = "new-project"
+        panel.prompt = "Create"
+        panel.message = "Name the new project folder."
+        // Where this user's projects actually live; the panel falls back to its own last location
+        // when that folder is absent.
+        let projectsHome = FV.home.appendingPathComponent("PycharmProjects")
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: projectsHome.path, isDirectory: &isDir), isDir.boolValue {
+            panel.directoryURL = projectsHome
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            // `withIntermediateDirectories: true` also means "already exists is fine". The save
+            // panel offers to replace an existing name, and that must never become deleting a
+            // directory someone already has work in — it is opened as-is instead.
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            state.addProject(path: url.path)
+        } catch {
+            FV.log("new folder failed: \(url.path): \(error.localizedDescription)")
+            NSAlert(error: error).runModal()
+        }
+    }
 }
 
 // MARK: - Sidebar
@@ -196,10 +227,20 @@ struct Sidebar: View {
             if state.tasksCollapsed && state.notesCollapsed { Spacer(minLength: 0) }
 
             Divider().overlay(Theme.stroke)
+            // Three buttons share the sidebar's width, so the labels are one word each — at the
+            // default 236pt "Open Folder" and "New Folder" side by side would both truncate.
             HStack(spacing: 0) {
-                footerButton("Open Folder", "folder.badge.plus") { DashboardView.pickFolder(into: state) }
+                footerButton("Open", "folder", help: "Open an existing folder as a project") {
+                    DashboardView.pickFolder(into: state)
+                }
                 Divider().frame(height: 20).overlay(Theme.stroke)
-                footerButton("Clone", "arrow.down.circle") { showingClone = true }
+                footerButton("New", "folder.badge.plus", help: "Create a new folder and open it as a project") {
+                    DashboardView.newFolder(into: state)
+                }
+                Divider().frame(height: 20).overlay(Theme.stroke)
+                footerButton("Clone", "arrow.down.circle", help: "Clone a GitHub repository") {
+                    showingClone = true
+                }
             }
         }
         .background(Theme.panel)
@@ -247,17 +288,20 @@ struct Sidebar: View {
         .padding(.horizontal, 16).padding(.vertical, 9)
     }
 
-    private func footerButton(_ title: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
+    private func footerButton(_ title: String, _ icon: String, help: String,
+                              _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 7) {
                 Image(systemName: icon).font(.system(size: 12)).foregroundColor(Theme.accent)
                 Text(title).font(.system(size: 13, weight: .medium)).foregroundColor(Theme.text)
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(help)
     }
 }
 
@@ -546,6 +590,7 @@ struct ProjectSection: View {
     private var lastTokenTime: Date? { state.projectLastTokenTime(project.id) }
     @State private var showChart = true
     @State private var copied = false
+    @State private var gripHot = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -565,10 +610,23 @@ struct ProjectSection: View {
                 }
             }
         }
+        // The whole section is the drop target, not just its header: while you drag a project past
+        // one with six cards open, the header is the smallest part of it you could be aiming at.
+        .onDrop(of: [.text], delegate: ProjectReorderDrop(target: project.id, state: state))
     }
 
     private var header: some View {
         HStack(spacing: 9) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.subtext.opacity(gripHot ? 0.95 : 0.35))
+                .onHover { gripHot = $0 }
+                .help("Drag to reorder projects")
+                .onDrag {
+                    // AppKit calls this on the main thread; the closure is simply not typed for it.
+                    MainActor.assumeIsolated { state.draggingProjectId = project.id }
+                    return NSItemProvider(object: project.id.uuidString as NSString)
+                }
             Image(systemName: "folder.fill").font(.system(size: 12)).foregroundColor(Theme.accent.opacity(0.9))
             Text(project.name).font(.system(size: 15, weight: .semibold)).foregroundColor(Theme.text)
                 .onTapGesture(count: 2) { state.openInFinder(project.id) }
@@ -665,6 +723,40 @@ struct ProjectSection: View {
                 .foregroundColor(Theme.stroke))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Drag-to-reorder for the board's project sections.
+///
+/// The move happens on `dropEntered` — the board rearranges live under the cursor — rather than on
+/// release. A section is as tall as the terminals it holds, so an insertion line drawn at its edge
+/// would frequently be scrolled out of view; seeing the sections themselves swap is the feedback.
+///
+/// SwiftUI hands these callbacks to a plain (nonisolated) struct even though it only ever calls
+/// them on the main thread, hence `assumeIsolated` rather than a hop, which would reorder after
+/// the drag has already moved on.
+struct ProjectReorderDrop: DropDelegate {
+    let target: UUID
+    let state: AppState
+
+    /// Only our own drags reorder: without the id check, any text dragged in from another app
+    /// would shuffle the board.
+    func validateDrop(info: DropInfo) -> Bool {
+        MainActor.assumeIsolated { state.draggingProjectId != nil }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func dropEntered(info: DropInfo) {
+        MainActor.assumeIsolated {
+            guard let dragged = state.draggingProjectId else { return }
+            withAnimation(.easeInOut(duration: 0.18)) { state.moveProject(dragged, onto: target) }
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        MainActor.assumeIsolated { state.draggingProjectId = nil }
+        return true      // the order was already committed (and saved) on the way in
     }
 }
 

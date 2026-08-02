@@ -205,6 +205,7 @@ final class AppState: ObservableObject {
                     transcriptPath: dir.appendingPathComponent("\(fork.sessionId).jsonl").path)
                     ?? SessionForge.sessionCwd(transcriptPath: srcTranscript ?? "")
                 let cmd = SessionForge.resumeCommand(sessionId: fork.sessionId, inheritedFlags: flags,
+                                                     skipPermissions: true,
                                                      cwd: sessionCwd == termCwd ? nil : sessionCwd)
                 Task { @MainActor in
                     guard let self else { return }
@@ -281,7 +282,7 @@ final class AppState: ObservableObject {
             guard let path = transcriptPath(for: t.id),
                   let working = CodexSession.isWorking(rollout: path) else { continue }
             let next: TermStatus = working ? .working : .idle
-            if terminals[i].status != next { terminals[i].status = next }
+            if terminals[i].status != next { enterStatus(next, at: i) }
         }
     }
 
@@ -328,6 +329,7 @@ final class AppState: ObservableObject {
         terminals = p.terminals.map { row in
             var t = row
             t.status = .closed        // live processes are gone after a relaunch
+            t.runningSince = nil      // …so any run clock stored with them is meaningless now
             t.sessionId = nil
             return t                   // keep transcriptPath so we can rebuild the token curve
         }
@@ -346,7 +348,7 @@ final class AppState: ObservableObject {
         FV.ensureSupportDir()
         let snapshot = terminals.map { t -> TerminalSession in
             var c = t
-            if controllers[t.id] == nil { c.status = .closed }
+            if controllers[t.id] == nil { c.status = .closed; c.runningSince = nil }
             return c
         }
         let p = Persisted(projects: projects, terminals: snapshot,
@@ -373,6 +375,23 @@ final class AppState: ObservableObject {
     }
 
     func project(_ id: UUID?) -> Project? { projects.first { $0.id == id } }
+
+    /// The project whose section is currently being dragged on the board (nil when none is).
+    /// A system drag has no "cancelled" callback, so a stranded value has to stay harmless: it is
+    /// only ever read together with a live drop, and the next drag overwrites it.
+    @Published var draggingProjectId: UUID?
+
+    /// Reorder the board: put `id` where `target` sits now. `projects` is the only ordering there
+    /// is — the board sections and the sidebar's task groups both iterate it — so this moves both.
+    /// Runs mid-drag (the board rearranges under the cursor), hence idempotent on repeat hovers.
+    func moveProject(_ id: UUID, onto target: UUID) {
+        guard id != target,
+              let from = projects.firstIndex(where: { $0.id == id }),
+              let to = projects.firstIndex(where: { $0.id == target }) else { return }
+        let p = projects.remove(at: from)
+        projects.insert(p, at: to)
+        save()
+    }
 
     func removeProject(_ id: UUID) {
         for t in terminals.filter({ $0.projectId == id }) { removeTerminal(t.id) }
@@ -408,7 +427,7 @@ final class AppState: ObservableObject {
     func reopenTerminal(_ id: UUID) {
         if controllers[id] != nil { raiseTerminal(id); return }
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
-        terminals[idx].status = .shell
+        enterStatus(.shell, at: idx)
         openWindow(for: terminals[idx])
         save()
     }
@@ -428,7 +447,7 @@ final class AppState: ObservableObject {
             if let i = terminals.firstIndex(where: { $0.id == t.id }) {
                 // A reconnected agent is most likely idle (waiting); a plain shell shows as shell.
                 // Live hook events refine this within a turn.
-                terminals[i].status = t.agentKind != .unknown ? .idle : .shell
+                enterStatus(t.agentKind != .unknown ? .idle : .shell, at: i)
             }
             reattached += 1
         }
@@ -758,6 +777,25 @@ final class AppState: ObservableObject {
 
     func setStatus(_ id: UUID, _ s: TermStatus) {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        enterStatus(s, at: idx)
+    }
+
+    /// The one place a terminal's status changes, so the run clock cannot drift from it.
+    ///
+    /// The clock belongs to the *turn*, not to the status. It starts when work starts, survives a
+    /// permission prompt in the middle of that work — approving must not restart the count at zero —
+    /// and only stops when the turn does. The transition is what matters, not the assignment:
+    /// `PreToolUse`/`PostToolUse` restate `working` many times per turn, and restarting on each
+    /// would report the age of the last tool call instead of the run.
+    func enterStatus(_ s: TermStatus, at idx: Int) {
+        switch s {
+        case .working:
+            if terminals[idx].runningSince == nil { terminals[idx].runningSince = Date() }
+        case .needsYou:
+            break                                   // same turn, waiting on you — keep counting
+        case .idle, .shell, .closed, .exited:
+            terminals[idx].runningSince = nil
+        }
         terminals[idx].status = s
     }
 
@@ -767,7 +805,7 @@ final class AppState: ObservableObject {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
         terminals[idx].lastActivity = Date()   // pressing Esc is a real interaction
         guard terminals[idx].status == .working else { return }
-        terminals[idx].status = .idle
+        enterStatus(.idle, at: idx)
         save()
     }
 
@@ -796,6 +834,9 @@ final class AppState: ObservableObject {
 
         switch ev.event {
         case "UserPromptSubmit":
+            // A new prompt is a new run even if the card never left `working` (a queued follow-up),
+            // so this one restarts the clock rather than going through `enterStatus`'s transition.
+            terminals[idx].runningSince = Date()
             terminals[idx].status = .working
             if let p = ev.prompt {
                 let oneLine = p.replacingOccurrences(of: "\n", with: " ")
@@ -805,27 +846,27 @@ final class AppState: ObservableObject {
         case "PreToolUse", "PostToolUse":
             // A tool is starting/finishing → the agent is actively working. Crucially this clears a
             // prior "needs you" the moment the user approves a permission prompt (Claude & Codex).
-            if terminals[idx].status != .working { terminals[idx].status = .working }
+            if terminals[idx].status != .working { enterStatus(.working, at: idx) }
         case "PermissionRequest":
             // Codex fires this before an approval prompt (Claude uses "Notification", handled below).
-            terminals[idx].status = .needsYou
+            enterStatus(.needsYou, at: idx)
         case "Stop":
-            terminals[idx].status = .idle
+            enterStatus(.idle, at: idx)
         case "Notification":
             // The Notification hook fires for BOTH permission requests and idle "waiting for input".
             // Only a permission/approval request is a genuine "needs you"; idle just means returned.
             let msg = (ev.message ?? "").lowercased()
             if msg.contains("permission") || msg.contains("approve") || msg.contains("approval") || msg.contains("confirm") {
-                terminals[idx].status = .needsYou
+                enterStatus(.needsYou, at: idx)
             } else if msg.contains("waiting") || msg.contains("finished") || msg.contains("idle") {
-                terminals[idx].status = .idle   // explicit idle signal clears a stuck "working" (e.g. after an interrupt)
+                enterStatus(.idle, at: idx)   // explicit idle signal clears a stuck "working" (e.g. after an interrupt)
             } else if terminals[idx].status != .working {
-                terminals[idx].status = .idle
+                enterStatus(.idle, at: idx)
             }
         case "SessionStart":
             // A Claude session is now active → leave "shell", show as an agent terminal.
             if terminals[idx].status != .working && terminals[idx].status != .needsYou {
-                terminals[idx].status = .idle
+                enterStatus(.idle, at: idx)
             }
             if ev.source == "startup" {
                 terminals[idx].lastPrompt = ""                    // brand-new session, no prompt yet
@@ -837,7 +878,7 @@ final class AppState: ObservableObject {
             // `claude` still reports itself so the *act of starting an agent* is audited, but it must
             // not drag the card back to "shell" — its own hooks own the status from here.
             guard !ev.quiet else { break }
-            terminals[idx].status = .shell
+            enterStatus(.shell, at: idx)
             if let c = ev.command, !c.isEmpty {
                 terminals[idx].lastPrompt = c
                 if c.hasPrefix("codex") { terminals[idx].agentKind = .codex }
@@ -1220,6 +1261,11 @@ final class AppState: ObservableObject {
                              canOpen: live.contains(RemoteServer.sessionName(for: t.id)),  // authoritative: only if THIS instance has the session
                              done: t.subtaskDone,
                              idle: t.lastActivity.map { max(0, Int(Date().timeIntervalSince($0))) } ?? -1,
+                             // Elapsed seconds, not a timestamp: the phone's clock is its own, and a
+                             // start time sent across would be read against it.
+                             running: t.status == .working
+                                 ? (t.runningSince.map { max(0, Int(Date().timeIntervalSince($0))) } ?? -1)
+                                 : -1,
                              cwd: t.cwd,
                              transcript: t.transcriptPath)
         }
@@ -1269,7 +1315,7 @@ final class AppState: ObservableObject {
     private func handleWindowClosed(_ id: UUID) {
         controllers[id] = nil
         if let idx = terminals.firstIndex(where: { $0.id == id }), terminals[idx].status != .exited {
-            terminals[idx].status = .closed
+            enterStatus(.closed, at: idx)
         }
         save()
     }

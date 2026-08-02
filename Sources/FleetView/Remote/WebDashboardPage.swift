@@ -145,6 +145,8 @@ enum WebDashboardPage {
   .prompt .sig{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;flex:none}
   .prompt .txt{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
   .ago{font-size:10px;color:var(--sub);opacity:.75;text-align:right;margin-top:-3px}
+  /* tabular-nums so a ticking clock doesn't shuffle the card's right edge every second */
+  .run{color:var(--green);font-weight:600;font-variant-numeric:tabular-nums}
   .cluster{border:1px solid var(--accentEdge);background:var(--accentFaint);border-radius:14px;padding:12px;margin-bottom:12px}
   .cluster .clabel{font-size:9px;font-weight:700;color:var(--accent);background:var(--accentSoft);padding:2px 6px;border-radius:999px;margin-right:6px}
   .cluster .chead{display:flex;align-items:center;margin-bottom:10px}
@@ -610,6 +612,33 @@ function showCached(c){
   renderChat(c.messages,c.note);
   renderInfo(curInfo);
 }
+/* Where the board was when you opened a terminal, so closing one puts you back there instead of at
+   the top of the list — on a phone, three projects up.
+   The offset has to be taken *before* the lock: `body.locked` is `position:fixed`, which collapses
+   the document's scroll to 0 the moment it applies. Parking the locked body at -offset is what
+   makes the board behind a swipe-back the part you were reading rather than the top of the page. */
+let boardY=0;
+function lockBoard(){
+  // Only the first lock records: openTerm can run again with the overlay already up, and the
+  // reading then would be the fixed body's 0.
+  if(!document.body.classList.contains('locked')) boardY=window.scrollY||document.documentElement.scrollTop||0;
+  document.body.style.top=(-boardY)+'px';
+  document.body.classList.add('locked');
+}
+/* The offset alone is not enough to be right: the board can rebuild while you are away — a terminal
+   removed, a cluster formed, a card grown a second line — and then the number points at something
+   else. So the card you came out of has the last word. It is not "restore a scroll position", it is
+   "keep looking at that terminal"; the offset is just the cheapest way to hold still when nothing
+   moved, and scrolling is only forced when the card would otherwise be off screen. */
+function unlockBoard(id){
+  document.body.classList.remove('locked');
+  document.body.style.top='';
+  window.scrollTo(0,boardY);
+  const card=id?document.querySelector('.card[data-id="'+id+'"]'):null;
+  if(!card) return;
+  const r=card.getBoundingClientRect();
+  if(r.top<8||r.bottom>window.innerHeight-8) card.scrollIntoView({block:'center'});
+}
 function openTerm(id,name){
   curId=id;curUrl='';termLoaded=false;chatFails=0;
   const cached=cacheGet(id);
@@ -617,7 +646,7 @@ function openTerm(id,name){
   document.getElementById('termname').textContent=name;
   document.getElementById('termframe').src='about:blank';
   document.getElementById('term').classList.add('show');
-  document.body.classList.add('locked');   // stop the page scrolling behind the overlay
+  lockBoard();                              // stop the page scrolling behind the overlay
   syncViewport();
   requestAnimationFrame(syncViewport);     // re-measure once the lock has taken effect
   renderPresets();          // latest Notes as quick-commands
@@ -681,8 +710,7 @@ function openTerm(id,name){
 function closeTerm(){
   document.getElementById('stickyq').classList.remove('on');
   document.getElementById('term').classList.remove('show');
-  document.body.classList.remove('locked');
-  window.scrollTo(0,0);
+  unlockBoard(curId);                      // back to the card you came from, not to the top
   syncViewport();                          // drop the keyboard-era height/offset
   document.getElementById('termframe').src='about:blank';
   curId='';termLoaded=false;stopChatPoll();
@@ -827,9 +855,12 @@ for(const id of ['inputtext','pfind']){
     syncViewport(); setTimeout(syncViewport,60); setTimeout(syncViewport,400);
   });
   el.addEventListener('focus',()=>{ lastBand=''; });
-  /* Belt and braces: if the document itself got scrolled while a field had focus, put it back. */
+  /* Belt and braces: if the document itself got scrolled while a field had focus, put it back.
+     Only while the overlay is up — this fires on the way out too (tapping ‹ blurs the composer
+     first), and out there the document's offset is the board's place in the list, not a stray
+     keyboard scroll to undo. */
   el.addEventListener('blur',()=>{
-    window.scrollTo(0,0);
+    if(termOpen()) window.scrollTo(0,0);
     setTimeout(syncViewport,50);
   });
 }
@@ -1554,9 +1585,41 @@ function card(t){
       <span class="status" style="color:${COLORS[t.status]||COLORS.closed}">${esc(t.statusLabel)}${tok}</span>
     </div>
     <div class="prompt"><span class="sig">${sig}</span><span class="txt">${t.prompt?esc(t.prompt):'—'}</span></div>
-    ${t.idle>=0?`<div class="ago">${ago(t.idle)}</div>`:''}
+    ${t.running>=0?`<div class="ago"><span class="run" data-run="${t.id}"></span></div>`
+                  :(t.idle>=0?`<div class="ago">${ago(t.idle)}</div>`:'')}
   </div>`;
 }
+/* How long the current run has been going. The number is deliberately NOT in the markup above: the
+   board is only rebuilt when its HTML differs, and a clock baked into it would differ every second
+   — rebuilding the whole board under your finger for one digit (which is the stall the rebuild
+   guard exists to avoid). The Mac sends elapsed seconds, not a start time, because the phone's
+   clock is its own; this turns that into a local anchor and then only ever writes text nodes. */
+const runStart={};
+function clockText(ms){
+  const s=Math.max(0,Math.floor(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=s%60;
+  const p=n=>String(n).padStart(2,'0');
+  return h>0?h+':'+p(m)+':'+p(sec):m+':'+p(sec);
+}
+function syncRuns(terms){
+  const live={};
+  for(const t of terms){
+    if(t.running<0) continue;
+    live[t.id]=1;
+    const st=Date.now()-t.running*1000;
+    // Re-anchor only on a real disagreement: each poll's value is a fraction of a second staler
+    // than the last, and following that exactly makes the seconds digit stutter.
+    if(!runStart[t.id]||Math.abs(runStart[t.id]-st)>2000) runStart[t.id]=st;
+  }
+  for(const id in runStart){ if(!live[id]) delete runStart[id]; }
+  paintRuns();
+}
+function paintRuns(){
+  for(const el of document.querySelectorAll('.run')){
+    const st=runStart[el.dataset.run];
+    el.textContent=st?('⏱ '+clockText(Date.now()-st)):'';
+  }
+}
+setInterval(paintRuns,1000);
 function render(s){
   const cnt=document.getElementById('counts');
   const cntText=`${s.projects.length} project${s.projects.length===1?'':'s'} · ${s.terminals.length} terminal${s.terminals.length===1?'':'s'}`;
@@ -1589,6 +1652,7 @@ function render(s){
   const out=html||'<div class="empty">No projects yet. Add one on the Mac.</div>';
   const root=document.getElementById('root');
   if(out!==lastBoard){ lastBoard=out; root.innerHTML=out; }
+  syncRuns(s.terminals);   // after any rebuild, so fresh chips are filled in the same frame
 }
 let lastBoard='';
 

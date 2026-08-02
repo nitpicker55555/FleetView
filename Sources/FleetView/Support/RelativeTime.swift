@@ -9,6 +9,18 @@ enum RelativeTime {
         return short(seconds: Int(now.timeIntervalSince(date)))
     }
 
+    /// A stopwatch for a run in progress: "0:42", "12:07", "1:03:19". Exact, and seconds-resolution,
+    /// unlike `short` — this one is watched while it ticks, not glanced at.
+    static func clock(seconds: Int) -> String {
+        let s = max(0, seconds)
+        let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60)
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, sec) : String(format: "%d:%02d", m, sec)
+    }
+
+    static func clock(since date: Date, now: Date = Date()) -> String {
+        clock(seconds: Int(now.timeIntervalSince(date)))
+    }
+
     /// Format an elapsed-seconds count (negative ⇒ nil, "never interacted").
     static func short(seconds: Int) -> String? {
         guard seconds >= 0 else { return nil }

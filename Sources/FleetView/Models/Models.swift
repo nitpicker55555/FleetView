@@ -75,6 +75,13 @@ struct TerminalSession: Identifiable, Codable, Hashable {
     /// interrupt, or remote keystroke. NOT bumped by merely opening/raising the window. Persisted so
     /// "3m ago" survives a relaunch. `nil` until the first interaction.
     var lastActivity: Date? = nil
+
+    /// When the current run started — what the card counts up from while the agent is working.
+    /// Only ever set/cleared by `AppState.enterStatus`, which is the single door every status change
+    /// goes through: a stray `status = .working` elsewhere is a stopwatch that never starts, and a
+    /// stray `status = .idle` is one that never stops. Not restored on launch (see `load`), because
+    /// a run that outlived FleetView is not one this clock can honestly measure.
+    var runningSince: Date? = nil
 }
 
 struct Cluster: Identifiable, Codable, Hashable {
