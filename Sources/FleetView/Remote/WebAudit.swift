@@ -267,8 +267,17 @@ final class WebAudit: @unchecked Sendable {
             return event("fleetview.web.ask", "asked\(named) a side question", data,
                          categories: ["session"])
 
+        case "/read":
+            // The one endpoint that hands a project's own source out over the network. What was read
+            // is not recoverable from anything else, so it is recorded here or nowhere.
+            return event("fleetview.web.file_read", "read \(query["path"] ?? "?")",
+                         AuditValue.compact(["path": query["path"].map { .string($0) },
+                                             "download": .bool(query["dl"] == "1")]))
+
         default:
-            // Endpoints that mutate state (/action, /new, /note) are covered by the diff.
+            // Endpoints that mutate state (/action, /new, /note) are covered by the diff. Directory
+            // listings (/browse) are left to the per-session request rollup: one is emitted per tap
+            // while walking a tree, and the file that was actually opened is the fact worth keeping.
             return nil
         }
     }

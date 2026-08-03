@@ -42,8 +42,9 @@ struct WebSnapshot: Codable {
 }
 
 /// A tiny, dependency-free HTTP/1.1 server (Network.framework) that serves the web dashboard.
-/// One page + two JSON endpoints; every request is answered once and the connection is closed.
-/// All app state is read on the main actor via `AppState.webResponse`.
+/// One page plus a handful of JSON endpoints; every request is answered once and the connection is
+/// closed. All app state is read on the main actor via `AppState.webResponse`; the handlers kept
+/// here are the ones whose work is file I/O rather than state, so they stay off it.
 final class WebServer {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "ai.eigent.fleetview.web")
@@ -133,6 +134,8 @@ final class WebServer {
         }
         if path == "/files" { handleFileList(conn, params, scope); return }
         if path == "/file" { handleFileGet(conn, params, scope); return }
+        if path == "/browse" { handleBrowse(conn, params, scope); return }
+        if path == "/read" { handleRead(conn, params, scope); return }
 
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
@@ -298,6 +301,161 @@ final class WebServer {
         let inline = type != nil && query["dl"] != "1"
         answer("200 OK", type ?? "application/octet-stream", body,
                disposition: "\(inline ? "inline" : "attachment"); filename=\"\(Self.headerSafe(name))\"")
+    }
+
+    // MARK: - Project file browser
+
+    /// The project directories a browse request may look inside. Read where app state lives and
+    /// handed back on the server's own queue: everything that follows is file I/O, and the main
+    /// actor is busy drawing the desktop window.
+    private func projectRoots(_ conn: NWConnection, _ work: @escaping ([String]) -> Void) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data())
+                return
+            }
+            let roots = MainActor.assumeIsolated { app.projects.map(\.path) }
+            self.queue.async { work(roots) }
+        }
+    }
+
+    /// Resolve a requested path and confine it to one of the project directories, returning it with
+    /// the root it belongs to — which is where "go up" has to stop.
+    ///
+    /// The page only ever asks for paths it was given by `/state`, but a query parameter is the
+    /// client's to write, so the check is made here rather than assumed. Symlinks are resolved on
+    /// both sides first: a link inside a project is otherwise a door straight out of it, and a plain
+    /// prefix test walks through it without noticing.
+    static func confine(_ raw: String, roots: [String]) -> (url: URL, root: URL)? {
+        guard !raw.isEmpty else { return nil }
+        let target = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        for root in roots where !root.isEmpty {
+            let base = URL(fileURLWithPath: (root as NSString).expandingTildeInPath)
+                .standardizedFileURL.resolvingSymlinksInPath()
+            if target.path == base.path || target.path.hasPrefix(base.path + "/") { return (target, base) }
+        }
+        return nil
+    }
+
+    /// GET /browse?path=<dir> — one directory listing, so a project can be walked from the phone.
+    private func handleBrowse(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        projectRoots(conn) { [weak self] roots in
+            guard let self else { return }
+            func answer(_ status: String, _ data: Data) {
+                WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query)
+                self.send(conn, status: status, type: "application/json", body: data,
+                          setCookie: scope.setCookie)
+            }
+            guard let raw = query["path"], let target = Self.confine(raw, roots: roots) else {
+                answer("403 Forbidden", Data(#"{"error":"that path is not inside a project"}"#.utf8)); return
+            }
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: target.url.path, isDirectory: &isDir),
+                  isDir.boolValue else {
+                answer("404 Not Found", Data(#"{"error":"no such directory"}"#.utf8)); return
+            }
+            answer("200 OK", Self.listing(target.url, root: target.root))
+        }
+    }
+
+    /// One directory as JSON: directories first, then files, each with what the row shows.
+    ///
+    /// Capped, because a project contains `node_modules` and a phone does not want ninety thousand
+    /// rows — and the cap is reported rather than silently applied, so a short list can be trusted
+    /// to be the whole list. The names are sorted before the cap so which 3000 you get is stable.
+    static func listing(_ dir: URL, root: URL) -> Data {
+        struct Row { let name: String; let dir: Bool; let size: Int; let mtime: Int }
+        let all = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        let capped = all.prefix(3000)
+        var rows: [Row] = []
+        for name in capped {
+            let u = dir.appendingPathComponent(name)
+            let v = try? u.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey,
+                                                    .contentModificationDateKey])
+            rows.append(Row(name: name, dir: v?.isDirectory ?? false, size: v?.fileSize ?? 0,
+                            mtime: Int(v?.contentModificationDate?.timeIntervalSince1970 ?? 0)))
+        }
+        // Two passes rather than one sort: Swift's sort is not stable, and a `dir` comparison alone
+        // would shuffle the name order inside each half.
+        let ordered = rows.filter(\.dir) + rows.filter { !$0.dir }
+        let payload: [String: Any] = [
+            "path": dir.path,
+            "root": root.path,
+            "parent": dir.path == root.path ? "" : dir.deletingLastPathComponent().path,
+            "truncated": all.count > capped.count,
+            "entries": ordered.map { ["name": $0.name, "dir": $0.dir, "size": $0.size, "mtime": $0.mtime] },
+        ]
+        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+    }
+
+    /// GET /read?path=<file> — the bytes of one file inside a project.
+    ///
+    /// Source is what this is for, so anything without a binary type of its own comes back as UTF-8
+    /// text. Images and PDFs keep their own type and the page just shows them; a file that turns out
+    /// to be binary is refused with its size, and `?dl=1` fetches it as a download instead.
+    private func handleRead(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        projectRoots(conn) { [weak self] roots in
+            guard let self else { return }
+            func answer(_ status: String, _ type: String, _ data: Data, disposition: String? = nil) {
+                WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query)
+                self.send(conn, status: status, type: type, body: data, setCookie: scope.setCookie,
+                          disposition: disposition)
+            }
+            guard let raw = query["path"], let target = Self.confine(raw, roots: roots) else {
+                answer("403 Forbidden", "text/plain; charset=utf-8",
+                       Data("that path is not inside a project".utf8)); return
+            }
+            let url = target.url
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
+                answer("404 Not Found", "text/plain; charset=utf-8", Data("no such file".utf8)); return
+            }
+            let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
+            let type = Self.mimeType(forExtension: url.pathExtension)
+            let binary = type != nil && !(type!.hasPrefix("text/") || type! == "application/json")
+
+            if binary || query["dl"] == "1" {
+                guard size <= Self.maxBody else {
+                    answer("413 Payload Too Large", "text/plain; charset=utf-8",
+                           Data("\(size / 1_048_576) MB is too large to send".utf8)); return
+                }
+                guard let body = try? Data(contentsOf: url) else {
+                    answer("500 Internal Server Error", "text/plain; charset=utf-8",
+                           Data("could not read it".utf8)); return
+                }
+                let inline = query["dl"] != "1" && type != nil
+                answer("200 OK", type ?? "application/octet-stream", body,
+                       disposition: "\(inline ? "inline" : "attachment")"
+                                  + "; filename=\"\(Self.headerSafe(url.lastPathComponent))\"")
+                return
+            }
+
+            // A prefix, not the file: a 200 MB log opened by accident should cost one read of half a
+            // megabyte, not the whole thing in memory on its way to a phone.
+            let limit = 512 * 1024
+            let head = Self.head(url, limit: limit)
+            // A NUL in the first few KB is what tells a `.dat` or an extensionless binary apart from
+            // source — serving it as text paints a screenful of replacement characters instead.
+            if head.prefix(4096).contains(0) {
+                answer("415 Unsupported Media Type", "text/plain; charset=utf-8",
+                       Data("binary file (\(size) bytes) — download it to open".utf8)); return
+            }
+            var text = String(decoding: head, as: UTF8.self)
+            if size > limit {
+                text += "\n\n… truncated at \(limit / 1024) KB of \(size / 1024) KB"
+                     + " — open it on the Mac for the rest\n"
+            }
+            answer("200 OK", "text/plain; charset=utf-8", Data(text.utf8))
+        }
+    }
+
+    /// The first `limit` bytes of a file (empty if it can't be opened).
+    static func head(_ url: URL, limit: Int) -> Data {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return Data() }
+        defer { try? fh.close() }
+        return (try? fh.read(upToCount: limit)) ?? Data()
     }
 
     /// A filename that cannot break out of a header value — quotes and newlines would end the

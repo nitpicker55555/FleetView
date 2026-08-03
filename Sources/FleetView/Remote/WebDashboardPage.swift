@@ -2,9 +2,10 @@ import Foundation
 
 /// The single self-contained HTML page served at `/`. It polls `/state` for live data, renders the
 /// same projects/terminals/status the desktop shows, lets you drag a card onto an action zone
-/// (done / duplicate / rename / leave / remove), add terminals, and open one full-screen in an
-/// iframe (ttyd). A native input bar sends text via tmux `send-keys` so CJK/IME input works where
-/// xterm.js falls short. No external assets — everything is inline so it works offline on the LAN.
+/// (done / duplicate / rename / leave / remove), add terminals, open one full-screen in an iframe
+/// (ttyd), and walk a project's own directory (`/browse`, `/read`). A native input bar sends text via
+/// tmux `send-keys` so CJK/IME input works where xterm.js falls short; it pulls up into a full editor
+/// when a prompt deserves one. No external assets — everything is inline so it works offline on the LAN.
 enum WebDashboardPage {
     // A raw string (#"""…"""#) so the inline JS can use backslashes (regex, "\n") verbatim.
     static let html = #"""
@@ -433,6 +434,46 @@ enum WebDashboardPage {
     padding:10px 12px;font-size:16px;line-height:1;cursor:pointer}
   #imgbtn:active{background:var(--accent);color:var(--onAccent)}
   #imgbtn[disabled]{opacity:.5}
+  /* The composer can be pulled up into a proper editor. Writing anything longer than a sentence
+     through a three-line slot means never seeing what you wrote, which is the whole reason the
+     phone loses to the Mac for a considered prompt. */
+  #grip{position:relative;height:16px;display:flex;align-items:center;justify-content:center;
+    margin-bottom:2px;cursor:ns-resize;touch-action:none}
+  #grip .gbar{width:46px;height:4px;border-radius:999px;background:var(--stroke)}
+  #grip .gtools{position:absolute;right:0;top:-1px;display:flex;gap:5px}
+  #grip .gtools button{background:var(--card);color:var(--sub);border:1px solid var(--stroke);
+    border-radius:6px;font-size:11px;font-weight:700;line-height:1;padding:3px 7px;cursor:pointer;
+    font-family:inherit}
+  /* Type size is only worth adjusting once there is a box big enough for it to matter. */
+  #inputbar:not(.big) #grip .fsz{display:none}
+  /* Expanded. The presets move to a column beside the box because that is the only place left for
+     them: a horizontal strip of chips above a half-screen textarea is a row you cannot read, and
+     the list is long enough that scrolling it is the point. Truncated on purpose — the full text is
+     in the tooltip, and a wrapped chip list would push the box back out of the way. */
+  #inputbar.big{display:grid;gap:8px;grid-template-columns:minmax(0,1fr) 172px;
+    grid-template-rows:auto minmax(0,1fr) auto;
+    grid-template-areas:"grip grip" "send notes" "keys keys";min-height:0}
+  #inputbar.big > *{max-width:none;margin-left:0;margin-right:0}
+  #inputbar.big #grip{grid-area:grip;margin-bottom:0}
+  #inputbar.big #keys{grid-area:keys;margin-bottom:0}
+  #inputbar.big #prow{grid-area:notes;flex-direction:column;align-items:stretch;gap:6px;
+    min-height:0;margin-bottom:0}
+  #inputbar.big #pfind{width:auto}
+  #inputbar.big #presets{flex-direction:column;overflow-y:auto;overflow-x:hidden;min-height:0}
+  #inputbar.big #presets button{width:100%;text-align:left;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis}
+  /* The box takes the whole column and the two buttons drop underneath it. Left in a row, the attach
+     and Send buttons ate a third of the width and the "expanded" editor wrapped every three words —
+     narrower than the bar it replaced. */
+  #inputbar.big #sendrow{grid-area:send;min-height:0;
+    display:grid;gap:8px;grid-template-columns:auto minmax(0,1fr);
+    grid-template-rows:minmax(0,1fr) auto;grid-template-areas:"box box" "att send"}
+  #inputbar.big #inputtext{max-height:none;height:100%;grid-area:box}
+  #inputbar.big #imgbtn{grid-area:att}
+  #inputbar.big #sendbtn{grid-area:send}
+  /* ＋ and ✎ are controls, not entries — full-width they read as two more quick commands. */
+  #inputbar.big #presets button.meta{width:auto;align-self:flex-start;padding:6px 14px}
+  @media (max-width:520px){ #inputbar.big{grid-template-columns:minmax(0,1fr) 140px} }
   /* Dropping a file anywhere on the conversation should work, so the whole overlay is the target. */
   #term.dropping{outline:2px dashed var(--accent);outline-offset:-6px}
   /* Files an agent handed over. Lives in the header rather than inside a conversation: it is the
@@ -456,6 +497,50 @@ enum WebDashboardPage {
   #tray .f .fn{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #tray .f .fm{font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #tray .tnone{color:var(--sub);font-size:12px;padding:10px 4px}
+  /* project file browser — the project's own directory, walkable from the phone. An agent says "see
+     Sources/FleetView/Remote/WebServer.swift:120" and until now there was no way to look. */
+  .fbbtn{font-size:12px;font-weight:600;color:var(--sub);background:var(--card);
+    border:1px solid var(--stroke);border-radius:7px;padding:5px 9px;cursor:pointer}
+  .fbbtn:active{transform:scale(.96)}
+  #fb{position:fixed;top:0;left:0;right:0;height:100%;height:100dvh;z-index:56;background:var(--bg);
+    display:none;flex-direction:column;overflow:hidden;overscroll-behavior:none}
+  #fb.show{display:flex}
+  #fbbar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--panel);
+    border-bottom:1px solid var(--stroke);padding-top:max(10px,env(safe-area-inset-top))}
+  #fbbar button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);
+    border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer}
+  #fbbar button[disabled]{opacity:.35}
+  #fbbar .fbname{font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis}
+  /* The absolute path in full, wrapped rather than clipped: knowing exactly where you are is the
+     point, and an ellipsis through the middle of a path defeats it. Selectable, because
+     long-press-to-select is the fallback when the clipboard API is missing (plain http is not a
+     secure context, so on the LAN it usually is). */
+  #fbpath{display:flex;align-items:flex-start;gap:8px;padding:8px 14px;background:var(--panel);
+    border-bottom:1px solid var(--stroke);font-size:11px;color:var(--sub);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  #fbcrumbs{flex:1;min-width:0;word-break:break-all;user-select:text;-webkit-user-select:text}
+  #fbcrumbs b{color:var(--accent);font-weight:600;cursor:pointer}
+  .fbcopy{flex:none;background:var(--card);color:var(--sub);border:1px solid var(--stroke);
+    border-radius:6px;font-size:11px;padding:3px 7px;cursor:pointer;font-family:inherit}
+  .fbcopy:active{background:var(--accent);color:var(--onAccent)}
+  #fbbody{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch;padding:10px 12px}
+  #fbbody > *{max-width:900px;margin-left:auto;margin-right:auto}
+  .fbrow{display:flex;align-items:center;gap:10px;padding:9px 10px;margin-bottom:6px;
+    background:var(--card);border:1px solid var(--stroke);border-radius:10px;cursor:pointer}
+  .fbrow:active{background:var(--cardHover)}
+  .fbrow .fbi{flex:none;font-size:15px;line-height:1}
+  .fbrow .fbn{flex:1;min-width:0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fbrow .fbs{flex:none;font-size:11px;color:var(--sub)}
+  .fbrow .fbc{flex:none;background:transparent;color:var(--sub);border:1px solid var(--stroke);
+    border-radius:6px;font-size:11px;padding:3px 6px;cursor:pointer}
+  .fbnote{color:var(--sub);font-size:12px;padding:14px 4px;text-align:center}
+  .fbnote a{color:var(--accent)}
+  pre.fbtext{margin:0;white-space:pre-wrap;word-break:break-word;font-size:11.5px;line-height:1.55;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);
+    background:var(--codeBg);border:1px solid var(--stroke);border-radius:10px;padding:12px 13px}
+  img.fbimg{max-width:100%;display:block;margin:0 auto;border-radius:10px;background:var(--card)}
+  iframe.fbpdf{width:100%;height:78vh;border:1px solid var(--stroke);border-radius:10px;background:#fff}
 </style>
 </head>
 <body>
@@ -492,6 +577,11 @@ enum WebDashboardPage {
   <iframe id="termframe" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
   <div id="perm"></div>
   <div id="inputbar">
+    <div id="grip"><span class="gbar"></span><span class="gtools">
+      <button class="fsz" onclick="taFont(-1)" title="Smaller text">A−</button>
+      <button class="fsz" onclick="taFont(1)" title="Bigger text">A+</button>
+      <button id="expand" onclick="toggleBig()" title="Expand the composer">⤢</button>
+    </span></div>
     <div id="prow"><input id="pfind" placeholder="filter" oninput="renderPresets()"><div id="presets"></div></div>
     <div id="keys">
       <button class="skey" onclick="scrollTerm('up')">⇞</button>
@@ -500,6 +590,9 @@ enum WebDashboardPage {
       <button onclick="key('Enter')">⏎</button>
       <button onclick="key('Up')">↑</button>
       <button onclick="key('Down')">↓</button>
+      <button onclick="key('Left')">←</button>
+      <button onclick="key('Right')">→</button>
+      <button onclick="typeRaw('/')" title="Open the agent's slash-command menu">/</button>
       <button onclick="key('Tab')">Tab</button>
       <button onclick="key('C-c')">^C</button>
       <button onclick="key('BSpace')">⌫</button>
@@ -511,6 +604,16 @@ enum WebDashboardPage {
       <button id="sendbtn">Send</button>
     </div>
   </div>
+</div>
+
+<div id="fb">
+  <div id="fbbar">
+    <button onclick="fbClose()">‹</button>
+    <span class="fbname" id="fbname"></span>
+    <button id="fbup" onclick="fbUp()" title="Up one level">↑</button>
+  </div>
+  <div id="fbpath"><span id="fbcrumbs"></span><button class="fbcopy" onclick="fbCopyHere()">⧉ path</button></div>
+  <div id="fbbody"></div>
 </div>
 
 <script>
@@ -654,6 +757,8 @@ function openTerm(id,name){
   renderPresets();          // latest Notes as quick-commands
   beaconSelect(id,'chat');
   setView('chat');          // reading history is the common remote case
+  // Next frame, so the panes have their real heights and the ceiling is measured against those.
+  if(barH) requestAnimationFrame(applyBar);
 }
 /* Swipe right to go back, the way the phone's own apps do. The overlay follows your finger with
    resistance, then either settles back or carries on out to the right. */
@@ -830,6 +935,9 @@ function syncViewport(){
   if(!t.classList.contains('dragging')) t.style.transform='';   // never fight a swipe in progress
   t.style.paddingTop=top+'px';
   t.style.paddingBottom=bottom+'px';
+  // The band just changed size; an expanded composer drawn against the old one can be taller than
+  // what is left, and #term clips rather than scrolls — the conversation would simply be gone.
+  if(barH) applyBar();
   document.getElementById('jump').style.bottom=(96+bottom)+'px';   // it sits above the composer
   chat.scrollTop=Math.max(0,chat.scrollHeight-chat.clientHeight-gap);
   updateStickyPrompt();                          // the pane moved; the floating bar follows it
@@ -1250,6 +1358,12 @@ function renderChat(msgs,note){
   updateStickyPrompt();
 }
 async function key(k){if(!curId)return;try{await fetch('/key?id='+curId+'&k='+encodeURIComponent(k));}catch(e){}}
+/* A literal character rather than a key name — tmux `send-keys -l` takes text, and "/" is not in the
+   named-key allowlist anyway. It gets its own button because a slash is what opens an agent's
+   command menu and phone keyboards bury it a layer down. No Enter: the menu opens on the character
+   and you pick from it. */
+async function typeRaw(s){if(!curId)return;
+  try{await fetch('/type?id='+encodeURIComponent(curId)+'&text='+encodeURIComponent(s));}catch(e){}}
 async function scrollTerm(dir){if(!curId)return;try{await fetch('/scroll?id='+curId+'&dir='+dir);}catch(e){}}
 
 // ---------- quick-command list — synced from the desktop Notes ----------
@@ -1269,10 +1383,16 @@ function renderPresets(){
       +`<button class="meta" onclick="toggleEditPresets()">${presetEdit?'Done':'✎'}</button>`;
   document.getElementById('presets').innerHTML=html;
 }
+/* Append, never replace. A quick command is a fragment you stack onto what you are already writing
+   — "run the tests" then "and fix what fails" — and replacing threw away a half-typed prompt with
+   no way back. */
 function usePreset(id){
   const n=((state&&state.notes)||[]).find(x=>x.id===id); if(!n)return;
-  const ta=document.getElementById('inputtext');ta.value=n.text;
-  ta.style.height='auto';ta.style.height=Math.min(120,ta.scrollHeight)+'px';ta.focus();
+  const ta=document.getElementById('inputtext');
+  const cur=ta.value, pad=(cur&&!/\s$/.test(cur))?' ':'';
+  ta.value=cur+pad+n.text;
+  const at=ta.value.length; ta.setSelectionRange(at,at);
+  autoGrow(ta); ta.focus();
   syncSendBtn();
 }
 async function addNote(){const c=prompt('Add a quick command (saved to Notes on the Mac)');
@@ -1280,6 +1400,90 @@ async function addNote(){const c=prompt('Add a quick command (saved to Notes on 
 async function delNote(id){await fetch('/note?del='+encodeURIComponent(id));await refreshState();renderPresets();}
 function toggleEditPresets(){presetEdit=!presetEdit;renderPresets();}
 renderPresets();
+
+/* ---------- composer size ----------
+   Two states, one number: 0 is the auto-growing three-line bar, anything else is an explicit height
+   in pixels and turns the bar into the expanded editor (see #inputbar.big). The grip drags between
+   them, the ⤢ button jumps. Both are remembered per device — how tall a box you want to write in is
+   a property of the thing you are typing on, not of the fleet. */
+const BAR_MIN=170;
+let barH=parseInt(localStorage.getItem('fv_barh')||'',10)||0;
+let taFontPx=parseInt(localStorage.getItem('fv_tafont')||'',10)||14;
+/* The ceiling is measured off the pane above rather than off the overlay: with the keyboard up, the
+   overlay is still a full screen tall and only the pane has actually shrunk, so sizing against the
+   overlay is how the composer ends up taller than the space left for it. */
+function barMax(){
+  const bar=document.getElementById('inputbar');
+  const chat=document.getElementById('chat');
+  const pane=chat.classList.contains('on')?chat:document.getElementById('termframe');
+  const avail=(pane.clientHeight||0)+bar.offsetHeight;
+  return Math.max(BAR_MIN,Math.round(avail*0.8));
+}
+/* Draw the bar at the height that was asked for, clamped to what there is room for *now*. Kept apart
+   from setBarHeight so the keyboard can squeeze the box without overwriting the number: it used to
+   share one variable, and a composer shrunk to fit the keyboard stayed shrunk after it closed. */
+function applyBar(){
+  const bar=document.getElementById('inputbar');
+  if(!barH){ bar.style.height=''; bar.classList.remove('big'); }
+  else{
+    bar.classList.add('big');
+    bar.style.height=Math.min(barMax(),Math.max(BAR_MIN,barH))+'px';
+  }
+  document.getElementById('expand').textContent=barH?'⤡':'⤢';
+  autoGrow(document.getElementById('inputtext'));
+}
+/* A new wanted height. Clamped to the ceiling here — a drag that runs off the top of the screen
+   otherwise banks height you then have to drag back down through before anything moves. */
+function setBarHeight(h){
+  barH=h?Math.min(barMax(),Math.max(BAR_MIN,Math.round(h))):0;
+  applyBar();
+}
+function toggleBig(){
+  if(barH){ setBarHeight(0); }
+  else{
+    const chat=document.getElementById('chat');
+    const pane=chat.classList.contains('on')?chat:document.getElementById('termframe');
+    setBarHeight(((pane.clientHeight||0)+document.getElementById('inputbar').offsetHeight)*0.55);
+  }
+  localStorage.setItem('fv_barh',String(barH));
+}
+/* The box is sized in one of two ways and three places used to each decide for themselves, which is
+   how an inline height left over from the collapsed bar ended up overriding `height:100%` and
+   pinning the expanded editor to three lines. */
+function autoGrow(ta){
+  if(document.getElementById('inputbar').classList.contains('big')){ ta.style.height='100%'; return; }
+  ta.style.height='auto'; ta.style.height=Math.min(120,ta.scrollHeight)+'px';
+}
+function applyTaFont(){
+  const ta=document.getElementById('inputtext');
+  ta.style.fontSize=taFontPx+'px';
+  autoGrow(ta);
+}
+function taFont(d){
+  taFontPx=Math.min(30,Math.max(11,taFontPx+d));
+  localStorage.setItem('fv_tafont',String(taFontPx));
+  applyTaFont(); toast(taFontPx+'px');
+}
+applyTaFont();
+(function(){
+  const g=document.getElementById('grip');
+  let y0=0,h0=0,live=false;
+  g.addEventListener('pointerdown',e=>{
+    if(e.target.closest('button'))return;
+    live=true; y0=e.clientY; h0=document.getElementById('inputbar').offsetHeight;
+    g.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  g.addEventListener('pointermove',e=>{ if(live) setBarHeight(h0+(y0-e.clientY)); });
+  const end=()=>{
+    if(!live)return;
+    live=false;
+    // Dragged back down onto the floor: that is a request to collapse, not to sit at the minimum.
+    if(barH&&barH<=BAR_MIN+8) setBarHeight(0);
+    localStorage.setItem('fv_barh',String(barH));
+  };
+  g.addEventListener('pointerup',end);
+  g.addEventListener('pointercancel',end);
+})();
 async function sendText(){
   if(!curId)return;
   const ta=document.getElementById('inputtext');const t=ta.value;
@@ -1287,12 +1491,12 @@ async function sendText(){
      button label can be a poll behind the terminal, and letting it decide here meant a typed
      message interrupted the turn instead of sending — so it took two taps. */
   if(!t){ key(document.getElementById('sendbtn').dataset.stop?'Escape':'Enter'); return; }
-  ta.value='';ta.style.height='auto';
+  ta.value='';autoGrow(ta);
   showSent(t);                       // don't wait a round trip to acknowledge the send
   stickBottom=true; jumpLatest();    // follow your own message down, wherever you were reading
   markSent();                       // the hook is a beat behind; don't sit on 'idle' meanwhile
   try{ await fetch('/type?id='+encodeURIComponent(curId)+'&enter=1&text='+encodeURIComponent(t)); }
-  catch(e){ ta.value=t; sentAt=0; renderInfo(curInfo);
+  catch(e){ ta.value=t; autoGrow(ta); sentAt=0; renderInfo(curInfo);
             if(sentGhost){ sentGhost.node.remove(); sentGhost=null; } }
   setTimeout(loadChat,400);
 }
@@ -1381,7 +1585,7 @@ function insertAtCursor(ta,text){
   ta.value=before+pad+text+after;
   const at=(before+pad+text).length;
   ta.setSelectionRange(at,at);
-  ta.style.height='auto'; ta.style.height=Math.min(120,ta.scrollHeight)+'px';
+  autoGrow(ta);
   ta.focus();
   syncSendBtn();
 }
@@ -1460,7 +1664,131 @@ function markSent(){ sentAt=performance.now(); curInfo.status='working'; renderI
 document.getElementById('inputtext').addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();sendText();}
 });
-document.getElementById('inputtext').addEventListener('input',e=>{e.target.style.height='auto';e.target.style.height=Math.min(120,e.target.scrollHeight)+'px';syncSendBtn();});
+document.getElementById('inputtext').addEventListener('input',e=>{autoGrow(e.target);syncSendBtn();});
+
+/* ---------- project file browser ----------
+   The project's own directory, walked from the phone. What it is for: an agent cites a file, and
+   until now the only way to look at it was to be at the Mac. Read-only by construction — the server
+   confines every path to a project root (see WebServer.confine). */
+let fbDir='',fbRoot='',fbFile='';
+const extOf=s=>{const i=s.lastIndexOf('.');return i>0?s.slice(i+1).toLowerCase():'';};
+const IMGEXT=['png','jpg','jpeg','gif','webp','avif','svg','heic'];
+/* Attribute-safe: esc() escapes &<> but leaves quotes alone, and a filename may legally contain
+   one — which would end the attribute and put the rest of the name into the markup. */
+const att=s=>esc(s).replace(/"/g,'&quot;');
+const fbJoin=(d,n)=>(d.endsWith('/')?d:d+'/')+n;
+const fbBase=p=>p.replace(/\/+$/,'').split('/').pop()||p;
+
+/* Copying a path is the point of half the visits: it goes into a prompt on the Mac, or into the
+   composer here. navigator.clipboard only exists in a secure context and the dashboard is plain
+   http on the LAN, so the old selection trick is not a fallback — it is the normal path. */
+async function copyText(s){
+  try{
+    if(navigator.clipboard&&window.isSecureContext){ await navigator.clipboard.writeText(s); toast('copied'); return; }
+  }catch(e){}
+  try{
+    const ta=document.createElement('textarea');
+    ta.value=s;
+    // Not display:none and not off-screen: iOS refuses to select either, and an unselected field
+    // copies nothing. One transparent pixel in view is what actually works.
+    ta.style.cssText='position:fixed;top:50%;left:0;width:1px;height:1px;padding:0;border:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.setSelectionRange(0,s.length);
+    const ok=document.execCommand('copy');
+    document.body.removeChild(ta);
+    toast(ok?'copied':'copy failed — long-press the path to select it');
+  }catch(e){ toast('copy failed — long-press the path to select it'); }
+}
+function fbOpen(path){
+  document.getElementById('fb').classList.add('show');
+  lockBoard();
+  fbList(path);
+}
+function fbClose(){
+  document.getElementById('fb').classList.remove('show');
+  unlockBoard('');
+  fbDir=fbRoot=fbFile='';
+}
+/* Up: out of a preview back to its directory first, then one level towards the project root —
+   which is where it stops, because that is where the server's confinement stops too. */
+function fbUp(){
+  if(fbFile){ fbList(fbDir); return; }
+  if(!fbDir||fbDir===fbRoot) return;
+  fbList(fbDir.replace(/\/+$/,'').split('/').slice(0,-1).join('/')||'/');
+}
+function fbCopyHere(){ copyText(fbFile||fbDir); }
+function fbHead(){
+  const full=fbFile||fbDir;
+  document.getElementById('fbname').textContent=fbBase(full);
+  document.getElementById('fbup').disabled=!fbFile&&(!fbDir||fbDir===fbRoot);
+  // Every ancestor inside the project is a link back to it; the part above the root is context and
+  // is deliberately dead — you cannot go there, so it must not look like you can.
+  let acc='',html='';
+  for(const part of full.split('/').filter(Boolean)){
+    acc+='/'+part;
+    const inside=acc===fbRoot||acc.startsWith(fbRoot+'/');
+    html+='/'+((inside&&acc!==full)
+      ?'<b data-p="'+att(acc)+'">'+esc(part)+'</b>'
+      :esc(part));
+  }
+  document.getElementById('fbcrumbs').innerHTML=html;
+}
+async function fbList(dir){
+  const body=document.getElementById('fbbody');
+  body.innerHTML='<div class="fbnote">Loading…</div>';
+  let j;
+  try{
+    const r=await fetch('/browse?path='+encodeURIComponent(dir),{cache:'no-store'});
+    j=await r.json();
+    if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+  }catch(e){ body.innerHTML='<div class="fbnote">'+esc(e.message||'could not list that folder')+'</div>'; return; }
+  fbFile=''; fbDir=j.path; fbRoot=j.root;
+  fbHead();
+  let html='';
+  if(j.truncated) html+='<div class="fbnote">showing the first '+j.entries.length+' entries of this folder</div>';
+  for(const e of j.entries){
+    html+='<div class="fbrow" data-p="'+att(fbJoin(j.path,e.name))+'" data-d="'+(e.dir?1:0)+'">'
+        + '<span class="fbi">'+(e.dir?'📁':fileIcon(extOf(e.name)))+'</span>'
+        + '<span class="fbn">'+esc(e.name)+'</span>'
+        + '<span class="fbs">'+(e.dir?'':kb(e.size||0))+'</span>'
+        + '<button class="fbc" title="Copy path">⧉</button></div>';
+  }
+  if(!j.entries.length) html+='<div class="fbnote">this folder is empty</div>';
+  body.innerHTML=html;
+  body.scrollTop=0;
+}
+async function fbShow(path){
+  fbFile=path; fbHead();
+  const body=document.getElementById('fbbody');
+  const e=extOf(path), url='/read?path='+encodeURIComponent(path);
+  if(IMGEXT.includes(e)){ body.innerHTML='<img class="fbimg" src="'+att(url)+'">'; body.scrollTop=0; return; }
+  if(e==='pdf'){ body.innerHTML='<iframe class="fbpdf" src="'+att(url)+'"></iframe>'; return; }
+  body.innerHTML='<div class="fbnote">Loading…</div>';
+  try{
+    const r=await fetch(url,{cache:'no-store'});
+    const type=r.headers.get('content-type')||'';
+    if(!r.ok){
+      // 415 is the server saying "this is binary" — the answer to that is a download, not an error.
+      const msg=esc(await r.text());
+      body.innerHTML='<div class="fbnote">'+msg+(r.status===415
+        ?'<br><a href="'+att(url)+'&dl=1">download it</a>':'')+'</div>';
+      return;
+    }
+    if(type.startsWith('image/')){ body.innerHTML='<img class="fbimg" src="'+att(url)+'">'; return; }
+    const t=await r.text();
+    body.innerHTML='<pre class="fbtext"></pre>';
+    body.querySelector('pre').textContent=t;      // textContent, so a file of HTML stays a file
+  }catch(err){ body.innerHTML='<div class="fbnote">could not read that file</div>'; }
+  body.scrollTop=0;
+}
+document.getElementById('fbbody').addEventListener('click',e=>{
+  const row=e.target.closest('.fbrow'); if(!row)return;
+  if(e.target.closest('.fbc')){ copyText(row.dataset.p); return; }
+  if(row.dataset.d==='1') fbList(row.dataset.p); else fbShow(row.dataset.p);
+});
+document.getElementById('fbcrumbs').addEventListener('click',e=>{
+  const b=e.target.closest('b'); if(b) fbList(b.dataset.p);
+});
 
 // ---------- create / actions ----------
 async function newTerm(pid){try{await fetch('/new?projectId='+encodeURIComponent(pid));setTimeout(tick,300);}catch(e){}}
@@ -1567,7 +1895,10 @@ let toastT=null;
 function toast(msg){
   let t=document.getElementById('toast');
   if(!t){t=document.createElement('div');t.id='toast';
-    t.style.cssText='position:fixed;left:50%;bottom:70px;transform:translateX(-50%);z-index:70;background:var(--card);border:1px solid var(--stroke);color:var(--text);padding:9px 14px;border-radius:10px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.5)';
+    /* pointer-events:none, because it is only ever faded out and never removed: an invisible node
+       parked 70px off the bottom at z-index 70 otherwise goes on swallowing every tap that lands on
+       it — which is precisely where the composer's key row sits. */
+    t.style.cssText='position:fixed;left:50%;bottom:70px;transform:translateX(-50%);z-index:70;pointer-events:none;background:var(--card);border:1px solid var(--stroke);color:var(--text);padding:9px 14px;border-radius:10px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.5)';
     document.body.appendChild(t);}
   t.textContent=msg;t.style.opacity='1';
   clearTimeout(toastT);toastT=setTimeout(()=>{t.style.opacity='0';},1600);
@@ -1641,7 +1972,10 @@ function render(s){
     const tot=terms.reduce((a,t)=>a+t.tokens,0);
     html+=`<div class="proj"><div class="projhead"><span class="name">${esc(p.name)}</span>`+
       `<span class="count">${terms.length}</span>`+(tot>0?`<span class="tok">Σ ${short(tot)}</span>`:'')+
-      `<button class="addbtn" onclick="newTerm('${p.id}')">+ Terminal</button></div>`;
+      `<button class="addbtn" onclick="newTerm('${p.id}')">+ Terminal</button>`+
+      // The path rides in a data attribute rather than in the handler's text: it is arbitrary user
+      // data, and a project directory with a quote in it would otherwise end the attribute.
+      `<button class="fbbtn" data-path="${att(p.path)}" onclick="fbOpen(this.dataset.path)" title="${att(p.path)}">📁 Files</button></div>`;
     const cids=[...new Set(terms.filter(t=>t.clusterId).map(t=>t.clusterId))];
     for(const cid of cids){
       const c=s.clusters.find(x=>x.id===cid);const mem=terms.filter(t=>t.clusterId===cid);
