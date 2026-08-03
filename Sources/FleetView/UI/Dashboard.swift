@@ -637,7 +637,12 @@ struct ProjectSection: View {
                     return NSItemProvider(object: project.id.uuidString as NSString)
                 }
             Image(systemName: "folder.fill").font(.system(size: 12)).foregroundColor(Theme.accent.opacity(0.9))
+            // lineLimit(1) for the same reason the card's footer labels have it: the "+N/min" chip
+            // below re-measures every 5s and swings between "+0/min" and "+1.2M/min", and on a
+            // narrow content column that pushed this name onto a second line and back — moving the
+            // whole project section, cards included, every five seconds.
             Text(project.name).font(.system(size: 15, weight: .semibold)).foregroundColor(Theme.text)
+                .lineLimit(1)
                 .onTapGesture(count: 2) { state.openInFinder(project.id) }
                 .onTapGesture { copyToClipboard(project.name) }
                 .help("Click to copy · double-click to open in Finder")

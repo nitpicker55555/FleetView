@@ -132,6 +132,7 @@ struct TerminalCardView: View {
                 // was three of the same symbol on one card.
                 Text("mark")
                     .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
                     .padding(.horizontal, 7).padding(.vertical, 2)
                     .background(Theme.markTint.opacity(0.18)).foregroundColor(Theme.markTint)
                     .clipShape(Capsule())
@@ -140,13 +141,22 @@ struct TerminalCardView: View {
             // While it runs, the clock is the only number worth the space — "last activity" then
             // says nothing but "just now". Afterwards the two answer different questions: how long
             // it took, and how long ago that was.
-            if terminal.status != .working, terminal.lastActivity != nil {
-                TimelineView(.periodic(from: .now, by: 15)) { ctx in
-                    Text(RelativeTime.short(terminal.lastActivity, now: ctx.date) ?? "")
+            //
+            // Hidden rather than removed, because this row does not fit: at the grid's own minimum
+            // column width the footer needs ~301pt and has 272. Taking this label OUT of the layout
+            // changed that requirement by ~34pt, which was enough to tip the HStack in or out of
+            // wrapping — so every working⇄idle flip resized the card by 12-39pt and shoved every
+            // row beneath it. That was the board's up-and-down jitter.
+            if let last = terminal.lastActivity {
+                TimelineView(.periodic(from: last, by: 15)) { ctx in
+                    Text(RelativeTime.short(last, now: ctx.date) ?? "")
                         .font(.system(size: 10))
+                        .lineLimit(1)
                         .foregroundColor(Theme.subtext.opacity(0.7))
                         .help("Last activity in this terminal")
                 }
+                .opacity(terminal.status == .working ? 0 : 1)
+                .allowsHitTesting(terminal.status != .working)   // no tooltip on an invisible label
             }
             Spacer(minLength: 4)
             controls
@@ -158,7 +168,10 @@ struct TerminalCardView: View {
     /// colour is enough to say the run is over — the status label and dot already say which way.
     @ViewBuilder private var runChip: some View {
         if terminal.status == .working, let since = terminal.runningSince {
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            // Anchored on the run's own start, not on `.now`: `.now` is re-evaluated on every body
+            // pass, so each of the board's (many) re-renders handed the TimelineView a brand-new
+            // schedule and restarted its tick.
+            TimelineView(.periodic(from: since, by: 1)) { ctx in
                 chip(RelativeTime.clock(since: since, now: ctx.date), Theme.statusColor(.working))
                     .help("Running for \(RelativeTime.clock(since: since, now: ctx.date))")
             }
@@ -171,7 +184,11 @@ struct TerminalCardView: View {
     private func chip(_ text: String, _ tint: Color) -> some View {
         HStack(spacing: 3) {
             Image(systemName: "timer").font(.system(size: 9, weight: .bold))
-            Text(text).font(.system(size: 10, weight: .medium, design: .monospaced))
+            // lineLimit(1), like every other label in this row: the footer is wider than the card
+            // at the grid's smaller columns, and a Text with no limit answers that by wrapping —
+            // which makes the card taller. "9:59" → "10:00" is one more character, and that alone
+            // used to add 13pt to the card's height.
+            Text(text).font(.system(size: 10, weight: .medium, design: .monospaced)).lineLimit(1)
         }
         .foregroundColor(tint)
         .padding(.horizontal, 6).padding(.vertical, 1)
@@ -298,6 +315,7 @@ struct TerminalCardView: View {
         } label: {
             Text(copiedId ? "copied" : short)
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .lineLimit(1)
                 .foregroundColor(copiedId ? Theme.green : Theme.subtext.opacity(0.55))
         }
         .buttonStyle(.plain)

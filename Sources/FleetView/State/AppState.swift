@@ -853,7 +853,15 @@ final class AppState: ObservableObject {
 
     private func applyHookEvent(_ ev: EventWatcher.Event, uid: UUID, idx: Int) {
         FV.log("evt=\(ev.event) term=\(terminals[idx].name) src=\(ev.source ?? "-") msg=\(ev.message ?? "-")")
-        terminals[idx].lastActivity = Date()   // a hook fired → real agent/shell activity in this terminal
+        // A hook fired → real agent/shell activity in this terminal. Written at a 5s granularity,
+        // because `terminals` is @Published and a fresh Date is never value-equal: writing it on
+        // every event re-rendered the WHOLE board, and PreToolUse/PostToolUse arrive in bursts many
+        // times a second (they are ~95% of the event log). Nothing displays it more finely than
+        // that — it is rendered through RelativeTime.short inside a 15s TimelineView.
+        let now = Date()
+        if terminals[idx].lastActivity.map({ now.timeIntervalSince($0) >= 5 }) ?? true {
+            terminals[idx].lastActivity = now
+        }
         if let sid = ev.sessionId { terminals[idx].sessionId = sid }
         if let tp = ev.transcriptPath {
             terminals[idx].transcriptPath = tp
