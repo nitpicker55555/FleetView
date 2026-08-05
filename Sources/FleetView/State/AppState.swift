@@ -260,6 +260,11 @@ final class AppState: ObservableObject {
     /// means `touch panel.html` no longer reflows the panel for nothing.
     @Published var panelVersion: String = ""
     private var panelTimer: Timer?
+    /// A Codex status refresh is out on a background queue. Not @Published — nothing draws it, and
+    /// a flag that re-renders the board every second would undo the point of moving the work off.
+    private var codexRefreshInFlight = false
+    /// The pending debounced save (see `save()`).
+    private var saveWork: DispatchWorkItem?
 
     /// Watch `~/.fleetview/ui/panel.html` so an agent can create / update / remove the panel *while*
     /// FleetView runs — it appears, reloads and disappears live, no relaunch. The polling lives here
@@ -287,13 +292,47 @@ final class AppState: ObservableObject {
     ///
     /// Only `working` and `idle` are decided here. `needsYou` comes from the screen, which is the
     /// only place an approval prompt shows up, and is left alone.
+    /// Every second, and every part of it is file I/O — so none of it runs here. Measured on this
+    /// fleet before it was moved: resolving each Codex terminal's rollout walked ~2000 files, and
+    /// reading the 256KB tail to find the last turn boundary cost another 4ms; 44ms of main-actor
+    /// time per second, three dropped frames a second, for a poll that usually changes nothing.
+    /// That was the board "getting laggy once there are a lot of terminals".
+    ///
+    /// The main actor now only snapshots what the resolve needs and applies the answer. The `claimed`
+    /// set and the fallback order are the Codex half of `transcriptPath(for:)`, kept in step with it
+    /// deliberately: rollout first (a hook pointer goes stale and stays stale), then the pointer,
+    /// then whatever was last recorded.
     private func refreshCodexStatus() {
-        for (i, t) in terminals.enumerated()
-        where t.agentKind == .codex && t.status != .closed && t.status != .needsYou {
-            guard let path = transcriptPath(for: t.id),
-                  let working = CodexSession.isWorking(rollout: path) else { continue }
-            let next: TermStatus = working ? .working : .idle
-            if terminals[i].status != next { enterStatus(next, at: i) }
+        guard !codexRefreshInFlight else { return }   // a slow disk must not queue these up
+        let targets = terminals.filter {
+            $0.agentKind == .codex && $0.status != .closed && $0.status != .needsYou
+        }.map { t in
+            (id: t.id, cwd: t.cwd, hook: hookSessionPath(for: t.id), stored: t.transcriptPath)
+        }
+        guard !targets.isEmpty else { return }
+        let claimed = Set(terminals.compactMap { $0.transcriptPath })
+        codexRefreshInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var verdicts: [(UUID, Bool)] = []
+            for t in targets {
+                let path = CodexSession.currentRollout(cwd: t.cwd,
+                                                       excluding: claimed.subtracting([t.stored].compactMap { $0 }))
+                    ?? t.hook ?? t.stored
+                guard let path, let working = CodexSession.isWorking(rollout: path) else { continue }
+                verdicts.append((t.id, working))
+            }
+            Task { @MainActor in
+                guard let self else { return }
+                self.codexRefreshInFlight = false
+                for (id, working) in verdicts {
+                    guard let i = self.terminals.firstIndex(where: { $0.id == id }) else { continue }
+                    // Re-check the guard: this is one poll behind now, and the terminal may have
+                    // been closed or raised a prompt while the disk was being read.
+                    guard self.terminals[i].status != .closed, self.terminals[i].status != .needsYou else { continue }
+                    let next: TermStatus = working ? .working : .idle
+                    if self.terminals[i].status != next { self.enterStatus(next, at: i) }
+                }
+            }
         }
     }
 
@@ -357,7 +396,23 @@ final class AppState: ObservableObject {
         for t in terminals { if let tp = t.transcriptPath { refreshTokens(t.id, path: tp) } }
     }
 
+    /// Persist soon, not now.
+    ///
+    /// Every hook event ends in a save, and a save is a JSONEncoder pass over the whole model plus a
+    /// 20KB write — on the main actor, in the middle of a burst of events, while you are scrolling.
+    /// Nothing reads this file until the next launch, so the only real requirements are "soon" and
+    /// "definitely before we quit"; `saveNow()` is the second one and is called from
+    /// applicationWillTerminate.
     func save() {
+        saveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveNow() }
+        saveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+    }
+
+    func saveNow() {
+        saveWork?.cancel()
+        saveWork = nil
         FV.ensureSupportDir()
         let snapshot = terminals.map { t -> TerminalSession in
             var c = t
@@ -369,7 +424,9 @@ final class AppState: ObservableObject {
                           sidebarWidth: sidebarWidth, notes: notes,
                           tasksCollapsed: tasksCollapsed, notesCollapsed: notesCollapsed,
                           treePanelWidth: treePanelWidth, showOnlyMarked: showOnlyMarked)
-        if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile) }
+        // .atomic: without it a crash or a full disk mid-write leaves a truncated state.json, and
+        // that file IS the board — every project, terminal and cluster.
+        if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile, options: .atomic) }
     }
 
     // MARK: - Projects

@@ -59,18 +59,27 @@ enum FV {
         try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
     }
 
+    /// One append handle, kept open. This is called once per hook event — on the main actor, from
+    /// `applyHookEvent` — and PreToolUse/PostToolUse arrive in bursts several times a second, so
+    /// opening, seeking and closing the file for each line was four syscalls per event on the thread
+    /// drawing the board. O_APPEND also makes the write atomic, which `seekToEnd` then `write` was
+    /// not: two callers on different threads could interleave (see RemoteServer's remote.log, which
+    /// had 4% of its lines spliced together for exactly that reason).
+    private static let logLock = NSLock()
+    private static var logHandle: FileHandle?
+
     /// Append a line to ~/.fleetview/fleetview.log (for tuning status heuristics).
     static func log(_ message: String) {
-        ensureSupportDir()
         guard let data = (message + "\n").data(using: .utf8) else { return }
-        if FileManager.default.fileExists(atPath: logFile.path),
-           let fh = try? FileHandle(forWritingTo: logFile) {
-            defer { try? fh.close() }
-            _ = try? fh.seekToEnd()
-            try? fh.write(contentsOf: data)
-        } else {
-            try? data.write(to: logFile)
+        logLock.lock()
+        defer { logLock.unlock() }
+        if logHandle == nil {
+            ensureSupportDir()
+            let fd = open(logFile.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+            guard fd >= 0 else { return }
+            logHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         }
+        try? logHandle?.write(contentsOf: data)
     }
 
     static var claudeProjectsDir: URL { home.appendingPathComponent(".claude/projects", isDirectory: true) }

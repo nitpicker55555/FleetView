@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Tear down web servers and the FleetView tmux server so nothing is left listening after quit.
     func applicationWillTerminate(_ notification: Notification) {
+        state.saveNow()          // saves are debounced now; this is the one that must not be missed
         state.web.stop()
         state.remote.stopAll()
         AppAudit.shared.stop(reason: "quit")   // flushes the buffer before the process goes away

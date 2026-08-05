@@ -53,9 +53,27 @@ enum CodexSession {
         return cwd
     }
 
+    /// The last walk, and when it was taken. The scan stats every rollout under `~/.codex/sessions`
+    /// — 2000 files here, ~26ms — and it was being repeated per Codex terminal per second, on the
+    /// main actor. It is cached rather than pruned by date because a rollout opened a week ago and
+    /// still being appended to is a live session, and pruning by day-directory would lose it.
+    ///
+    /// Ten seconds because of what this actually answers: *which* rollout a terminal is writing,
+    /// which only changes when a new session starts. Whether that session is working right now is a
+    /// separate read (`isWorking`) that is not cached this way. So the visible cost of the staleness
+    /// is that a brand-new Codex session can take up to 10s to be attributed — while every existing
+    /// one stays exact.
+    private static var rolloutScan: (at: Date, list: [(path: String, mtime: Date)])?
+    private static let scanTTL: TimeInterval = 10.0
+
     /// Rollouts touched recently enough to be live, newest first. Codex files them under
     /// `sessions/YYYY/MM/DD/`, so only the last few day-directories are worth walking.
     private static func recentRollouts() -> [(path: String, mtime: Date)] {
+        lock.lock()
+        if let s = rolloutScan, Date().timeIntervalSince(s.at) < scanTTL {
+            let cached = s.list; lock.unlock(); return cached
+        }
+        lock.unlock()
         let fm = FileManager.default
         let cutoff = Date().addingTimeInterval(-staleAfter)
         var out: [(String, Date)] = []
@@ -78,7 +96,9 @@ enum CodexSession {
                 }
             }
         }
-        return out.sorted { $0.1 > $1.1 }
+        let sorted = out.sorted { $0.1 > $1.1 }
+        lock.lock(); rolloutScan = (Date(), sorted); lock.unlock()
+        return sorted
     }
 
     /// The rollout a Codex terminal in `cwd` is writing right now: the most recently touched one
@@ -100,10 +120,19 @@ enum CodexSession {
 
     /// Whether a turn is in flight, from the last turn-boundary event in the rollout.
     /// nil when the file says nothing either way.
+    /// Last verdict per rollout, keyed by the file's size. Polled once a second, this read is
+    /// 256KB plus a JSON parse of every line in it — and an idle terminal's rollout does not change
+    /// between polls, so the answer cannot either. The size is the whole test: a rollout is only
+    /// ever appended to, so same size ⇒ same last turn-boundary record.
+    private static var workingCache: [String: (size: UInt64, verdict: Bool?)] = [:]
+
     static func isWorking(rollout path: String) -> Bool? {
         guard let h = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
         defer { try? h.close() }
         guard let size = try? h.seekToEnd() else { return nil }
+        lock.lock()
+        if let c = workingCache[path], c.size == size { let v = c.verdict; lock.unlock(); return v }
+        lock.unlock()
         // A turn boundary is written frequently; the tail is always enough and keeps this cheap
         // enough to poll.
         let window: UInt64 = 256_000
@@ -131,6 +160,7 @@ enum CodexSession {
             default: continue
             }
         }
+        lock.lock(); workingCache[path] = (size, working); lock.unlock()
         return working
     }
 }
