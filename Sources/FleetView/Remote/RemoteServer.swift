@@ -120,11 +120,18 @@ final class RemoteServer {
         proc.executableURL = URL(fileURLWithPath: ttydPath)
         proc.arguments = [
             "-p", "\(port)",
+            "-6",                                   // dual-stack, see below
             "-W",                                   // writable: let the browser type, not just watch
             "-t", "titleFixed=\(name) · FleetView",
             "-t", "disableLeaveAlert=true",
             tmuxPath, "-L", RemoteServer.socket, "-u", "attach", "-t", session,   // -u: force UTF-8 to this client (CJK)
         ]
+        // `-6` because without it ttyd listens on IPv4 only, while FleetView's own dashboard socket
+        // is dual-stack. A client that reaches the dashboard over IPv6 therefore gets a working Chat
+        // tab (same origin) and a terminal iframe pointing at a port nothing answers on — the page
+        // rebuilds that URL from `location.hostname`, so it inherits the address family it arrived
+        // on. It costs one extra listening socket and makes the two servers agree.
+        //
         // ttyd inherits the GUI app's minimal PATH; make sure it can still find tmux's deps.
         // A GUI app launched from Finder has no LANG, so tmux would treat this client as non-UTF-8
         // and replace Chinese with "?"; set a UTF-8 locale so the web renders CJK correctly.
@@ -133,13 +140,19 @@ final class RemoteServer {
         env["LANG"] = "en_US.UTF-8"
         env["LC_CTYPE"] = "en_US.UTF-8"
         proc.environment = env
-        if let log = try? FileHandle(forWritingTo: prepareLog()) {
-            log.seekToEndOfFile()
+        if let log = appendHandle() {
             proc.standardOutput = log
             proc.standardError = log
         }
         do { try proc.run() } catch { return nil }
         instances[id] = (port, proc)
+        // Do not answer until it is actually listening. `run()` returns at spawn, ttyd binds ~20ms
+        // later, and the browser opens the iframe the instant this response lands — losing that race
+        // is a blank terminal that never retries on its own. Typically a ~20ms wait; the cap is
+        // there so a ttyd that fails to start cannot hold the main actor.
+        if !Tooling.waitForPort(port, timeout: 2.0) {
+            FV.log("ttyd on :\(port) did not start listening within 2s — serving the URL anyway")
+        }
         // A terminal becoming reachable from other devices is a security-relevant fact, and one no
         // state diff would show — the model is unchanged, a listener simply appeared.
         AppAudit.shared.auditor.emit("fleetview.ttyd.started",
@@ -347,5 +360,14 @@ final class RemoteServer {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
         return url
+    }
+
+    /// A write handle every ttyd can share. O_APPEND matters: each instance used to get its own
+    /// handle seeked to the end, and "seek then write" is two steps — concurrent instances wrote
+    /// over each other, leaving lines spliced together mid-word. 4% of this log was torn that way,
+    /// and it is the only record of which client actually reached a terminal.
+    private func appendHandle() -> FileHandle? {
+        let fd = open(prepareLog().path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        return fd >= 0 ? FileHandle(fileDescriptor: fd, closeOnDealloc: true) : nil
     }
 }

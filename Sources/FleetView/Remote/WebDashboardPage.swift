@@ -201,6 +201,15 @@ enum WebDashboardPage {
   #termbar .tname{font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #termframe{flex:1;border:0;width:100%;background:#000;display:none}
   #termframe.on{display:block}
+  /* Shown instead of the blank iframe when its port doesn't answer. A white rectangle is the one
+     thing this must never be: it says nothing, and it looks identical to a page still loading. */
+  #termerr{display:none;flex:1;align-items:center;justify-content:center;padding:24px;background:var(--bg)}
+  #termerr.on{display:flex}
+  #termerr .te{max-width:420px;text-align:center;display:flex;flex-direction:column;gap:10px}
+  #termerr .te b{font-size:14px;color:var(--text)}
+  #termerr .te span{font-size:12px;color:var(--sub);line-height:1.5}
+  #termerr .te button{align-self:center;background:var(--accent);color:var(--onAccent);border:0;
+    border-radius:9px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer}
   /* view switch */
   #tabs{display:flex;gap:2px;background:var(--card);border:1px solid var(--stroke);border-radius:8px;padding:2px}
   #tabs button{background:transparent;border:0;color:var(--sub);border-radius:6px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer}
@@ -575,6 +584,7 @@ enum WebDashboardPage {
   <div id="stickyq"><div class="sq"></div></div>
   <button id="jump" onclick="jumpLatest()">↓</button>
   <iframe id="termframe" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
+  <div id="termerr"></div>
   <div id="perm"></div>
   <div id="inputbar">
     <div id="grip"><span class="gbar"></span><span class="gtools">
@@ -820,6 +830,7 @@ function closeTerm(){
   unlockBoard(curId);                      // back to the card you came from, not to the top
   syncViewport();                          // drop the keyboard-era height/offset
   document.getElementById('termframe').src='about:blank';
+  document.getElementById('termerr').classList.remove('on');
   curId='';termLoaded=false;stopChatPoll();
   beaconSelect('','');
 }
@@ -831,20 +842,60 @@ function setView(v){
   document.getElementById('tabTerm').classList.toggle('on',v==='term');
   document.getElementById('chat').classList.toggle('on',v==='chat');
   document.getElementById('termframe').classList.toggle('on',v==='term');
+  // The failure panel belongs to the Terminal tab; left up it would sit on top of the conversation.
+  if(v!=='term') document.getElementById('termerr').classList.remove('on');
   document.getElementById('keys').classList.toggle('chatview',v==='chat');
   updateStickyPrompt();          // it belongs to the chat pane — never leave it over the terminal
   if(v==='term'){stopChatPoll();ensureTerm();}
   else{loadChat();startChatPoll();}
 }
+/* Is ttyd actually answering on that port, from THIS device? An iframe cannot tell us: a failed
+   load fires no error we can hook and leaves a blank white rectangle, which is what "the terminal
+   doesn't open" looked like. no-cors means we can't read the response, but resolve-vs-reject is
+   exactly the question — is the port reachable — and that is all we need. */
+async function termReachable(url,tries=5){
+  for(let i=0;i<tries;i++){
+    try{ await fetch(url,{mode:'no-cors',cache:'no-store'}); return true; }
+    catch(e){ await new Promise(r=>setTimeout(r,150*(i+1))); }
+  }
+  return false;
+}
+function termError(msg,hint){
+  const el=document.getElementById('termerr');
+  el.innerHTML='<div class="te"><b>'+esc(msg)+'</b>'+(hint?'<span>'+esc(hint)+'</span>':'')
+              +'<button onclick="retryTerm()">Retry</button></div>';
+  el.classList.add('on');
+}
+function retryTerm(){
+  document.getElementById('termerr').classList.remove('on');
+  termLoaded=false; curUrl='';
+  document.getElementById('termframe').src='about:blank';
+  ensureTerm();
+}
 async function ensureTerm(){
   if(termLoaded||!curId)return;
   termLoaded=true;
-  try{
-    const j=await(await fetch('/open?id='+encodeURIComponent(curId))).json();
-    if(!j.port){termLoaded=false;toast('This terminal is not open on the Mac right now');return;}
-    curUrl=location.protocol+'//'+location.hostname+':'+j.port+'/';
-    document.getElementById('termframe').src=curUrl;
-  }catch(e){termLoaded=false;}
+  const want=curId;
+  document.getElementById('termerr').classList.remove('on');
+  let j;
+  try{ j=await(await fetch('/open?id='+encodeURIComponent(curId))).json(); }
+  catch(e){ termLoaded=false; termError('Could not reach the Mac','The dashboard itself answered, so this is usually a moment of network trouble.'); return; }
+  if(want!==curId) return;                 // you moved on while it was starting
+  if(!j.port){termLoaded=false;toast('This terminal is not open on the Mac right now');return;}
+  curUrl=location.protocol+'//'+location.hostname+':'+j.port+'/';
+  /* Each terminal is served by its OWN ttyd on its own port, so the Chat tab working says nothing
+     about whether this one is reachable — different port, and possibly a different address family
+     or a route your phone doesn't have. Check before handing the URL to the iframe. */
+  if(!await termReachable(curUrl)){
+    if(want!==curId) return;
+    termLoaded=false;
+    termError('The terminal port is not answering',
+              'Chat talks to FleetView on :'+location.port+'; a terminal is a separate server on :'
+              +j.port+'. If this keeps happening, that port is being blocked between here and the Mac.');
+    return;
+  }
+  if(want!==curId) return;
+  document.getElementById('termframe').src=curUrl;
 }
 async function popTerm(){await ensureTerm();if(curUrl)window.open(curUrl,'_blank');}
 

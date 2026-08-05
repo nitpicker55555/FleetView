@@ -96,4 +96,35 @@ enum Tooling {
         }
         return r == 0
     }
+
+    /// Block until something accepts a connection on this port, or the deadline passes.
+    ///
+    /// `Process.run()` returns when the child is spawned, not when it is listening — ttyd binds
+    /// about 20ms later. Handing the port to the browser in that gap gets the iframe a connection
+    /// refused, which renders as a blank rectangle with no event the page can hook. Measured across
+    /// this Mac's audit + ttyd logs: 22% of cold terminal opens landed in that gap.
+    ///
+    /// Polling a socket is crude, but it is the only signal ttyd gives us — it has no ready pipe,
+    /// and its "Listening on port" line goes to a log shared by every instance.
+    static func waitForPort(_ port: Int, timeout: TimeInterval = 2.0) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            if fd >= 0 {
+                var addr = sockaddr_in()
+                addr.sin_family = sa_family_t(AF_INET)
+                addr.sin_port = in_port_t(UInt16(port).bigEndian)
+                addr.sin_addr.s_addr = INADDR_ANY      // 0.0.0.0 → loopback for connect()
+                let ok = withUnsafePointer(to: &addr) { p in
+                    p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                } == 0
+                close(fd)
+                if ok { return true }
+            }
+            usleep(5_000)
+        }
+        return false
+    }
 }
