@@ -124,6 +124,15 @@ enum WebDashboardPage {
     border:1px solid var(--accentEdge);border-radius:7px;padding:5px 10px;cursor:pointer}
   .addbtn:active{transform:scale(.96)}
   .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+  /* "running now" — the same cards, tinted with the running colour so the strip reads as a state
+     rather than as another project. */
+  .runbox{padding:12px;border-radius:14px;background:rgba(92,209,140,.055);
+    border:1px solid rgba(92,209,140,.22)}
+  html.light .runbox{background:rgba(26,127,55,.06);border-color:rgba(26,127,55,.22)}
+  .runbox .projhead{margin-bottom:10px}
+  .rlabel{font-size:10px;font-weight:700;color:var(--green);letter-spacing:.04em}
+  .rtag{font-size:10px;font-weight:500;color:var(--sub);opacity:.85;margin:0 0 4px 2px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .card{background:var(--card);border:1px solid var(--stroke);border-radius:12px;padding:13px 14px;
     display:flex;flex-direction:column;gap:9px;transition:transform .1s,background .12s;cursor:pointer;
     position:relative;user-select:none;-webkit-user-select:none}
@@ -755,7 +764,10 @@ function unlockBoard(id){
   document.body.classList.remove('locked');
   document.body.style.top='';
   window.scrollTo(0,boardY);
-  const card=id?document.querySelector('.card[data-id="'+id+'"]'):null;
+  // The last one: a running terminal is drawn twice now (once in the strip at the top, once in its
+  // project), and "the card you came out of" means the one in the board, not the summary copy.
+  const all=id?document.querySelectorAll('.card[data-id="'+id+'"]'):[];
+  const card=all.length?all[all.length-1]:null;
   if(!card) return;
   const r=card.getBoundingClientRect();
   if(r.top<8||r.bottom>window.innerHeight-8) card.scrollIntoView({block:'center'});
@@ -2031,6 +2043,20 @@ function render(s){
   document.getElementById('markcount').textContent=marked?marked:'';
   let html='';
   if(!s.remoteOK)html+=`<div class="banner">Web terminals are disabled — run <b>${esc(s.remoteHint)}</b> and relaunch FleetView. Status is still shown.</div>`;
+  /* What is moving, before what exists. The board below is grouped by project because that is how
+     work is organised; this answers the other question, which otherwise means scrolling every
+     section looking for green dots. Same cards — a second place to see a terminal, not a second
+     kind — each tagged with the project it came from, since this row cannot say it by grouping.
+     Absent rather than empty when nothing runs. */
+  const runList=(onlyMarked?s.terminals.filter(t=>t.done):s.terminals).filter(t=>t.status==='working');
+  if(runList.length){
+    const pname=id=>{const p=s.projects.find(x=>x.id===id);return p?p.name:'—';};
+    html+=`<div class="proj runbox"><div class="projhead">`
+        + `<span class="rlabel">⚡ RUNNING NOW</span><span class="count">${runList.length}</span></div>`
+        + `<div class="grid">${runList.map(t=>
+            `<div class="rcard"><div class="rtag">📁 ${esc(pname(t.projectId))}</div>${card(t)}</div>`
+          ).join('')}</div></div>`;
+  }
   for(const p of s.projects){
     const all=s.terminals.filter(t=>t.projectId===p.id);
     const terms=onlyMarked?all.filter(t=>t.done):all;

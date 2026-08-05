@@ -608,6 +608,7 @@ struct MainArea: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 28) {
+                        RunningStrip()
                         ForEach(state.visibleProjects) { p in
                             ProjectSection(project: p).id(p.id)
                         }
@@ -620,6 +621,73 @@ struct MainArea: View {
                 }
             }
         }
+    }
+}
+
+/// Everything that is working right now, lifted to the top of the board and out of its project.
+///
+/// The board is grouped by project because that is how work is organised; this answers the other
+/// question — what is moving — which otherwise means scrolling every section to look for green
+/// dots. The cards are the same cards, deliberately: this is a second place to see a terminal, not
+/// a second kind of terminal, so it stays draggable, markable and openable like any other. Each one
+/// carries the project it came from, because that is the one thing the grouping used to say and
+/// this row cannot.
+///
+/// Absent, not empty, when nothing is running: a permanent "nothing is running" header is a line of
+/// furniture that is wrong most of the time.
+struct RunningStrip: View {
+    @EnvironmentObject var state: AppState
+
+    private var running: [TerminalSession] {
+        state.visible(state.terminals.filter { $0.status == .working })
+    }
+
+    var body: some View {
+        if !running.isEmpty {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack(spacing: 8) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 11)).foregroundColor(Theme.statusColor(.working))
+                    Text("RUNNING NOW")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Theme.statusColor(.working))
+                    Text("\(running.count)")
+                        .font(.system(size: 11, weight: .medium)).foregroundColor(Theme.subtext)
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Theme.card).clipShape(Capsule())
+                    Spacer()
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 14)],
+                          alignment: .leading, spacing: 14) {
+                    ForEach(running) { t in
+                        VStack(alignment: .leading, spacing: 5) {
+                            projectTag(for: t)
+                            TerminalCardView(terminal: t)
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .background(Theme.statusColor(.working).opacity(0.055))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14)
+                .stroke(Theme.statusColor(.working).opacity(0.22), lineWidth: 1))
+        }
+    }
+
+    /// Where this card lives when it is not here. lineLimit(1) for the same reason every other label
+    /// on a card has it: a name that wraps changes the row's height, and this row is rebuilt every
+    /// time an agent starts or stops.
+    private func projectTag(for t: TerminalSession) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 8)).foregroundColor(Theme.subtext.opacity(0.55))
+            Text(state.projects.first { $0.id == t.projectId }?.name ?? "—")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(Theme.subtext.opacity(0.85))
+                .lineLimit(1)
+        }
+        .padding(.leading, 2)
     }
 }
 
