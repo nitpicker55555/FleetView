@@ -14,8 +14,10 @@ DerivedData/
 __pycache__/
 *.pyc
 
-# Packaged app bundle
+# Packaged app bundle, and the zip cut from it for a GitHub release — both are build output that
+# `git add -A` would otherwise sweep in the moment anyone cuts a version.
 FleetView.app/
+FleetView-*.zip
 
 # Agent-produced operational files.
 #
