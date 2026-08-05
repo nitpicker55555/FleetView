@@ -675,19 +675,27 @@ struct RunningStrip: View {
         }
     }
 
-    /// Where this card lives when it is not here. lineLimit(1) for the same reason every other label
-    /// on a card has it: a name that wraps changes the row's height, and this row is rebuilt every
-    /// time an agent starts or stops.
+    /// Where this card lives when it is not here. Double-click opens that folder, the same gesture
+    /// the project header answers to — this label says "project" and so it should behave like one.
+    ///
+    /// lineLimit(1) for the same reason every other label on a card has it: a name that wraps
+    /// changes the row's height, and this row is rebuilt every time an agent starts or stops.
     private func projectTag(for t: TerminalSession) -> some View {
-        HStack(spacing: 4) {
+        let name = state.projects.first { $0.id == t.projectId }?.name ?? "—"
+        return HStack(spacing: 4) {
             Image(systemName: "folder.fill")
                 .font(.system(size: 8)).foregroundColor(Theme.subtext.opacity(0.55))
-            Text(state.projects.first { $0.id == t.projectId }?.name ?? "—")
+            Text(name)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(Theme.subtext.opacity(0.85))
                 .lineLimit(1)
         }
         .padding(.leading, 2)
+        // The whole tag, not just the text: it is two small glyphs and a 10pt label, and hitting
+        // only the characters would be a worse target than the thing looks.
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { state.openInFinder(t.projectId) }
+        .help("双击在 Finder 中打开 \(name)")
     }
 }
 
