@@ -211,7 +211,9 @@ struct Sidebar: View {
             }
             if !state.tasksCollapsed {
                 if state.taskGroups.isEmpty {
-                    Text("No terminals yet")
+                    // "No terminals yet" is a lie when there are plenty and the filter is hiding them.
+                    Text(state.showOnlyMarked && !state.terminals.isEmpty
+                         ? "No marked terminals" : "No terminals yet")
                         .font(.system(size: 12)).foregroundColor(Theme.subtext.opacity(0.55))
                         .padding(.horizontal, 16).padding(.top, 6)
                     Spacer(minLength: 0)
@@ -427,6 +429,7 @@ struct TopBar: View {
             if working > 0 { pill("\(working) working", .working) }
             if needs > 0 { pill("\(needs) needs you", .needsYou) }
             Spacer()
+            markFilterButton
             updateButton
             searchButton
             webButton
@@ -469,6 +472,32 @@ struct TopBar: View {
                 .help("忽略这个版本")
             }
             .background(Theme.accent).clipShape(Capsule())
+        }
+    }
+
+    private var marked: Int { state.terminals.filter(\.subtaskDone).count }
+
+    /// Show only marked terminals. Filled bookmark + a count while it is on, because a board that is
+    /// hiding most of itself has to say so somewhere that is always visible — the alternative is
+    /// wondering where your terminals went. It stays out of the way when nothing is marked at all.
+    @ViewBuilder private var markFilterButton: some View {
+        if marked > 0 || state.showOnlyMarked {
+            Button { state.showOnlyMarked.toggle(); state.save() } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: state.showOnlyMarked ? "bookmark.fill" : "bookmark")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(state.showOnlyMarked ? "\(marked) marked" : "\(marked)")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(state.showOnlyMarked ? Theme.onAccent : Theme.text)
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(state.showOnlyMarked ? Theme.markTint : Theme.card)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .stroke(state.showOnlyMarked ? Color.clear : Theme.stroke, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .help(state.showOnlyMarked ? "显示全部终端" : "只显示被 Mark 的终端")
         }
     }
 
@@ -568,11 +597,18 @@ struct MainArea: View {
                        title: "Open a project to get started",
                        subtitle: "Every project can launch clean terminal windows for your agents.",
                        button: "Open Folder") { DashboardView.pickFolder(into: state) }
+        } else if state.showOnlyMarked && state.visibleProjects.isEmpty {
+            // The filter is on and nothing is marked. Offering the way out here matters: this screen
+            // is otherwise indistinguishable from having lost every terminal.
+            EmptyState(icon: "bookmark",
+                       title: "No marked terminals",
+                       subtitle: "The board is filtered to marked terminals only. Mark one from its card, or show everything again.",
+                       button: "Show all terminals") { state.showOnlyMarked = false; state.save() }
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 28) {
-                        ForEach(state.projects) { p in
+                        ForEach(state.visibleProjects) { p in
                             ProjectSection(project: p).id(p.id)
                         }
                     }
@@ -591,8 +627,13 @@ struct ProjectSection: View {
     @EnvironmentObject var state: AppState
     let project: Project
 
-    private var clusters: [Cluster] { state.clustersInProject(project.id) }
-    private var standalone: [TerminalSession] { state.standaloneTerminals(inProject: project.id) }
+    // A cluster with no marked member is dropped whole rather than left as an empty frame.
+    private var clusters: [Cluster] {
+        state.clustersInProject(project.id).filter { !state.visible(state.members(ofCluster: $0.id)).isEmpty }
+    }
+    private var standalone: [TerminalSession] {
+        state.visible(state.standaloneTerminals(inProject: project.id))
+    }
     private var total: Int { state.terminals(inProject: project.id).count }
     private var newTokens: Int { state.projectNewTokens(project.id) }
     private var deltas: [TokenSample] { state.projectTokenDeltas(project.id) }
@@ -781,7 +822,8 @@ struct ClusterContainer: View {
     let clusterId: UUID
 
     private var name: String { state.cluster(clusterId)?.name ?? "" }
-    private var members: [TerminalSession] { state.members(ofCluster: clusterId) }
+    private var allMembers: [TerminalSession] { state.members(ofCluster: clusterId) }
+    private var members: [TerminalSession] { state.visible(allMembers) }
     private var highlighted: Bool { state.highlightedClusterId == clusterId }
 
     var body: some View {
@@ -799,7 +841,11 @@ struct ClusterContainer: View {
                     Image(systemName: "pencil").font(.system(size: 10)).foregroundColor(Theme.subtext)
                 }
                 .buttonStyle(.plain).help("Rename cluster task")
-                Text("· \(members.count) terminal\(members.count == 1 ? "" : "s")")
+                // The cluster's real size, with what the filter is showing of it — the header must
+                // not claim a two-terminal task when the task has six.
+                Text(members.count == allMembers.count
+                     ? "· \(allMembers.count) terminal\(allMembers.count == 1 ? "" : "s")"
+                     : "· \(members.count) of \(allMembers.count) shown")
                     .font(.system(size: 11)).foregroundColor(Theme.subtext)
                 Spacer()
                 Button { state.addToCluster(clusterId) } label: {

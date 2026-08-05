@@ -487,9 +487,14 @@ enum WebDashboardPage {
   #term.dropping{outline:2px dashed var(--accent);outline-offset:-6px}
   /* Files an agent handed over. Lives in the header rather than inside a conversation: it is the
      one thing you want to reach without first knowing which terminal produced it. */
-  #traybtn{position:relative;background:var(--card);color:var(--text);border:1px solid var(--stroke);
+  #traybtn,#markbtn{position:relative;background:var(--card);color:var(--text);border:1px solid var(--stroke);
     border-radius:8px;padding:5px 9px;font-size:14px;line-height:1;cursor:pointer}
   #traybtn.has{border-color:var(--accent)}
+  /* Filled tint while it is filtering: a board hiding most of itself has to say so somewhere that
+     is always on screen, or you go looking for terminals that are simply not being drawn. */
+  #markbtn.on{background:var(--markBg);border-color:var(--markTint)}
+  #markcount{font-size:11px;font-weight:700;color:var(--sub);margin-left:4px;vertical-align:1px}
+  #markbtn.on #markcount{color:var(--markTint)}
   #traybadge:not(:empty){position:absolute;top:-6px;right:-6px;min-width:16px;height:16px;
     border-radius:999px;background:var(--accent);color:var(--onAccent);font-size:10px;font-weight:700;
     line-height:16px;text-align:center;padding:0 3px}
@@ -560,6 +565,7 @@ enum WebDashboardPage {
   <span class="muted" id="counts">…</span>
   <span id="pills"></span>
   <span class="spacer"></span>
+  <button id="markbtn" onclick="toggleOnlyMarked()" title="Only show marked terminals">🔖<span id="markcount"></span></button>
   <button id="traybtn" onclick="toggleTray()" title="Files agents have sent you">📥<span id="traybadge"></span></button>
   <span class="refresh" id="refresh"></span>
 </header>
@@ -2016,13 +2022,26 @@ function render(s){
   if(s.needs>0)pills+=`<span class="pill" style="color:var(--amber);background:rgba(250,184,82,.18)">${s.needs} needs you</span>`;
   const pillEl=document.getElementById('pills');
   if(pillEl.innerHTML!==pills) pillEl.innerHTML=pills;
+  // The mark filter is this device's, not the fleet's: it is kept in localStorage rather than sent
+  // to the Mac, so filtering on the phone does not empty the board you are working at.
+  const marked=s.terminals.filter(t=>t.done).length;
+  const mb=document.getElementById('markbtn');
+  mb.style.display=(marked||onlyMarked)?'':'none';
+  mb.classList.toggle('on',onlyMarked);
+  document.getElementById('markcount').textContent=marked?marked:'';
   let html='';
   if(!s.remoteOK)html+=`<div class="banner">Web terminals are disabled — run <b>${esc(s.remoteHint)}</b> and relaunch FleetView. Status is still shown.</div>`;
   for(const p of s.projects){
-    const terms=s.terminals.filter(t=>t.projectId===p.id);
-    const tot=terms.reduce((a,t)=>a+t.tokens,0);
+    const all=s.terminals.filter(t=>t.projectId===p.id);
+    const terms=onlyMarked?all.filter(t=>t.done):all;
+    // A project with nothing marked is left out whole, the way the Mac's board does it — the point
+    // of the filter is a board with only the work you are tracking on it.
+    if(!terms.length&&onlyMarked) continue;
+    const tot=all.reduce((a,t)=>a+t.tokens,0);
     html+=`<div class="proj"><div class="projhead"><span class="name">${esc(p.name)}</span>`+
-      `<span class="count">${terms.length}</span>`+(tot>0?`<span class="tok">Σ ${short(tot)}</span>`:'')+
+      // Same rule as the cluster header: the project's real size, and what is on screen of it.
+      `<span class="count">${terms.length===all.length?all.length:terms.length+' / '+all.length}</span>`+
+      (tot>0?`<span class="tok">Σ ${short(tot)}</span>`:'')+
       `<button class="addbtn" onclick="newTerm('${p.id}')">+ Terminal</button>`+
       // The path rides in a data attribute rather than in the handler's text: it is arbitrary user
       // data, and a project directory with a quote in it would otherwise end the attribute.
@@ -2030,7 +2049,11 @@ function render(s){
     const cids=[...new Set(terms.filter(t=>t.clusterId).map(t=>t.clusterId))];
     for(const cid of cids){
       const c=s.clusters.find(x=>x.id===cid);const mem=terms.filter(t=>t.clusterId===cid);
-      html+=`<div class="cluster"><div class="chead"><span class="clabel">CLUSTER</span><span class="cname">${esc(c?c.name:'')}</span><span class="muted" style="margin-left:8px">· ${mem.length}</span></div><div class="grid">${mem.map(card).join('')}</div></div>`;
+      // The cluster's real size, and what is being shown of it — the header must not claim a
+      // two-terminal task when the task has six and four are filtered out.
+      const memAll=all.filter(t=>t.clusterId===cid);
+      const size=mem.length===memAll.length?`· ${memAll.length}`:`· ${mem.length} of ${memAll.length}`;
+      html+=`<div class="cluster"><div class="chead"><span class="clabel">CLUSTER</span><span class="cname">${esc(c?c.name:'')}</span><span class="muted" style="margin-left:8px">${size}</span></div><div class="grid">${mem.map(card).join('')}</div></div>`;
     }
     const solo=terms.filter(t=>!t.clusterId);
     if(solo.length)html+=`<div class="grid">${solo.map(card).join('')}</div>`;
@@ -2039,12 +2062,25 @@ function render(s){
   // Every 1.5s this used to replace the whole board, which forces a layout in the middle of a
   // flick and shows up as a stall at the end of a scroll. Almost every tick is identical, so the
   // rebuild only happens when the markup actually differs.
-  const out=html||'<div class="empty">No projects yet. Add one on the Mac.</div>';
+  const out=html||(onlyMarked
+    ? '<div class="empty">Nothing is marked.<br><span style="font-size:12px">The board is filtered to marked terminals only.</span>'
+      +'<br><button class="addbtn" style="margin:14px auto 0;display:block" onclick="toggleOnlyMarked()">Show all terminals</button></div>'
+    : '<div class="empty">No projects yet. Add one on the Mac.</div>');
   const root=document.getElementById('root');
   if(out!==lastBoard){ lastBoard=out; root.innerHTML=out; }
   syncRuns(s.terminals);   // after any rebuild, so fresh chips are filled in the same frame
 }
 let lastBoard='';
+/* Marked-only view. Device-local (localStorage, never sent to the Mac): which cards you want to
+   look at on a phone is not a property of the fleet, and filtering here must not empty the board
+   someone is working at on the desktop. */
+let onlyMarked=localStorage.getItem('fv_onlymark')==='1';
+function toggleOnlyMarked(){
+  onlyMarked=!onlyMarked;
+  localStorage.setItem('fv_onlymark',onlyMarked?'1':'0');
+  if(state) render(state);
+  toast(onlyMarked?'showing marked only':'showing all terminals');
+}
 
 /* Follow the Mac's appearance, not the phone's. The dashboard is a mirror of that window, so the
    two disagreeing reads as a bug; and it is one flag on /state, which is polled anyway. Applied to

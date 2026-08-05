@@ -16,6 +16,10 @@ final class AppState: ObservableObject {
     @Published var notes: [Note] = []
     @Published var tasksCollapsed: Bool = false
     @Published var notesCollapsed: Bool = false
+    /// Show only marked terminals on the board and in the sidebar. A focus filter, not a mode: it
+    /// hides cards, never touches the mark itself, and every count outside the filtered lists still
+    /// speaks for the whole fleet — a fleet that is quietly half-hidden is worse than no filter.
+    @Published var showOnlyMarked: Bool = false
 
     // Per-terminal cumulative new-token curve, rebuilt from transcripts (not persisted — recomputed).
     @Published var tokenSeries: [UUID: [TokenSample]] = [:]
@@ -326,6 +330,7 @@ final class AppState: ObservableObject {
         var tasksCollapsed: Bool?
         var notesCollapsed: Bool?
         var treePanelWidth: Double?
+        var showOnlyMarked: Bool?
     }
 
     func load() {
@@ -346,6 +351,7 @@ final class AppState: ObservableObject {
         notes = p.notes ?? []
         tasksCollapsed = p.tasksCollapsed ?? false
         notesCollapsed = p.notesCollapsed ?? false
+        showOnlyMarked = p.showOnlyMarked ?? false
         if let w = p.treePanelWidth { treePanelWidth = min(720, max(380, w)) }
         // Rebuild each terminal's token curve from its transcript (background; badge shows meanwhile).
         for t in terminals { if let tp = t.transcriptPath { refreshTokens(t.id, path: tp) } }
@@ -362,7 +368,7 @@ final class AppState: ObservableObject {
                           clusters: clusters, selectedProjectId: selectedProjectId,
                           sidebarWidth: sidebarWidth, notes: notes,
                           tasksCollapsed: tasksCollapsed, notesCollapsed: notesCollapsed,
-                          treePanelWidth: treePanelWidth)
+                          treePanelWidth: treePanelWidth, showOnlyMarked: showOnlyMarked)
         if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile) }
     }
 
@@ -571,6 +577,27 @@ final class AppState: ObservableObject {
         _ = newTerminal(projectId: anyMember.projectId, name: cluster(clusterId)?.name, clusterId: clusterId)
     }
 
+    /// The terminals a list should actually show, given the "only marked" filter. Applied at the
+    /// display edges rather than inside the accessors below, so nothing that reasons about the
+    /// fleet — status counts, the web snapshot, drag targets — can be silently narrowed by a
+    /// setting about what is on screen.
+    func visible(_ list: [TerminalSession]) -> [TerminalSession] {
+        showOnlyMarked ? list.filter(\.subtaskDone) : list
+    }
+
+    /// How many terminals the filter is currently hiding (0 when it is off).
+    var hiddenByMarkFilter: Int {
+        showOnlyMarked ? terminals.filter { !$0.subtaskDone }.count : 0
+    }
+
+    /// The projects the board should draw. Under the filter a project with nothing marked is left
+    /// out entirely rather than drawn as an empty frame: the point of the filter is a board with
+    /// only the work you are tracking on it, and six empty headers is not that.
+    var visibleProjects: [Project] {
+        guard showOnlyMarked else { return projects }
+        return projects.filter { !visible(terminals(inProject: $0.id)).isEmpty }
+    }
+
     func clustersInProject(_ projectId: UUID) -> [Cluster] {
         let ids = Set(terminals.filter { $0.projectId == projectId && $0.clusterId != nil }
                                .compactMap { $0.clusterId })
@@ -587,21 +614,20 @@ final class AppState: ObservableObject {
 
     // MARK: - Tasks (sidebar) — standalone terminals + clusters
 
+    /// The sidebar follows the board's filter: the two are the same list of work seen twice, and
+    /// one of them quietly disagreeing about what exists is how you lose a terminal.
     var tasks: [TaskItem] {
-        var result: [TaskItem] = []
-        for p in projects {
-            for c in clustersInProject(p.id) { result.append(.cluster(c.id)) }
-            for t in standaloneTerminals(inProject: p.id) { result.append(.terminal(t.id)) }
-        }
-        return result
+        taskGroups.flatMap(\.tasks)
     }
 
     /// Tasks grouped by project (only projects that have at least one task).
     var taskGroups: [TaskGroup] {
         projects.compactMap { p in
             var items: [TaskItem] = []
-            for c in clustersInProject(p.id) { items.append(.cluster(c.id)) }
-            for t in standaloneTerminals(inProject: p.id) { items.append(.terminal(t.id)) }
+            for c in clustersInProject(p.id) where !visible(members(ofCluster: c.id)).isEmpty {
+                items.append(.cluster(c.id))
+            }
+            for t in visible(standaloneTerminals(inProject: p.id)) { items.append(.terminal(t.id)) }
             return items.isEmpty ? nil : TaskGroup(project: p, tasks: items)
         }
     }
