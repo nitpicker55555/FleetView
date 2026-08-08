@@ -21,6 +21,17 @@ final class AppState: ObservableObject {
     /// speaks for the whole fleet — a fleet that is quietly half-hidden is worse than no filter.
     @Published var showOnlyMarked: Bool = false
 
+    /// Projects whose section is folded shut on the board.
+    ///
+    /// Held here as a set of ids rather than as a field on `Project`, because `Project` is decoded
+    /// from `state.json` and Swift's synthesized decoder does not fall back to a property's default
+    /// value for a missing key — it throws. A new non-optional field on `Project` would therefore
+    /// fail the whole `Persisted` decode against every state.json already on disk, and `load()`
+    /// returns empty-handed on a decode failure: the entire board, gone on the next launch. The
+    /// optional-field-on-Persisted shape below is what the rest of the settings use for the same
+    /// reason.
+    @Published var collapsedProjects: Set<UUID> = []
+
     /// Close every terminal when FleetView quits. Off by default, and deliberately so: sessions
     /// outliving the app is what lets a long run keep going while FleetView is updated or relaunched
     /// (see `reconnectLiveTerminals`). Turning it on makes quitting mean "stop the fleet too".
@@ -385,6 +396,7 @@ final class AppState: ObservableObject {
         var treePanelWidth: Double?
         var showOnlyMarked: Bool?
         var closeTerminalsOnQuit: Bool?
+        var collapsedProjects: [UUID]?
     }
 
     func load() {
@@ -407,6 +419,10 @@ final class AppState: ObservableObject {
         notesCollapsed = p.notesCollapsed ?? false
         showOnlyMarked = p.showOnlyMarked ?? false
         closeTerminalsOnQuit = p.closeTerminalsOnQuit ?? false
+        // Intersected with what actually exists: a project removed while collapsed would otherwise
+        // leave its id here forever, and if a future one were ever created with that id it would
+        // open folded for no reason anybody could explain.
+        collapsedProjects = Set(p.collapsedProjects ?? []).intersection(projects.map(\.id))
         if let w = p.treePanelWidth { treePanelWidth = min(720, max(380, w)) }
         // Rebuild each terminal's token curve from its transcript (background; badge shows meanwhile).
         for t in terminals { if let tp = t.transcriptPath { refreshTokens(t.id, path: tp) } }
@@ -440,7 +456,8 @@ final class AppState: ObservableObject {
                           sidebarWidth: sidebarWidth, notes: notes,
                           tasksCollapsed: tasksCollapsed, notesCollapsed: notesCollapsed,
                           treePanelWidth: treePanelWidth, showOnlyMarked: showOnlyMarked,
-                          closeTerminalsOnQuit: closeTerminalsOnQuit)
+                          closeTerminalsOnQuit: closeTerminalsOnQuit,
+                          collapsedProjects: Array(collapsedProjects))
         // .atomic: without it a crash or a full disk mid-write leaves a truncated state.json, and
         // that file IS the board — every project, terminal and cluster.
         if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile, options: .atomic) }
@@ -495,8 +512,22 @@ final class AppState: ObservableObject {
         for t in terminals.filter({ $0.projectId == id }) { removeTerminal(t.id) }
         projects.removeAll { $0.id == id }
         if selectedProjectId == id { selectedProjectId = nil }
+        collapsedProjects.remove(id)
         save()
     }
+
+    /// Fold a project's section shut, hiding its cards behind its header.
+    ///
+    /// A view-only fold: it hides cards, it does not touch a terminal or what it is doing, and every
+    /// count outside the section still speaks for the whole fleet. Same rule as the mark filter —
+    /// a board that is quietly hiding work is worse than one that is not hiding any.
+    func toggleProjectCollapsed(_ id: UUID) {
+        if collapsedProjects.contains(id) { collapsedProjects.remove(id) }
+        else { collapsedProjects.insert(id) }
+        save()
+    }
+
+    func isCollapsed(_ id: UUID) -> Bool { collapsedProjects.contains(id) }
 
     // MARK: - Terminals
 
@@ -646,6 +677,42 @@ final class AppState: ObservableObject {
             save()
         }
         return count
+    }
+
+    /// Empty the board: every terminal closed, every project and cluster gone.
+    ///
+    /// The one action here that cannot be undone by dragging something back. `closeAllTerminals`
+    /// leaves the cards behind precisely so a closed terminal can be reopened into its conversation;
+    /// this throws those cards away, along with the names, marks and cluster structure that only
+    /// ever existed in `state.json`. The conversations themselves are untouched — they live in the
+    /// agents' own transcripts, and ⌘K still finds every one of them — so what is lost is the board,
+    /// not the work. Callers confirm first.
+    func clearBoard(reason: String) {
+        audited(AuditIntent("board.clear",
+                            event: "fleetview.board.cleared",
+                            categories: ["configuration"],
+                            data: ["projects": .int(projects.count),
+                                   "terminals": .int(terminals.count),
+                                   "reason": .string(reason)],
+                            message: "cleared the board (\(reason))")) {
+            closeSessionTree()
+            // Nested audit on purpose: the process teardown is attributed to `terminal.close_all`
+            // and only what is left — the removals — lands under this intent.
+            closeAllTerminals(reason: reason)
+            FV.log("board cleared (\(reason)): \(projects.count) project(s), \(terminals.count) terminal(s)")
+            terminals.removeAll()
+            projects.removeAll()
+            clusters.removeAll()
+            // The per-terminal caches are keyed by an id that no longer exists; left behind they
+            // would be a slow leak across a long-running app.
+            tokenSeries.removeAll()
+            lastParsedTranscriptSize.removeAll()
+            lastTokenRefreshAt.removeAll()
+            selectedProjectId = nil
+            highlightedTerminalId = nil
+            highlightedClusterId = nil
+            save()
+        }
     }
 
     /// On launch, silently reattach every terminal whose tmux session is still alive (FleetView was
@@ -969,6 +1036,7 @@ final class AppState: ObservableObject {
     enum ClusterDrop: Equatable {
         case card(UUID)        // another loose card → the two become a cluster
         case cluster(UUID)     // anywhere inside a cluster box → join that task
+        case leaveCluster      // empty board, dragged out of the cluster it was in → standalone
     }
     /// The target under the cursor right now — nil when releasing here would do nothing.
     @Published var clusterDrop: ClusterDrop?
@@ -1005,20 +1073,56 @@ final class AppState: ObservableObject {
         return union.isNull ? .null : union.insetBy(dx: -14, dy: -14)
     }
 
-    /// Where to draw the "drop here" ring, and how round it should be — the cluster box for a
-    /// cluster, otherwise the copy of the card the cursor is actually inside (a running terminal is
-    /// on the board twice: RUNNING NOW and its project section).
-    var clusterDropFrame: (rect: CGRect, radius: CGFloat)? {
+    /// What the drop indicator should draw: the box being landed in, or — when the card is on its
+    /// way out — the cluster it is leaving. `leaving` is what tells the two apart visually; they
+    /// are opposite outcomes and must not look alike.
+    struct DropIndicator {
+        var rect: CGRect
+        var radius: CGFloat
+        var leaving: Bool = false
+    }
+
+    /// Where to draw it. Corner radii match what they are ringing, and a card is looked up by the
+    /// copy the cursor is actually inside — a running terminal is on the board twice (RUNNING NOW
+    /// and its project section).
+    var clusterDropFrame: DropIndicator? {
         switch clusterDrop {
         case .cluster(let id):
             guard let r = clusterFrames[id]?.first(where: { $0.contains(dragLocation) }) else { return nil }
-            return (r, 14)          // matches ClusterContainer's own corner radius
+            return DropIndicator(rect: r, radius: 14)   // ClusterContainer's own corner radius
         case .card(let id):
             guard let r = cardFrames[id]?.first(where: { $0.contains(dragLocation) }) else { return nil }
-            return (r, 12)          // matches TerminalCardView's
+            return DropIndicator(rect: r, radius: 12)   // TerminalCardView's
+        case .leaveCluster:
+            // Ring the cluster being left, not the empty space being dropped into: the point of the
+            // gesture is which task this card is walking out of. Absent when that box is scrolled
+            // out of view, where the cursor chip is the only thing that can still speak.
+            guard let id = draggingTerminalId,
+                  let c = terminals.first(where: { $0.id == id })?.clusterId,
+                  let r = clusterFrames[c]?.first else { return nil }
+            return DropIndicator(rect: r, radius: 14, leaving: true)
         case nil:
             return nil
         }
+    }
+
+    /// The card being dragged, where it still sits. The real card never moves — a chip follows the
+    /// cursor instead — so without marking it the board gives no sign of *which* one was picked up.
+    /// Both copies, when it is a running terminal drawn twice.
+    var dragSourceCardFrames: [CGRect] {
+        guard let id = draggingTerminalId else { return [] }
+        return cardFrames[id] ?? []
+    }
+
+    /// The cluster the dragged card is currently in — the task it would be leaving.
+    ///
+    /// Withheld once the drop would actually leave it: the "leaving" indicator rings the same box,
+    /// and two outlines on one rectangle is not two pieces of information.
+    var dragSourceClusterFrame: CGRect? {
+        guard let id = draggingTerminalId, clusterDrop != .leaveCluster,
+              let c = terminals.first(where: { $0.id == id })?.clusterId,
+              let r = clusterFrames[c]?.first else { return nil }
+        return r
     }
 
     /// What is under the cursor that this card could join.
@@ -1034,25 +1138,36 @@ final class AppState: ObservableObject {
     private func clusterTarget(for id: UUID, at point: CGPoint) -> ClusterDrop? {
         guard let src = terminals.first(where: { $0.id == id }) else { return nil }
 
-        if let hit = clusterFrames.first(where: { $0.value.contains { $0.contains(point) } })?.key,
-           hit != src.clusterId,                        // already in it — nothing to join
-           members(ofCluster: hit).first?.projectId == src.projectId {
+        // Inside a cluster box: join that task — or, if it is the one this card is already in,
+        // nothing at all. Returning here rather than falling through matters: every member card is
+        // inside the box, so the card branch below would otherwise re-answer the same question.
+        if let hit = clusterFrames.first(where: { $0.value.contains { $0.contains(point) } })?.key {
+            guard hit != src.clusterId,
+                  members(ofCluster: hit).first?.projectId == src.projectId else { return nil }
             return .cluster(hit)
         }
 
-        guard let hit = cardFrames.first(where: { entry in
-                  entry.key != id && entry.value.contains { $0.contains(point) }
-              })?.key,
-              let target = terminals.first(where: { $0.id == hit }),
-              target.projectId == src.projectId else { return nil }
-        // Already together: highlighting the card would promise a grouping the release cannot make.
-        if let c = src.clusterId, c == target.clusterId { return nil }
-        return .card(hit)
+        if let hit = cardFrames.first(where: { entry in
+               entry.key != id && entry.value.contains { $0.contains(point) }
+           })?.key,
+           let target = terminals.first(where: { $0.id == hit }),
+           target.projectId == src.projectId {
+            return .card(hit)
+        }
+
+        // Empty board. For a card that belongs to a cluster this is the other half of the phone
+        // gesture: dragged out of the folder and left standing on its own. For one that doesn't,
+        // there is nothing here to do — which is what releasing on the board has always meant.
+        if src.clusterId != nil, boardFrame.contains(point) { return .leaveCluster }
+        return nil
     }
 
-    /// The dragged card joins a task. Dropped on a cluster it joins that one; dropped on a loose
-    /// card, `ensureCluster` makes a fresh cluster named after that card and both end up in it.
-    func groupTerminal(_ dragged: UUID, into drop: ClusterDrop) {
+    /// Carry out what the drag was aiming at: join a task, form one, or walk out of the one it was
+    /// in. Dropped on a cluster it joins that one; dropped on a loose card, `ensureCluster` makes a
+    /// fresh cluster named after that card and both end up in it.
+    func applyClusterDrop(_ dragged: UUID, _ drop: ClusterDrop) {
+        // The same operation the dock's Leave Cluster zone performs, reached by the other gesture.
+        if drop == .leaveCluster { removeFromCluster(dragged); return }
         audited(AuditIntent("terminal.group",
                             categories: ["configuration"],
                             target: auditTarget(terminal: dragged),
@@ -1061,6 +1176,7 @@ final class AppState: ObservableObject {
             switch drop {
             case .cluster(let c): cluster = c
             case .card(let t):    cluster = ensureCluster(for: t)
+            case .leaveCluster:   cluster = nil     // returned above
             }
             guard let cluster,
                   let i = terminals.firstIndex(where: { $0.id == dragged }),
@@ -1085,7 +1201,7 @@ final class AppState: ObservableObject {
         guard let id else { return }
         if let zone { perform(zone, on: id) }
         else if onTreeZone { openSessionTree(id) }
-        else if let drop { groupTerminal(id, into: drop) }
+        else if let drop { applyClusterDrop(id, drop) }
     }
 
     func cancelDrag() {

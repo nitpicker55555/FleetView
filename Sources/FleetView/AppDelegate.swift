@@ -96,6 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let closeAll = NSMenuItem(title: "关闭所有终端…", action: #selector(closeAllTerminals), keyEquivalent: "")
         closeAll.target = self
         appMenu.addItem(closeAll)
+        let clear = NSMenuItem(title: "清空所有项目并关闭所有终端…", action: #selector(clearBoard), keyEquivalent: "")
+        clear.target = self
+        appMenu.addItem(clear)
         appMenu.addItem(.separator())
         let uninstall = NSMenuItem(title: "Uninstall Status Hooks (Claude + Codex)", action: #selector(uninstallHooks), keyEquivalent: "")
         uninstall.target = self
@@ -135,15 +138,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Stop the whole fleet. Confirmed first, and the confirmation says what survives: the cards
     /// stay and reopen into their conversations, which is the difference between this and Remove.
     @objc private func closeAllTerminals() {
-        let open = state.openTerminalCount
-        let a = NSAlert()
-        a.messageText = open > 0 ? "关闭 \(open) 个终端？" : "关闭所有终端？"
-        a.informativeText = "正在运行的 agent 会被停止。终端卡片会留在看板上——点击卡片可以重新打开并继续原来的会话。"
-        a.addButton(withTitle: "关闭全部")
-        a.addButton(withTitle: "取消")
-        a.buttons.first?.hasDestructiveAction = true
-        guard a.runModal() == .alertFirstButtonReturn else { return }
-        state.closeAllTerminals(reason: "menu")
+        BoardActions.confirmCloseAll(state, reason: "menu")
+    }
+
+    @objc private func clearBoard() {
+        BoardActions.confirmClear(state, reason: "menu")
     }
 
     @objc private func revealSupport() {

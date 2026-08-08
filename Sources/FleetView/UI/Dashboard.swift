@@ -122,8 +122,36 @@ struct DashboardView: View {
         case .card(let id):
             guard let t = state.terminals.first(where: { $0.id == id }) else { return nil }
             return "松开：与「\(t.name)」组成 cluster"
+        case .leaveCluster:
+            let name = state.terminals.first { $0.id == state.draggingTerminalId }?
+                .clusterId.flatMap { state.cluster($0)?.name }
+            return "松开：移出「\(name ?? "cluster")」"
         case nil:
             return nil
+        }
+    }
+
+    /// One outline around something on the board, in "fleet" coordinates.
+    ///
+    /// Clipped to the board because every rect here is a laid-out frame, not a visible one: a card
+    /// scrolled half under the top bar still reports its whole height, and a ring drawn across the
+    /// header outlines nothing that is there.
+    /// `alpha`/`fill`/`glow` are all read against `tint` at full strength — passing a pre-faded
+    /// colour would multiply instead, and a 0.35 stroke with a 0.06 fill would quietly become 0.02.
+    @ViewBuilder
+    private func ring(_ rect: CGRect, radius: CGFloat, tint: Color, width: CGFloat,
+                      alpha: Double = 1, dash: [CGFloat] = [],
+                      fill: Double = 0, glow: Double = 0) -> some View {
+        let f = rect.intersection(state.boardFrame)
+        if !f.isNull, !f.isEmpty {
+            RoundedRectangle(cornerRadius: radius)
+                .fill(tint.opacity(fill))
+                .overlay(RoundedRectangle(cornerRadius: radius)
+                    .stroke(tint.opacity(alpha), style: StrokeStyle(lineWidth: width, dash: dash)))
+                .shadow(color: tint.opacity(glow), radius: 12)
+                .frame(width: f.width, height: f.height)
+                .position(x: f.midX, y: f.midY)
+                .transition(.opacity)
         }
     }
 
@@ -140,18 +168,25 @@ struct DashboardView: View {
                 //
                 // Clipped to the board: a target scrolled half under the top bar still reports its
                 // whole frame, and an accent ring drawn across the header highlights nothing.
+                // Where the card came from, drawn first and drawn quietly: the loudest thing on the
+                // board has to be what will happen, not what already is.
+                if let c = state.dragSourceClusterFrame {
+                    ring(c, radius: 14, tint: Theme.accent, width: 2, alpha: 0.35)
+                }
+                ForEach(Array(state.dragSourceCardFrames.enumerated()), id: \.offset) { _, r in
+                    ring(r, radius: 12, tint: Theme.accent, width: 1.5, alpha: 0.5,
+                         dash: [5, 4], fill: 0.06)
+                }
+                // …and what releasing here would do. Joining fills and glows; leaving is a dashed
+                // amber outline — the colour the dock's Leave Cluster zone already uses, and
+                // deliberately not the solid accent, because walking out of a task is the opposite
+                // outcome and must not read as landing in one.
                 if let target = state.clusterDropFrame {
-                    let f = target.rect.intersection(state.boardFrame)
-                    if !f.isNull, !f.isEmpty {
-                        RoundedRectangle(cornerRadius: target.radius)
-                            .fill(Theme.accent.opacity(0.16))
-                            .overlay(RoundedRectangle(cornerRadius: target.radius)
-                                .stroke(Theme.accent, lineWidth: 2.5))
-                            .shadow(color: Theme.accent.opacity(0.5), radius: 12)
-                            .frame(width: f.width, height: f.height)
-                            .position(x: f.midX, y: f.midY)
-                            .transition(.opacity)
-                    }
+                    ring(target.rect, radius: target.radius,
+                         tint: target.leaving ? Theme.amber : Theme.accent, width: 2.5,
+                         dash: target.leaving ? [7, 5] : [],
+                         fill: target.leaving ? 0.05 : 0.16,
+                         glow: target.leaving ? 0 : 0.5)
                 }
                 VStack { Spacer(); ActionDock(terminalId: dragId).environmentObject(state) }
                 if let t = state.terminals.first(where: { $0.id == dragId }) {
@@ -224,6 +259,48 @@ struct DashboardView: View {
             FV.log("new folder failed: \(url.path): \(error.localizedDescription)")
             NSAlert(error: error).runModal()
         }
+    }
+}
+
+/// Board-wide actions that need an answer before they run.
+///
+/// Here rather than duplicated in the menu and the top bar: two copies of a confirmation are two
+/// chances for one of them to understate what it is about to do.
+@MainActor
+enum BoardActions {
+    /// Close every terminal. The cards survive, so this is recoverable and the caller's own UI
+    /// (the top-bar panel) is confirmation enough; the menu item, which has no such panel, asks.
+    static func confirmCloseAll(_ state: AppState, reason: String) {
+        let open = state.openTerminalCount
+        let a = NSAlert()
+        a.messageText = open > 0 ? "关闭 \(open) 个终端？" : "关闭所有终端？"
+        a.informativeText = "正在运行的 agent 会被停止。终端卡片会留在看板上——点击卡片可以重新打开并继续原来的会话。"
+        a.addButton(withTitle: "关闭全部")
+        a.addButton(withTitle: "取消")
+        a.buttons.first?.hasDestructiveAction = true
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        state.closeAllTerminals(reason: reason)
+    }
+
+    /// Empty the board. Always asks, from every entry point: this is the one action on the board
+    /// that nothing can put back.
+    static func confirmClear(_ state: AppState, reason: String) {
+        let p = state.projects.count, t = state.terminals.count
+        guard p > 0 || t > 0 else { return }
+        let a = NSAlert()
+        a.messageText = "清空看板？"
+        // Says what goes and what stays. "This cannot be undone" alone leaves people guessing
+        // whether their conversations are about to be deleted — they are not.
+        a.informativeText = """
+        \(p) 个项目和 \(t) 个终端会从 FleetView 移除，正在运行的 agent 会被停止。终端名称、mark 和 cluster 分组会一并丢失，无法撤销。
+
+        对话历史不受影响：它们保存在 Claude / Codex 自己的记录里，⌘K 仍然可以搜索并打开。项目文件夹本身也不会被删除。
+        """
+        a.addButton(withTitle: "清空看板")
+        a.addButton(withTitle: "取消")
+        a.buttons.first?.hasDestructiveAction = true
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        state.clearBoard(reason: reason)
     }
 }
 
@@ -607,6 +684,23 @@ struct TopBar: View {
                     .background(Theme.red).clipShape(RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
+            // Secondary by design: same panel, but text-only and behind its own alert. It sits
+            // one click from the button above it and does something that button explicitly does
+            // not — throw the board away.
+            Button {
+                showPower = false
+                BoardActions.confirmClear(state, reason: "topbar")
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "trash").font(.system(size: 10, weight: .semibold))
+                    Text("清空所有项目并关闭所有终端").font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(Theme.red)
+                .frame(maxWidth: .infinity).padding(.vertical, 5)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("移除全部项目与终端卡片（对话历史不受影响）")
             Divider().overlay(Theme.stroke)
             Toggle(isOn: Binding(get: { state.closeTerminalsOnQuit },
                                  set: { state.closeTerminalsOnQuit = $0; state.save() })) {
@@ -825,20 +919,38 @@ struct ProjectSection: View {
     @State private var copied = false
     @State private var gripHot = false
 
+    private var collapsed: Bool { state.isCollapsed(project.id) }
+    // Counted over every terminal in the project, not the filtered list: what the header reports
+    // about hidden work has to be the truth about all of it.
+    private var needsYou: Int { state.terminals(inProject: project.id).filter { $0.status == .needsYou }.count }
+    private var working: Int { state.terminals(inProject: project.id).filter { $0.status == .working }.count }
+
+    private func statusPill(_ text: String, _ status: TermStatus) -> some View {
+        Text(text).font(.system(size: 10, weight: .semibold))
+            .padding(.horizontal, 7).padding(.vertical, 1)
+            .background(Theme.statusColor(status).opacity(0.18))
+            .foregroundColor(Theme.statusColor(status))
+            .clipShape(Capsule())
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             header
-            if showChart && deltas.count > 1 {
-                ProjectTokenChart(samples: deltas, lastUpdated: lastTokenTime)
-            }
-            if total == 0 {
-                emptyRow
-            } else {
-                ForEach(clusters) { c in ClusterContainer(clusterId: c.id).id(c.id) }
-                if !standalone.isEmpty {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 14)],
-                              alignment: .leading, spacing: 14) {
-                        ForEach(standalone) { t in TerminalCardView(terminal: t).id(t.id) }
+            // Folded: the header alone, which still carries the terminal count and the token
+            // figures — a project you have put away should still be able to tell you it is busy.
+            if !collapsed {
+                if showChart && deltas.count > 1 {
+                    ProjectTokenChart(samples: deltas, lastUpdated: lastTokenTime)
+                }
+                if total == 0 {
+                    emptyRow
+                } else {
+                    ForEach(clusters) { c in ClusterContainer(clusterId: c.id).id(c.id) }
+                    if !standalone.isEmpty {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 14)],
+                                  alignment: .leading, spacing: 14) {
+                            ForEach(standalone) { t in TerminalCardView(terminal: t).id(t.id) }
+                        }
                     }
                 }
             }
@@ -860,6 +972,19 @@ struct ProjectSection: View {
                     MainActor.assumeIsolated { state.draggingProjectId = project.id }
                     return NSItemProvider(object: project.id.uuidString as NSString)
                 }
+            // Same chevron idiom as the sidebar's section headers, pointing at the same thing.
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) { state.toggleProjectCollapsed(project.id) }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.subtext)
+                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(collapsed ? "展开这个项目" : "折叠这个项目")
             Image(systemName: "folder.fill").font(.system(size: 12)).foregroundColor(Theme.accent.opacity(0.9))
             // lineLimit(1) for the same reason the card's footer labels have it: the "+N/min" chip
             // below re-measures every 5s and swings between "+0/min" and "+1.2M/min", and on a
@@ -873,6 +998,14 @@ struct ProjectSection: View {
             Text("\(total)").font(.system(size: 11, weight: .medium))
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Theme.card).foregroundColor(Theme.subtext).clipShape(Capsule())
+            // Folded, the cards can no longer speak for themselves, and a terminal waiting on an
+            // answer behind a closed section is the one thing this feature could genuinely cost
+            // you. The header says it instead. RUNNING NOW already lifts working terminals out of
+            // their section, so that half is belt-and-braces; "needs you" has no such rescue.
+            if collapsed {
+                if needsYou > 0 { statusPill("\(needsYou) needs you", .needsYou) }
+                if working > 0 { statusPill("\(working) running", .working) }
+            }
             if newTokens > 0 {
                 HStack(spacing: 3) {
                     Image(systemName: "sum").font(.system(size: 9, weight: .bold))
