@@ -21,6 +21,16 @@ final class AppState: ObservableObject {
     /// speaks for the whole fleet — a fleet that is quietly half-hidden is worse than no filter.
     @Published var showOnlyMarked: Bool = false
 
+    /// Close every terminal when FleetView quits. Off by default, and deliberately so: sessions
+    /// outliving the app is what lets a long run keep going while FleetView is updated or relaunched
+    /// (see `reconnectLiveTerminals`). Turning it on makes quitting mean "stop the fleet too".
+    @Published var closeTerminalsOnQuit: Bool = false
+
+    /// Set once the app is tearing down. Terminal windows disappearing during a quit must not be
+    /// read as the user closing a terminal, which now kills the session behind it — that would make
+    /// every quit a fleet-wide kill regardless of the setting above.
+    var isQuitting = false
+
     // Per-terminal cumulative new-token curve, rebuilt from transcripts (not persisted — recomputed).
     @Published var tokenSeries: [UUID: [TokenSample]] = [:]
     private var lastParsedTranscriptSize: [UUID: Int] = [:]
@@ -370,6 +380,7 @@ final class AppState: ObservableObject {
         var notesCollapsed: Bool?
         var treePanelWidth: Double?
         var showOnlyMarked: Bool?
+        var closeTerminalsOnQuit: Bool?
     }
 
     func load() {
@@ -391,6 +402,7 @@ final class AppState: ObservableObject {
         tasksCollapsed = p.tasksCollapsed ?? false
         notesCollapsed = p.notesCollapsed ?? false
         showOnlyMarked = p.showOnlyMarked ?? false
+        closeTerminalsOnQuit = p.closeTerminalsOnQuit ?? false
         if let w = p.treePanelWidth { treePanelWidth = min(720, max(380, w)) }
         // Rebuild each terminal's token curve from its transcript (background; badge shows meanwhile).
         for t in terminals { if let tp = t.transcriptPath { refreshTokens(t.id, path: tp) } }
@@ -423,7 +435,8 @@ final class AppState: ObservableObject {
                           clusters: clusters, selectedProjectId: selectedProjectId,
                           sidebarWidth: sidebarWidth, notes: notes,
                           tasksCollapsed: tasksCollapsed, notesCollapsed: notesCollapsed,
-                          treePanelWidth: treePanelWidth, showOnlyMarked: showOnlyMarked)
+                          treePanelWidth: treePanelWidth, showOnlyMarked: showOnlyMarked,
+                          closeTerminalsOnQuit: closeTerminalsOnQuit)
         // .atomic: without it a crash or a full disk mid-write leaves a truncated state.json, and
         // that file IS the board — every project, terminal and cluster.
         if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile, options: .atomic) }
@@ -433,14 +446,25 @@ final class AppState: ObservableObject {
 
     func addProject(path: String) {
         let url = URL(fileURLWithPath: path)
+        let id: UUID
         if let existing = projects.first(where: { $0.path == path }) {
             selectedProjectId = existing.id
+            id = existing.id
         } else {
             let isGit = FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path)
             let proj = Project(name: url.lastPathComponent, path: path, isGit: isGit)
             projects.append(proj)
             selectedProjectId = proj.id
+            id = proj.id
         }
+        // Take the board to it. A new project is appended, so it lands at the very bottom — past
+        // however many sections are already open — and opening a folder that then appears nowhere
+        // on screen reads as nothing having happened. Deferred by one turn so the section exists
+        // to scroll to: `scrollToId` is consumed by MainArea's `onChange`, which fires as this
+        // mutation lands, before the new ProjectSection has been built. Cleared first so opening a
+        // folder that is already on the board still counts as a change and still scrolls.
+        scrollToId = nil
+        DispatchQueue.main.async { [weak self] in self?.scrollToId = id }
         save()
     }
 
@@ -494,12 +518,130 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Reopen a closed terminal — and put it back into the conversation it was in.
+    ///
+    /// Closing a terminal now really closes it, so a card left on the board is a session that
+    /// exists only as a transcript. Clicking it has to mean "carry on where we were": a fresh
+    /// `claude` that has forgotten the last two hours is a worse answer than not reopening at all.
+    /// A session that is still alive (FleetView was relaunched, the tmux session outlived it) is
+    /// reattached instead, and nothing is typed — that terminal already has its agent.
     func reopenTerminal(_ id: UUID) {
         if controllers[id] != nil { raiseTerminal(id); return }
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        let t = terminals[idx]
+        let resumeFrom = remote.sessionExists(id) ? nil : lastSessionFile(for: t)
         enterStatus(.shell, at: idx)
-        openWindow(for: terminals[idx])
+        // Suppress the automatic `claude` only when there is something to resume — otherwise a
+        // terminal that never ran an agent would come back as a bare shell.
+        openWindow(for: t, autoRun: resumeFrom == nil ? nil : false)
+        if let path = resumeFrom { resumeSession(t, transcript: path) }
         save()
+    }
+
+    /// The transcript this card last had, and the one a reopen must resume.
+    ///
+    /// Deliberately not `transcriptPath(for:)`: that falls back to the newest unclaimed session in
+    /// the cwd, which is a fine guess for a *live* terminal and a bad one here — for a closed card
+    /// it is as likely to be a conversation some other terminal started since.
+    func lastSessionFile(for t: TerminalSession) -> String? {
+        if let p = hookSessionPath(for: t.id) { return p }
+        if let p = t.transcriptPath, FileManager.default.fileExists(atPath: p) { return p }
+        return nil
+    }
+
+    /// Work out the resume command off the main actor (it reads transcripts and can walk the
+    /// filesystem looking for the session's project folder), then type it into the fresh shell.
+    private func resumeSession(_ t: TerminalSession, transcript path: String) {
+        let createdAt = Date()
+        let kind = t.agentKind
+        let termCwd = t.cwd
+        let id = t.id
+        let name = t.name
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let cmd = AppState.resumeCommand(transcript: path, kind: kind, termCwd: termCwd) else {
+                FV.log("reopen: nothing resumable for \(name) (\(path))")
+                return
+            }
+            Task { @MainActor in
+                guard let self else { return }
+                FV.log("reopen: resuming \(name) — \(cmd)")
+                // Same handoff as the fork paths: the shell (and, under tmux, the session) needs a
+                // moment to be ready before it can be typed into.
+                let elapsed = Date().timeIntervalSince(createdAt)
+                self.typeIntoTerminal(id, cmd, after: max(0.2, 1.4 - elapsed))
+            }
+        }
+    }
+
+    /// `claude --resume <sid>` / `codex resume <sid>` for a transcript on disk, with the `cd` that
+    /// makes it resolve. Pure and off-actor: it only touches the filesystem.
+    nonisolated static func resumeCommand(transcript path: String, kind: AgentKind,
+                                          termCwd: String) -> String? {
+        let base = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        guard !base.isEmpty else { return nil }
+
+        if kind == .codex || path.contains("/.codex/") {
+            // A rollout is named `rollout-<timestamp>-<uuid>.jsonl` and `codex resume` wants the
+            // UUID alone — handing it the whole filename opens the session picker instead.
+            let parts = base.split(separator: "-")
+            guard parts.count >= 5 else { return nil }
+            let sid = parts.suffix(5).joined(separator: "-")
+            guard UUID(uuidString: sid) != nil else { return nil }
+            let cwd = CodexSession.rolloutCwd(path) ?? termCwd
+            let cmd = "codex resume \(sid)"
+            return cwd == termCwd ? cmd : "cd \(SessionForge.shellQuote(cwd)) && \(cmd)"
+        }
+
+        // Claude resolves `--resume <sid>` against the *current* folder's project slug, so the
+        // terminal has to start somewhere that slugifies to the directory the transcript is filed
+        // under — the session's own recorded cwd is often a subdirectory the agent cd'd into, which
+        // lands under a different slug and answers "No conversation found". Same rule as the fork
+        // paths, and the reason this is worth a filesystem walk.
+        let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
+        let recorded = SessionForge.sessionCwd(transcriptPath: path)
+        let cwd = (recorded.map { SessionForge.slugify($0) == dir.lastPathComponent } == true)
+            ? recorded : (SessionForge.projectCwd(projectDir: dir) ?? recorded)
+        // `skipPermissions`, like every other path that reopens an existing conversation: the flags
+        // the original process ran with died with it (`inheritedFlags` reads a live process tree),
+        // so without this a resumed terminal stops on its first tool call — asking permission for
+        // work the session was already trusted to do.
+        return SessionForge.resumeCommand(sessionId: base, inheritedFlags: [],
+                                          skipPermissions: true,
+                                          cwd: cwd == termCwd ? nil : cwd)
+    }
+
+    /// Terminals with a window open right now — what "close all" would actually close.
+    var openTerminalCount: Int { terminals.filter { $0.status.isOpen }.count }
+
+    /// Close every terminal: the windows go away and the agents behind them stop for real.
+    ///
+    /// The cards stay on the board, which is what makes this recoverable rather than destructive —
+    /// clicking one reopens it and resumes the conversation it was in (see `reopenTerminal`).
+    @discardableResult
+    func closeAllTerminals(reason: String) -> Int {
+        let open = openTerminalCount
+        let live = remote.available ? remote.liveSessions().count : 0
+        guard open > 0 || live > 0 else { return 0 }
+        let count = max(open, live)
+        audited(AuditIntent("terminal.close_all",
+                            event: "fleetview.terminals.closed_all",
+                            categories: ["process"],
+                            data: ["terminals": .int(count), "reason": .string(reason)],
+                            message: "closed all terminals (\(reason))")) {
+            // Drop the controllers *first*: that is also how `handleWindowClosed` is told to skip
+            // its per-terminal kill, so the whole fleet costs one `kill-server` rather than one
+            // tmux invocation per card.
+            let ctrls = controllers
+            controllers.removeAll()
+            for (_, c) in ctrls { c.closeWindow() }
+            remote.killAllSessions()
+            for i in terminals.indices where terminals[i].status != .closed {
+                enterStatus(.closed, at: i)
+            }
+            FV.log("closed all terminals (\(reason)): \(count)")
+            save()
+        }
+        return count
     }
 
     /// On launch, silently reattach every terminal whose tmux session is still alive (FleetView was
@@ -1415,12 +1557,14 @@ final class AppState: ObservableObject {
 
     // MARK: - Window plumbing
 
-    private func openWindow(for t: TerminalSession) {
+    /// `autoRun` overrides the terminal's own setting — a reopen that is about to type a `--resume`
+    /// command has to make sure nothing else is typed first.
+    private func openWindow(for t: TerminalSession, autoRun: Bool? = nil) {
         // Run under tmux when remote access is available (so the web view can attach to the same
         // session). Only auto-type `claude` when we're *creating* the session — re-attaching to a
         // persisted one (reopen after the window was closed) would spawn a second claude.
         let spec = remote.tmuxSpec(for: t.id)
-        let autoRun = t.autoRunClaude && !(spec != nil && remote.sessionExists(t.id))
+        let autoRun = autoRun ?? (t.autoRunClaude && !(spec != nil && remote.sessionExists(t.id)))
         let ctrl = TerminalWindowController(termId: t.id, title: t.name, cwd: t.cwd,
                                             autoRunClaude: autoRun, port: hookPort, tmux: spec)
         ctrl.onExit = { [weak self] id, _ in
@@ -1436,8 +1580,20 @@ final class AppState: ObservableObject {
         ctrl.show(cascadeFrom: &cascadePoint)
     }
 
+    /// A terminal window closed — so close the terminal.
+    ///
+    /// The session used to survive, on the theory that a window is only one view of it. But nothing
+    /// on the board said so: the card read "closed" while the agent behind it kept working and
+    /// spending tokens, and the only way to find out was `tmux ls`. Sessions that are *meant* to
+    /// outlive their window still do — quitting FleetView leaves them alone unless
+    /// `closeTerminalsOnQuit` says otherwise, and the next launch reattaches them.
+    ///
+    /// The kill is skipped when the controller has already been dropped, which is how the bulk
+    /// paths opt out: `closeAllTerminals` clears them first and uses one `kill-server`, and
+    /// `removeTerminal` has already stopped this one.
     private func handleWindowClosed(_ id: UUID) {
-        controllers[id] = nil
+        let wasTracked = controllers.removeValue(forKey: id) != nil
+        if wasTracked && !isQuitting { remote.stop(id) }
         if let idx = terminals.firstIndex(where: { $0.id == id }), terminals[idx].status != .exited {
             enterStatus(.closed, at: idx)
         }

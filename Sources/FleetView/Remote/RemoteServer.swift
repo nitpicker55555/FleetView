@@ -286,11 +286,24 @@ final class RemoteServer {
 
     /// On quit, stop the web servers (free the ports) but LEAVE the tmux sessions running, so an
     /// agent keeps working while FleetView is closed and reattaches when you reopen the terminal.
-    /// Sessions are only destroyed by an explicit Remove Terminal (`stop`). Orphan ttyd from a hard
-    /// kill self-resolve — the next launch just picks fresh ports.
+    /// Sessions are only destroyed by closing a terminal (`stop`) or by Close All (`killAllSessions`).
+    /// Orphan ttyd from a hard kill self-resolve — the next launch just picks fresh ports.
     func stopAll() {
         for (_, inst) in instances where inst.proc.isRunning { inst.proc.terminate() }
         instances.removeAll()
+    }
+
+    /// Destroy every FleetView tmux session at once (Close All Terminals).
+    ///
+    /// One `kill-server` rather than a `kill-session` per terminal: with a fleet open that is one
+    /// process spawn instead of thirty, and the socket is FleetView's own — there is nothing else
+    /// on it that could be caught by it. It also reaches sessions this instance never attached to,
+    /// which is exactly what "close everything" has to mean after a relaunch left some behind.
+    func killAllSessions() {
+        stopAll()                       // the ttyd processes that were serving those sessions
+        runTmux(["kill-server"])
+        sessionCache = []
+        sessionCacheAt = .distantPast   // the 2s cache would otherwise report the dead as live
     }
 
     // MARK: - Setup

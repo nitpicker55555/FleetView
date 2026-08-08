@@ -21,6 +21,11 @@ import Foundation
 @MainActor
 enum SelfUpdate {
 
+    /// This quit is a relaunch, not a shutdown. It exists because `closeTerminalsOnQuit` would
+    /// otherwise read the handoff as the user quitting and stop the whole fleet — halfway through
+    /// installing an update whose entire premise (see above) is that the fleet survives it.
+    private(set) static var isHandingOff = false
+
     private static var updateDir: URL { FV.supportDir.appendingPathComponent("update", isDirectory: true) }
     private static var stagedDir: URL { updateDir.appendingPathComponent("staged", isDirectory: true) }
     private static var backupApp: URL { updateDir.appendingPathComponent("previous.app") }
@@ -154,6 +159,7 @@ enum SelfUpdate {
         // `&` detaches it: /bin/sh exits immediately and bash is reparented to launchd, so it
         // survives the quit it is waiting for.
         FV.log("self-update: handed off to swap.sh (pid \(pid) → \(target.path))")
+        isHandingOff = true
         NSApp.terminate(nil)
     }
 

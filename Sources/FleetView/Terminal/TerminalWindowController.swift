@@ -9,6 +9,9 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     private(set) var window: NSWindow!
     private let termView: LocalProcessTerminalView
     private var keyMonitor: Any?
+    /// The window is on its way out, so the process ending is our own doing rather than the shell
+    /// exiting under the user. Without it the card would land on "exited" instead of "closed".
+    private var closing = false
 
     var onExit: ((UUID, Int32?) -> Void)?
     var onClose: ((UUID) -> Void)?
@@ -111,11 +114,24 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}   // keep our fixed name
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-    func processTerminated(source: TerminalView, exitCode: Int32?) { onExit?(termId, exitCode) }
+    func processTerminated(source: TerminalView, exitCode: Int32?) {
+        guard !closing else { return }   // we killed it; `handleWindowClosed` owns the status
+        onExit?(termId, exitCode)
+    }
 
     // MARK: NSWindowDelegate
     func windowWillClose(_ notification: Notification) {
+        closing = true
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
+        // Closing a terminal closes the terminal. Releasing the view alone leaves the process it
+        // spawned running with nothing attached to it: a headless `tmux attach` client, or (with no
+        // tmux) an orphaned login shell still holding the pty. Under tmux this only ends the client
+        // — AppState kills the session itself, which is what stops the agent.
+        //
+        // Guarded on `running`: SwiftTerm never clears `shellPid` when a child exits on its own, so
+        // terminating a window whose shell already ended (`exit` at the prompt) would signal that
+        // pid number again — by then it can belong to something else entirely.
+        if termView.process.running { termView.process.terminate() }
         onClose?(termId)
     }
 }

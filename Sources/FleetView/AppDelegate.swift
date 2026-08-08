@@ -55,6 +55,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Tear down web servers and the FleetView tmux server so nothing is left listening after quit.
     func applicationWillTerminate(_ notification: Notification) {
+        // Before anything else: a window disappearing from here on is teardown, not someone closing
+        // a terminal, and must not take the session with it (see AppState.handleWindowClosed).
+        state.isQuitting = true
+        // Terminals outlive the app by default — that is what lets a long run continue across a
+        // relaunch or an update. Only quit with the fleet when the user asked for it, and never
+        // when this "quit" is the self-updater handing off to the installer.
+        if state.closeTerminalsOnQuit && !SelfUpdate.isHandingOff {
+            state.closeAllTerminals(reason: "quit")
+        }
         state.saveNow()          // saves are debounced now; this is the one that must not be missed
         state.web.stop()
         state.remote.stopAll()
@@ -83,6 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(update)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide FleetView", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(.separator())
+        let closeAll = NSMenuItem(title: "关闭所有终端…", action: #selector(closeAllTerminals), keyEquivalent: "")
+        closeAll.target = self
+        appMenu.addItem(closeAll)
         appMenu.addItem(.separator())
         let uninstall = NSMenuItem(title: "Uninstall Status Hooks (Claude + Codex)", action: #selector(uninstallHooks), keyEquivalent: "")
         uninstall.target = self
@@ -117,6 +130,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.messageText = "Status hooks removed"
         a.informativeText = "FleetView's hooks were removed from ~/.claude/settings.json and ~/.codex/config.toml. Live status will stop updating until you relaunch FleetView."
         a.runModal()
+    }
+
+    /// Stop the whole fleet. Confirmed first, and the confirmation says what survives: the cards
+    /// stay and reopen into their conversations, which is the difference between this and Remove.
+    @objc private func closeAllTerminals() {
+        let open = state.openTerminalCount
+        let a = NSAlert()
+        a.messageText = open > 0 ? "关闭 \(open) 个终端？" : "关闭所有终端？"
+        a.informativeText = "正在运行的 agent 会被停止。终端卡片会留在看板上——点击卡片可以重新打开并继续原来的会话。"
+        a.addButton(withTitle: "关闭全部")
+        a.addButton(withTitle: "取消")
+        a.buttons.first?.hasDestructiveAction = true
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        state.closeAllTerminals(reason: "menu")
     }
 
     @objc private func revealSupport() {

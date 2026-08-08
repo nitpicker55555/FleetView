@@ -415,6 +415,7 @@ struct TopBar: View {
     @EnvironmentObject var state: AppState
     @State private var showWeb = false
     @State private var webQR: NSImage?
+    @State private var showPower = false
 
     private var working: Int { state.terminals.filter { $0.status == .working }.count }
     private var needs: Int { state.terminals.filter { $0.status == .needsYou }.count }
@@ -432,6 +433,7 @@ struct TopBar: View {
             markFilterButton
             updateButton
             searchButton
+            powerButton
             webButton
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
@@ -514,6 +516,74 @@ struct TopBar: View {
         }
         .buttonStyle(.plain)
         .help("搜索所有 Claude / Codex 对话历史 (⌘K)")
+    }
+
+    /// Stop the whole fleet. A popover rather than a bare button, because this is one click away
+    /// from ending every running agent — the panel is the confirmation, and it is also where the
+    /// "do this on quit too" setting lives, next to the thing it automates.
+    private var powerButton: some View {
+        let open = state.openTerminalCount
+        return Button { showPower.toggle() } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "power").font(.system(size: 11, weight: .semibold))
+                if open > 0 {
+                    Text("\(open)").font(.system(size: 11, weight: .medium))
+                }
+            }
+            .foregroundColor(showPower ? Theme.accent : Theme.text)
+            .padding(.horizontal, open > 0 ? 8 : 0)
+            .frame(minWidth: 24, minHeight: 21)
+            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.stroke, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("关闭所有终端 / 退出时关闭")
+        .popover(isPresented: $showPower, arrowEdge: .bottom) { powerPopover }
+    }
+
+    private var powerPopover: some View {
+        let open = state.openTerminalCount
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("关闭所有终端")
+                .font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
+            Text(open > 0 ? "\(open) 个终端正在运行。关闭会停止它们的 agent 进程（tmux 会话一并销毁）。"
+                          : "当前没有打开的终端。仍会清理可能残留的 tmux 会话。")
+                .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                .fixedSize(horizontal: false, vertical: true)
+            // The one thing that makes this safe to press: nothing is lost from the board.
+            Label("卡片会保留。点击卡片可重新打开并 resume 原来的 Claude / Codex 会话。",
+                  systemImage: "arrow.uturn.backward")
+                .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+            if working > 0 {
+                Label("\(working) 个 agent 正在工作中，会被打断。", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10)).foregroundColor(Theme.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button {
+                showPower = false
+                state.closeAllTerminals(reason: "topbar")
+            } label: {
+                Text("关闭全部终端")
+                    .font(.system(size: 12, weight: .semibold)).foregroundColor(Theme.onAccent)
+                    .frame(maxWidth: .infinity).padding(.vertical, 7)
+                    .background(Theme.red).clipShape(RoundedRectangle(cornerRadius: 7))
+            }
+            .buttonStyle(.plain)
+            Divider().overlay(Theme.stroke)
+            Toggle(isOn: Binding(get: { state.closeTerminalsOnQuit },
+                                 set: { state.closeTerminalsOnQuit = $0; state.save() })) {
+                Text("退出 FleetView 时关闭所有终端")
+                    .font(.system(size: 12)).foregroundColor(Theme.text)
+            }
+            .toggleStyle(.checkbox)
+            Text(state.closeTerminalsOnQuit
+                 ? "退出即结束整个 fleet。"
+                 : "默认关闭：退出后终端继续在后台运行，下次启动自动重新接上。")
+                .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.8))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16).frame(width: 260)
     }
 
     private var webButton: some View {

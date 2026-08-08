@@ -46,8 +46,14 @@ directory outside the repo when you have one.
   Don't launch the app to test — build (`swift build`), and let the user deploy
   (`./scripts/package_app.sh --install`, which needs the running app quit first).
 - **Quitting FleetView does not kill the terminals.** `RemoteServer.stopAll()` stops the web
-  servers but leaves the tmux sessions on the `fleetview` socket running; only Remove Terminal
-  destroys a session. So restarting the app is safe.
+  servers but leaves the tmux sessions on the `fleetview` socket running, so restarting the app is
+  safe (and so is a self-update, which quits to hand off). The opt-in `closeTerminalsOnQuit`
+  setting is the one exception, and it deliberately does not apply to the update handoff.
+- **Closing a terminal destroys its session.** Closing the window, Close All Terminals and Remove
+  Terminal all kill the tmux session — a card that says "closed" means the agent behind it is
+  stopped. Clicking a closed card reopens it and types `--resume` for the session it last had
+  (`AppState.reopenTerminal`), which is what keeps that recoverable. The only thing that reattaches
+  to a still-live session is `reconnectLiveTerminals()` on launch.
 - Two agent backends, two transcript formats: Claude
   `~/.claude/projects/<slug>/…` (branches via `parentUuid`), Codex
   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (branches via `forked_from_id`). Anything that
