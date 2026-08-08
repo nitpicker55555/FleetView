@@ -105,12 +105,24 @@ final class AppState: ObservableObject {
             return
         }
         if path.contains("/.codex/") {
-            treeModel.showEmpty("Codex 会话树将在 v2 支持")
+            // Codex has no project directory to scope by — its rollouts are filed by date — so the
+            // conversation is identified by the cwd the session itself recorded, not by the
+            // terminal's, which may have moved since (see CodexTree).
+            let cwd = CodexSession.rolloutCwd(path)
+                ?? terminals.first { $0.id == id }?.cwd ?? ""
+            guard !cwd.isEmpty else {
+                treeModel.showEmpty("读不出这个 Codex 会话的工作目录")
+                return
+            }
+            treeModel.open(source: .codex(cwd: cwd),
+                           boundSessionId: CodexTree.sessionId(fromRollout: path),
+                           sessions: codexSessionsInfo(cwd: cwd))
             return
         }
         let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
         let sid = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-        treeModel.open(projectDir: dir, boundSessionId: sid, sessions: treeSessionsInfo(projectDir: dir))
+        treeModel.open(source: .claude(projectDir: dir), boundSessionId: sid,
+                       sessions: treeSessionsInfo(projectDir: dir))
     }
 
     func closeSessionTree() {
@@ -134,10 +146,25 @@ final class AppState: ObservableObject {
         return out
     }
 
+    /// sid → terminals sitting on that Codex session. Scoped by the cwd the ROLLOUT recorded, which
+    /// is what CodexTree groups by — a terminal that cd'd elsewhere still belongs to its session.
+    private func codexSessionsInfo(cwd: String) -> [String: [(name: String, status: TermStatus)]] {
+        var out: [String: [(String, TermStatus)]] = [:]
+        for t in terminals {
+            guard let p = transcriptPath(for: t.id), p.contains("/.codex/"),
+                  CodexSession.rolloutCwd(p) == cwd else { continue }
+            out[CodexTree.sessionId(fromRollout: p), default: []].append((t.name, t.status))
+        }
+        return out
+    }
+
     /// Keep the panel's terminal chips truthful as statuses/sessions move.
     func refreshTreeChips() {
-        guard treePanelTerminalId != nil, let dir = treeModel.projectDir else { return }
-        treeModel.updateSessions(treeSessionsInfo(projectDir: dir))
+        guard treePanelTerminalId != nil, let source = treeModel.source else { return }
+        switch source {
+        case .claude(let dir): treeModel.updateSessions(treeSessionsInfo(projectDir: dir))
+        case .codex(let cwd):  treeModel.updateSessions(codexSessionsInfo(cwd: cwd))
+        }
     }
 
     // MARK: Tree drag → drop targets
@@ -206,7 +233,7 @@ final class AppState: ObservableObject {
     func forkOpenNode(nodeUuid: String, nativeSid: String?, prompt: String, joinClusterOf targetCard: UUID?) {
         guard let srcId = treePanelTerminalId,
               let src = terminals.first(where: { $0.id == srcId }),
-              let dir = treeModel.projectDir else { return }
+              let source = treeModel.source else { return }
 
         var clusterId: UUID?
         if let target = targetCard { clusterId = ensureCluster(for: target) }
@@ -217,6 +244,37 @@ final class AppState: ObservableObject {
         guard let newT = newTerminal(projectId: src.projectId, name: name,
                                      clusterId: clusterId, autoRunClaude: false) else { return }
         let createdAt = Date()
+
+        // Codex nodes are addressed as treeflow addresses them (CodexTree), so opening one is the
+        // same call the search panel already makes for a Codex hit — there is no second copy of
+        // that logic here, and none of SessionForge's Claude-shaped fork synthesis applies.
+        if case .codex(let cwd) = source {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                do {
+                    let plan = try SearchOpen.planCodexNode(node: nodeUuid, cwd: cwd, label: name)
+                    Task { @MainActor in
+                        guard let self else { return }
+                        FV.log("tree fork: \(plan.detail)")
+                        let elapsed = Date().timeIntervalSince(createdAt)
+                        self.typeIntoTerminal(newT.id, plan.command, after: max(0.2, 1.4 - elapsed))
+                    }
+                } catch {
+                    Task { @MainActor in
+                        // Loud, unlike the Claude path's log line: the only way this fails in
+                        // practice is treeflow missing, and the fix is one pip command the error
+                        // itself spells out — silence would leave a terminal sitting at a bare
+                        // prompt with no idea why.
+                        FV.log("tree fork FAILED (codex): \(error.localizedDescription)")
+                        let a = NSAlert()
+                        a.messageText = "打不开这个 Codex 节点"
+                        a.informativeText = error.localizedDescription
+                        a.runModal()
+                    }
+                }
+            }
+            return
+        }
+        guard let dir = treeModel.projectDir else { return }
 
         let tmuxPath = remote.tmuxPath
         let srcSession = RemoteServer.sessionName(for: srcId)

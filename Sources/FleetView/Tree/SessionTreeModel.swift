@@ -36,13 +36,25 @@ final class SessionTreeModel: ObservableObject {
     /// nodeUuid → chips for terminals whose current session leaf sits on that node.
     @Published private(set) var chips: [String: [TermChip]] = [:]
 
-    private(set) var projectDir: URL?
+    /// Where the tree comes from. The two backends store conversations nothing alike — Claude a
+    /// directory per project, Codex a pile filed by date (see CodexTree) — but both arrive here as
+    /// a `TreeGraph`, so everything below this line is shared.
+    enum Source: Equatable {
+        case claude(projectDir: URL)
+        case codex(cwd: String)
+    }
+    private(set) var source: Source?
+    /// The Claude project directory, when that is what this tree is. Callers that can only mean
+    /// Claude (fork synthesis) ask for it and get nil otherwise, rather than guessing.
+    var projectDir: URL? { if case .claude(let d) = source { return d }; return nil }
     private(set) var boundSessionId: String?
     private var sessionInfo: [String: [(name: String, status: TermStatus)]] = [:]
     private var expandedFolds: Set<String> = []
     private var refreshTimer: Timer?
     private var dirSignature = ""
     private var generation = 0
+    /// A Codex signature walk is out on a background queue; a slow disk must not queue these up.
+    private var signatureInFlight = false
 
     /// The turn the inspector shows: the pinned one, else whatever is hovered, else the live leaf.
     func detailNode(hovered: String?) -> TreeTurn? {
@@ -86,10 +98,10 @@ final class SessionTreeModel: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// `sessions`: sid → (terminal name, status) for every terminal attached to this project dir.
-    func open(projectDir: URL, boundSessionId: String?,
+    /// `sessions`: sid → (terminal name, status) for every terminal attached to this conversation.
+    func open(source: Source, boundSessionId: String?,
               sessions: [String: [(name: String, status: TermStatus)]]) {
-        self.projectDir = projectDir
+        self.source = source
         self.boundSessionId = boundSessionId
         self.sessionInfo = sessions
         self.emptyReason = nil
@@ -113,7 +125,7 @@ final class SessionTreeModel: ObservableObject {
         rows = []
         tree = TreeGraph()
         emptyReason = nil
-        projectDir = nil
+        source = nil
     }
 
     func expandFold(_ id: String) {
@@ -124,13 +136,19 @@ final class SessionTreeModel: ObservableObject {
     // MARK: - Loading
 
     private func reload(showSpinner: Bool) {
-        guard let dir = projectDir else { return }
+        guard let src = source else { return }
         let sid = boundSessionId
         if showSpinner { loading = true }
         generation += 1
         let gen = generation
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let built = SessionTreeBuilder.build(projectDir: dir, boundSessionId: sid)
+            let built: TreeGraph
+            switch src {
+            case .claude(let dir):
+                built = SessionTreeBuilder.build(projectDir: dir, boundSessionId: sid)
+            case .codex(let cwd):
+                built = CodexTree.build(cwd: cwd, boundSessionId: sid, root: CodexSession.sessionsDir)
+            }
             Task { @MainActor in
                 guard let self, self.generation == gen else { return }
                 self.loading = false
@@ -190,15 +208,41 @@ final class SessionTreeModel: ObservableObject {
     }
 
     private func refreshTick() {
-        guard let dir = projectDir else { return }
-        let fm = FileManager.default
-        let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.pathExtension == "jsonl" }
-        var sig = ""
-        for f in files.sorted(by: { $0.path < $1.path }) {
-            let a = try? fm.attributesOfItem(atPath: f.path)
-            sig += "\(f.lastPathComponent):\((a?[.size] as? Int64) ?? 0):\((a?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0);"
+        guard let src = source else { return }
+        switch src {
+        case .claude(let dir):
+            // A project directory holds dozens of files; stat-ing them is cheap enough to do here.
+            let fm = FileManager.default
+            let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension == "jsonl" }
+            var sig = ""
+            for f in files.sorted(by: { $0.path < $1.path }) {
+                let a = try? fm.attributesOfItem(atPath: f.path)
+                sig += "\(f.lastPathComponent):\((a?[.size] as? Int64) ?? 0):\((a?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0);"
+            }
+            applySignature(sig)
+        case .codex(let cwd):
+            // Codex's signature has to walk the whole date-filed store to notice a new rollout
+            // (a fork IS a new file, which no per-file stat can see). That is ~27ms of directory
+            // listing, and this fires every two seconds — nowhere near the main actor, which is
+            // what drawing the board runs on.
+            guard !signatureInFlight else { return }
+            signatureInFlight = true
+            let sid = boundSessionId
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let sig = CodexTree.signature(cwd: cwd, boundSessionId: sid,
+                                              root: CodexSession.sessionsDir)
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.signatureInFlight = false
+                    guard case .codex(let still)? = self.source, still == cwd else { return }
+                    self.applySignature(sig)
+                }
+            }
         }
+    }
+
+    private func applySignature(_ sig: String) {
         if dirSignature.isEmpty { dirSignature = sig; return }
         if sig != dirSignature {
             dirSignature = sig

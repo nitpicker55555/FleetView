@@ -247,10 +247,6 @@ enum SessionTreeBuilder {
         for (u, n) in tree.nodes {
             if let p = n.parent { tree.nodes[p]?.children.append(u) }
         }
-        let tsOf = tree.nodes.mapValues(\.ts)   // snapshot — sorting mutates tree.nodes
-        for u in tree.nodes.keys {              // chronological child order (ISO sorts lexicographically)
-            tree.nodes[u]?.children.sort { (tsOf[$0] ?? "") < (tsOf[$1] ?? "") }
-        }
 
         // answer_text aggregation.
         for (u, r) in byUuid where r.isAssistant && !r.text.isEmpty {
@@ -262,19 +258,37 @@ enum SessionTreeBuilder {
             }
         }
 
+        // native_reachable: sessions whose stock --resume lands on a node (first claim wins).
+        for (sid, leaf) in tree.sessionLeaf.sorted(by: { $0.key < $1.key }) {
+            guard let node = owningPrompt(leaf) else { continue }
+            tree.leafNodeBySession[sid] = node
+            if tree.nodes[node]?.nativeSessionId == nil { tree.nodes[node]?.nativeSessionId = sid }
+        }
+
+        finish(&tree, boundSessionId: boundSessionId)
+        return tree
+    }
+
+    /// Everything both backends do once their nodes, edges, answers and session leaves exist.
+    ///
+    /// Shared because it is all downstream of the graph rather than of the format: Codex records
+    /// nothing like a `parentUuid` and stores its sessions by date instead of by project (see
+    /// CodexTree), but once the turns are linked, "which lane, which row, what folds, where is the
+    /// live leaf" is the same question and must have the same answer — the panel, the inspector and
+    /// the drag targets all read this shape and nothing else.
+    static func finish(_ tree: inout TreeGraph, boundSessionId: String?) {
+        // Chronological child order (ISO timestamps sort lexicographically).
+        let tsOf = tree.nodes.mapValues(\.ts)   // snapshot — sorting mutates tree.nodes
+        for u in tree.nodes.keys {
+            tree.nodes[u]?.children.sort { (tsOf[$0] ?? "") < (tsOf[$1] ?? "") }
+        }
+
         // Row-sized excerpts, computed once here rather than on every scroll tick.
         for u in tree.nodes.keys {
             guard var n = tree.nodes[u] else { continue }
             n.preview = oneLine(n.text, previewCap)
             n.answerPreview = oneLine(n.answer, answerPreviewCap)
             tree.nodes[u] = n
-        }
-
-        // native_reachable: sessions whose stock --resume lands on a node (first claim wins).
-        for (sid, leaf) in tree.sessionLeaf.sorted(by: { $0.key < $1.key }) {
-            guard let node = owningPrompt(leaf) else { continue }
-            tree.leafNodeBySession[sid] = node
-            if tree.nodes[node]?.nativeSessionId == nil { tree.nodes[node]?.nativeSessionId = sid }
         }
 
         // Active leaf / path: the bound terminal's session, else the newest session leaf.
@@ -286,7 +300,7 @@ enum SessionTreeBuilder {
         if leafNode == nil {   // no leaf pointers at all — newest prompt
             leafNode = tree.nodes.values.max { $0.ts < $1.ts }?.uuid
         }
-        guard let leaf = leafNode else { return tree }
+        guard let leaf = leafNode else { return }
         tree.activeLeafNode = leaf
         var cur: String? = leaf
         var guardSet = Set<String>()
@@ -300,7 +314,6 @@ enum SessionTreeBuilder {
 
         (tree.nodeCount, tree.branchPoints) = subtreeStats(tree, tree.rootUuid)
         tree.rows = buildRows(tree)
-        return tree
     }
 
     /// (node count, branch points) of the displayed subtree — scoped to what the panel shows,

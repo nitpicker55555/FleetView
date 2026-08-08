@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// The right-hand "会话树" panel: a GitUp-style vertical lane graph of one Claude session's
+/// The right-hand "会话树" panel: a GitUp-style vertical lane graph of one agent session's
 /// prompt tree — active branch in accent, each side branch in its own palette colour, current
 /// leaf pulsing. Rows drag onto the fleet board to fork-open that node in a new terminal.
 struct SessionTreePanel: View {

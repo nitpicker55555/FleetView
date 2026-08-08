@@ -148,7 +148,6 @@ enum SearchOpen {
     // MARK: - Codex
 
     private static func planCodex(_ hit: SearchIndex.Hit) throws -> Plan {
-        guard let tool = treeflowPath() else { throw OpenError.treeflowMissing }
         // A rollout's cwd is on its `session_meta` record — the very first line — so every
         // incremental index pass after the first one starts past it and learns nothing. Reading the
         // head here is the same fallback the Claude side gets from reading the tail, and without it
@@ -156,9 +155,19 @@ enum SearchOpen {
         // never be opened at all.
         let cwd = hit.project.isEmpty ? (CodexSession.rolloutCwd(hit.path) ?? "") : hit.project
         guard !cwd.isEmpty else { throw OpenError.noCwd(hit.path) }
+        return try planCodexNode(node: hit.node, cwd: cwd, label: label(hit))
+    }
+
+    /// Open a Codex node by its treeflow address (`<session-id>:<n>`).
+    ///
+    /// Split out from the search path because the session tree addresses nodes identically — see
+    /// CodexTree, which numbers prompts the way treeflow does precisely so that a node dragged off
+    /// the tree and a node dragged out of search results are the same string and open the same way.
+    static func planCodexNode(node: String, cwd: String, label: String) throws -> Plan {
+        guard let tool = treeflowPath() else { throw OpenError.treeflowMissing }
         // treeflow scopes Codex sessions by cwd and has no way to be told a session id directly,
         // so the project path is not optional here.
-        let out = try run(tool, ["-p", cwd, "--codex", "resume", hit.node, "--json"],
+        let out = try run(tool, ["-p", cwd, "--codex", "resume", node, "--json"],
                           cwd: cwd)
         guard let data = out.data(using: .utf8),
               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -176,8 +185,8 @@ enum SearchOpen {
             SearchIndex.excludeCopiedPrefix(path: file, src: .codex, session: sid, project: cwd)
         }
         return Plan(command: "cd \(shellQuote(cwd)) && \(command)",
-                    cwd: cwd, label: label(hit), synthesized: synthesized,
-                    detail: "codex node=\(hit.node) sid=\(sid.prefix(8)) chain=\(chain)")
+                    cwd: cwd, label: label, synthesized: synthesized,
+                    detail: "codex node=\(node) sid=\(sid.prefix(8)) chain=\(chain)")
     }
 
     /// treeflow usually installs to `~/.local/bin`, which `Tooling.find` reaches via the login
