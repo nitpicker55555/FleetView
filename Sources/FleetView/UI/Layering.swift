@@ -8,12 +8,18 @@ extension View {
     /// The wash never takes hits: it is a visual cue, and the layer underneath still owns its own
     /// dismissal (a click on empty space closes the top layer first). Whatever is drawn *above* this
     /// modifier is unaffected, which is the point — the panel doing the covering must stay crisp.
-    func receded(_ on: Bool) -> some View {
+    ///
+    /// `blurred: false` recedes with the wash alone. That is for the one case where this layer is
+    /// still a *target*: a card being dragged can be dropped on another card, and you cannot aim at
+    /// something blurred. Dimming still says "this is behind"; blurring would say "you are done
+    /// reading this", which is the opposite of what a drop target needs.
+    func receded(_ on: Bool, blurred: Bool = true) -> some View {
         let cfg = LayerConfig.current
         return self
-            .blur(radius: on ? cfg.blur : 0)
+            .blur(radius: on && blurred ? cfg.blur : 0)
             .overlay(Color.black.opacity(on ? cfg.dim : 0).allowsHitTesting(false))
             .animation(.easeOut(duration: cfg.duration), value: on)
+            .animation(.easeOut(duration: cfg.duration), value: blurred)
     }
 
 }

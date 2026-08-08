@@ -37,9 +37,9 @@ struct TerminalCardView: View {
             .stroke(highlighted || treeDropTarget ? Theme.accent : Color.clear, lineWidth: 2))
         .shadow(color: (highlighted || treeDropTarget) ? Theme.accent.opacity(0.45) : .clear,
                 radius: (highlighted || treeDropTarget) ? 9 : 0)
-        .background(GeometryReader { g in            // tree-drag drop target ("join this cluster")
+        .background(GeometryReader { g in            // drop target: tree node, or another card
             Color.clear.preference(key: CardFramesKey.self,
-                                   value: [terminal.id: g.frame(in: .named("fleet"))])
+                                   value: [terminal.id: [g.frame(in: .named("fleet"))]])
         })
         .onHover { hovering = $0 }
         .contentShape(Rectangle())

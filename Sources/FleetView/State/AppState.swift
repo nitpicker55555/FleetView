@@ -80,7 +80,11 @@ final class AppState: ObservableObject {
     @Published var treeDropCardId: UUID?      // same-project card under the cursor → join its cluster
     @Published var treeBoardHot = false       // over the board → open standalone
     @Published var boardFrame: CGRect = .zero   // reported by MainArea; drives the inspector's placement
-    var cardFrames: [UUID: CGRect] = [:]      // reported by each card
+    /// Where each card is on screen. A list per terminal — a running card is drawn twice (see
+    /// CardFramesKey), and both copies have to be droppable.
+    var cardFrames: [UUID: [CGRect]] = [:]
+    /// Where each cluster box is on screen (see ClusterFramesKey).
+    var clusterFrames: [UUID: [CGRect]] = [:]
 
     /// Open the tree panel for a terminal's current session (project-dir scoped, treeflow-style).
     func openSessionTree(_ id: UUID) {
@@ -135,11 +139,11 @@ final class AppState: ObservableObject {
         }
         let srcProject = terminals.first { $0.id == treePanelTerminalId }?.projectId
         let card = cardFrames.first { entry in
-            entry.value.contains(location)
+            entry.value.contains { $0.contains(location) }
                 && terminals.first(where: { $0.id == entry.key })?.projectId == srcProject
                 && entry.key != treePanelTerminalId   // dropping back onto the source card means "cluster with it" too — allow
         }?.key ?? cardFrames.first { entry in
-            entry.value.contains(location)
+            entry.value.contains { $0.contains(location) }
                 && terminals.first(where: { $0.id == entry.key })?.projectId == srcProject
         }?.key
         treeDropCardId = card
@@ -158,7 +162,7 @@ final class AppState: ObservableObject {
                                 location: location, hit: hit)
         }
         let card = cardFrames.first { entry in
-            entry.value.contains(location)
+            entry.value.contains { $0.contains(location) }
                 && project(terminals.first(where: { $0.id == entry.key })?.projectId)?.path == hit.project
         }?.key
         treeDropCardId = card
@@ -960,6 +964,14 @@ final class AppState: ObservableObject {
     @Published var draggingTerminalId: UUID?
     @Published var dragLocation: CGPoint = .zero      // in the "fleet" coordinate space
     @Published var hoveredZone: DragZone?
+    /// What a dragged card would land on, the way an icon dropped on a phone's home screen either
+    /// makes a folder or falls into one.
+    enum ClusterDrop: Equatable {
+        case card(UUID)        // another loose card → the two become a cluster
+        case cluster(UUID)     // anywhere inside a cluster box → join that task
+    }
+    /// The target under the cursor right now — nil when releasing here would do nothing.
+    @Published var clusterDrop: ClusterDrop?
     var zoneFrames: [DragZone: CGRect] = [:]          // reported by the dock, not published
 
     func availableZones(for id: UUID) -> [DragZone] {
@@ -975,23 +987,113 @@ final class AppState: ObservableObject {
         if draggingTerminalId != id { draggingTerminalId = id }
         dragLocation = point
         hoveredZone = zoneAt(point)
-        // The dock's explicit zones win; the edge only claims what they don't.
+        // The dock's explicit zones win; the edge only claims what they don't; a card takes what is
+        // left. In that order because the first two are overlays that appear *for* this drag and
+        // light up under the cursor — a card that quietly outranked them would steal a drop aimed
+        // at something the user can see they are aiming at.
         hoveredTreeZone = hoveredZone == nil && sessionTreeZoneFrame.contains(point)
+        clusterDrop = (hoveredZone == nil && !hoveredTreeZone && !dockFrame.contains(point))
+            ? clusterTarget(for: id, at: point) : nil
+    }
+
+    /// The dock's whole footprint, not just its zones. It is a floating panel with padding around
+    /// and between them, so `hoveredZone == nil` is also true in the gaps — and a card lying under
+    /// the dock would become the drop target through one of them, lit up underneath a panel that
+    /// covers it.
+    private var dockFrame: CGRect {
+        let union = zoneFrames.values.reduce(CGRect.null) { $0.union($1) }
+        return union.isNull ? .null : union.insetBy(dx: -14, dy: -14)
+    }
+
+    /// Where to draw the "drop here" ring, and how round it should be — the cluster box for a
+    /// cluster, otherwise the copy of the card the cursor is actually inside (a running terminal is
+    /// on the board twice: RUNNING NOW and its project section).
+    var clusterDropFrame: (rect: CGRect, radius: CGFloat)? {
+        switch clusterDrop {
+        case .cluster(let id):
+            guard let r = clusterFrames[id]?.first(where: { $0.contains(dragLocation) }) else { return nil }
+            return (r, 14)          // matches ClusterContainer's own corner radius
+        case .card(let id):
+            guard let r = cardFrames[id]?.first(where: { $0.contains(dragLocation) }) else { return nil }
+            return (r, 12)          // matches TerminalCardView's
+        case nil:
+            return nil
+        }
+    }
+
+    /// What is under the cursor that this card could join.
+    ///
+    /// A cluster box wins over the member cards inside it: the task is what you are aiming at, and
+    /// which member card happens to sit under the cursor changes nothing about where the drop lands.
+    /// It also means the gaps between member cards, the cluster header and its padding all work,
+    /// instead of being dead space inside a target that looks like one box.
+    ///
+    /// Same project only, in both cases: `members(ofCluster:)` collects by cluster id alone while
+    /// `clustersInProject` places a cluster by its members, so a cluster spanning two projects
+    /// renders in full under both of their headers — the same cards, twice.
+    private func clusterTarget(for id: UUID, at point: CGPoint) -> ClusterDrop? {
+        guard let src = terminals.first(where: { $0.id == id }) else { return nil }
+
+        if let hit = clusterFrames.first(where: { $0.value.contains { $0.contains(point) } })?.key,
+           hit != src.clusterId,                        // already in it — nothing to join
+           members(ofCluster: hit).first?.projectId == src.projectId {
+            return .cluster(hit)
+        }
+
+        guard let hit = cardFrames.first(where: { entry in
+                  entry.key != id && entry.value.contains { $0.contains(point) }
+              })?.key,
+              let target = terminals.first(where: { $0.id == hit }),
+              target.projectId == src.projectId else { return nil }
+        // Already together: highlighting the card would promise a grouping the release cannot make.
+        if let c = src.clusterId, c == target.clusterId { return nil }
+        return .card(hit)
+    }
+
+    /// The dragged card joins a task. Dropped on a cluster it joins that one; dropped on a loose
+    /// card, `ensureCluster` makes a fresh cluster named after that card and both end up in it.
+    func groupTerminal(_ dragged: UUID, into drop: ClusterDrop) {
+        audited(AuditIntent("terminal.group",
+                            categories: ["configuration"],
+                            target: auditTarget(terminal: dragged),
+                            message: "grouped into a cluster")) {
+            let cluster: UUID?
+            switch drop {
+            case .cluster(let c): cluster = c
+            case .card(let t):    cluster = ensureCluster(for: t)
+            }
+            guard let cluster,
+                  let i = terminals.firstIndex(where: { $0.id == dragged }),
+                  terminals[i].clusterId != cluster else { return }
+            terminals[i].clusterId = cluster
+            pruneClusters()          // the card it left behind may have emptied its old cluster
+            save()
+        }
     }
 
     func dragEnded(at point: CGPoint) {
         let zone = zoneAt(point)
         let onTreeZone = hoveredTreeZone
+        // What was highlighted, not what a fresh hit-test says: the drop belongs to the thing the
+        // user could see was lit.
+        let drop = clusterDrop
         let id = draggingTerminalId
         draggingTerminalId = nil
         hoveredZone = nil
         hoveredTreeZone = false
+        clusterDrop = nil
         guard let id else { return }
         if let zone { perform(zone, on: id) }
         else if onTreeZone { openSessionTree(id) }
+        else if let drop { groupTerminal(id, into: drop) }
     }
 
-    func cancelDrag() { draggingTerminalId = nil; hoveredZone = nil; hoveredTreeZone = false }
+    func cancelDrag() {
+        draggingTerminalId = nil
+        hoveredZone = nil
+        hoveredTreeZone = false
+        clusterDrop = nil
+    }
 
     private func zoneAt(_ p: CGPoint) -> DragZone? {
         zoneFrames.first(where: { $0.value.contains(p) })?.key

@@ -86,18 +86,35 @@ struct ActionZoneView: View {
 }
 
 /// The chip that follows the cursor while dragging (so the real card never moves).
+///
+/// `hint` names what releasing HERE will do, the same job the tree drag's chip does — the ring
+/// around the target card says *where* the drop lands, and this says *what it means*. Nil when the
+/// cursor is over nothing that would act, so the chip never promises an outcome.
 struct DragPreviewChip: View {
     let name: String
     let status: TermStatus
+    var hint: String? = nil
 
     var body: some View {
-        HStack(spacing: 7) {
-            StatusDot(status: status)
-            Text(name).font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 7) {
+                StatusDot(status: status)
+                Text(name).font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
+                    .lineLimit(1)
+            }
+            if let hint {
+                Text(hint).font(.system(size: 10, weight: .semibold)).foregroundColor(Theme.accent)
+                    .lineLimit(1)
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(Theme.card).clipShape(Capsule())
-        .overlay(Capsule().stroke(Theme.accent.opacity(0.6), lineWidth: 1))
+        .background(Theme.card)
+        // A capsule around two lines reads as a pill someone sat on; the rounded rect is also what
+        // the tree's drag chip uses, and these two are the same object seen in two drags.
+        .clipShape(RoundedRectangle(cornerRadius: hint == nil ? 20 : 10))
+        .overlay(RoundedRectangle(cornerRadius: hint == nil ? 20 : 10)
+            .stroke(hint == nil ? Theme.accent.opacity(0.6) : Theme.accent, lineWidth: hint == nil ? 1 : 1.5))
         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+        .animation(.easeOut(duration: 0.12), value: hint)
     }
 }

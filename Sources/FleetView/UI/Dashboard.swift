@@ -7,17 +7,19 @@ struct DashboardView: View {
 
     /// Is a level-1 surface up, so the dashboard should recede? (See LayerConfig for the depths.)
     ///
-    /// The exception is a drag whose target IS the dashboard: dropping a tree node or a search hit
-    /// lands on the board or on a card, and you cannot aim at something blurred. A terminal drag is
-    /// not an exception — its targets are the action zones and the tree edge, never the board — and
-    /// that is the case this used to get wrong, dimming the zones along with everything else and
-    /// never blurring the board at all.
+    /// A drag whose target IS the dashboard does not recede at all: dropping a tree node or a
+    /// search hit lands on the board or on a card, and neither is aimable through a wash.
     private var dashboardReceded: Bool {
         if state.treeDrag != nil { return false }
         return state.treePanelTerminalId != nil
             || state.searchOpen
             || state.draggingTerminalId != nil
     }
+
+    /// A dragged card recedes the board but must not blur it. It used not to matter — a card's
+    /// targets were the action dock and the tree edge, both drawn above the wash — but a card can
+    /// now be dropped on another card, so the board is a target again and has to stay readable.
+    private var dashboardBlurred: Bool { state.draggingTerminalId == nil }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -36,7 +38,7 @@ struct DashboardView: View {
                         })
                 }
             }
-            .receded(receded)
+            .receded(receded, blurred: dashboardBlurred)
             if state.treePanelTerminalId != nil {
                 TreePanelDivider()
                 SessionTreePanel(model: state.treeModel)
@@ -53,6 +55,7 @@ struct DashboardView: View {
         .coordinateSpace(name: "fleet")
         .onPreferenceChange(BoardFrameKey.self) { state.boardFrame = $0 }
         .onPreferenceChange(CardFramesKey.self) { state.cardFrames = $0 }
+        .onPreferenceChange(ClusterFramesKey.self) { state.clusterFrames = $0 }
         .sheet(item: $state.nameSheet) { req in
             NameSheet(request: req).environmentObject(state)
         }
@@ -110,6 +113,20 @@ struct DashboardView: View {
         }
     }
 
+    /// What releasing here would do, in the words of the thing it would land on. Nil when nothing
+    /// is under the cursor, so the chip never promises an outcome that isn't there.
+    private var dropHint: String? {
+        switch state.clusterDrop {
+        case .cluster(let id):
+            return "松开：加入「\(state.cluster(id)?.name ?? "cluster")」"
+        case .card(let id):
+            guard let t = state.terminals.first(where: { $0.id == id }) else { return nil }
+            return "松开：与「\(t.name)」组成 cluster"
+        case nil:
+            return nil
+        }
+    }
+
     @ViewBuilder private var dragOverlay: some View {
         ZStack {
             if let dragId = state.draggingTerminalId {
@@ -117,9 +134,28 @@ struct DashboardView: View {
                 // second wash on top of it also fell over the zones, which are the thing you are
                 // aiming at.
                 SessionTreeDropEdge(hot: state.hoveredTreeZone, frame: state.sessionTreeZoneFrame)
+                // What is being landed on — a whole cluster box, or a single card. Drawn HERE, not
+                // on the target itself, because the board lies under the dim wash and a highlight
+                // that is dimmed along with everything else is not a highlight.
+                //
+                // Clipped to the board: a target scrolled half under the top bar still reports its
+                // whole frame, and an accent ring drawn across the header highlights nothing.
+                if let target = state.clusterDropFrame {
+                    let f = target.rect.intersection(state.boardFrame)
+                    if !f.isNull, !f.isEmpty {
+                        RoundedRectangle(cornerRadius: target.radius)
+                            .fill(Theme.accent.opacity(0.16))
+                            .overlay(RoundedRectangle(cornerRadius: target.radius)
+                                .stroke(Theme.accent, lineWidth: 2.5))
+                            .shadow(color: Theme.accent.opacity(0.5), radius: 12)
+                            .frame(width: f.width, height: f.height)
+                            .position(x: f.midX, y: f.midY)
+                            .transition(.opacity)
+                    }
+                }
                 VStack { Spacer(); ActionDock(terminalId: dragId).environmentObject(state) }
                 if let t = state.terminals.first(where: { $0.id == dragId }) {
-                    DragPreviewChip(name: t.name, status: t.status)
+                    DragPreviewChip(name: t.name, status: t.status, hint: dropHint)
                         .position(x: state.dragLocation.x, y: state.dragLocation.y - 16)
                 }
             }
@@ -142,6 +178,7 @@ struct DashboardView: View {
         .allowsHitTesting(false)   // purely visual; the drag is driven by the card gesture
         .animation(.easeOut(duration: 0.16), value: state.draggingTerminalId)
         .animation(.easeOut(duration: 0.12), value: state.treeBoardHot)
+        .animation(.spring(response: 0.24, dampingFraction: 0.75), value: state.clusterDrop)
         .onPreferenceChange(ZoneFrameKey.self) { state.setZoneFrames($0) }
     }
 
@@ -1018,6 +1055,12 @@ struct ClusterContainer: View {
             .stroke(highlighted ? Theme.accent : Theme.accent.opacity(0.28), lineWidth: highlighted ? 2 : 1))
         .shadow(color: highlighted ? Theme.accent.opacity(0.35) : .clear, radius: highlighted ? 10 : 0)
         .animation(.easeOut(duration: 0.2), value: highlighted)
+        // The whole box is a drop target for a dragged card — the task is the thing you are aiming
+        // at, not whichever member card happens to be under the cursor.
+        .background(GeometryReader { g in
+            Color.clear.preference(key: ClusterFramesKey.self,
+                                   value: [clusterId: [g.frame(in: .named("fleet"))]])
+        })
     }
 }
 
@@ -1059,11 +1102,26 @@ struct BoardFrameKey: PreferenceKey {
     }
 }
 
-/// Every terminal card's frame — same-project cards double as "join this cluster" drop targets.
+/// Every terminal card's frame — same-project cards double as drop targets, both for a tree node
+/// and for another card being dragged onto them.
+///
+/// A *list* of frames per terminal, because one terminal can be on screen twice: a running card is
+/// drawn in the RUNNING NOW strip and again in its own project section. Keyed to a single rect the
+/// two overwrote each other, so whichever the reduce saw last was the only one you could drop on —
+/// and the strip, being the first thing at the top of the board, was the one that lost.
 struct CardFramesKey: PreferenceKey {
-    static var defaultValue: [UUID: CGRect] = [:]
-    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
-        value.merge(nextValue()) { $1 }
+    static var defaultValue: [UUID: [CGRect]] = [:]
+    static func reduce(value: inout [UUID: [CGRect]], nextValue: () -> [UUID: [CGRect]]) {
+        value.merge(nextValue()) { $0 + $1 }
+    }
+}
+
+/// Every cluster container's frame. A dragged card landing anywhere inside one joins that task, so
+/// the box — not its member cards — is what lights up and what the drop resolves against.
+struct ClusterFramesKey: PreferenceKey {
+    static var defaultValue: [UUID: [CGRect]] = [:]
+    static func reduce(value: inout [UUID: [CGRect]], nextValue: () -> [UUID: [CGRect]]) {
+        value.merge(nextValue()) { $0 + $1 }
     }
 }
 
