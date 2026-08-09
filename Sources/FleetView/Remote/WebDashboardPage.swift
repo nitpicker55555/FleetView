@@ -528,6 +528,10 @@ enum WebDashboardPage {
   #fb{position:fixed;top:0;left:0;right:0;height:100%;height:100dvh;z-index:56;background:var(--bg);
     display:none;flex-direction:column;overflow:hidden;overscroll-behavior:none}
   #fb.show{display:flex}
+  /* Same swipe-back treatment as #term — one gesture, so one look (see swipeBack). */
+  #fb.dragging{transition:none}
+  #fb.settle{transition:transform .24s cubic-bezier(.22,.8,.3,1)}
+  #fb.dragging,#fb.settle{box-shadow:-22px 0 46px rgba(0,0,0,.55)}
   #fbbar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--panel);
     border-bottom:1px solid var(--stroke);padding-top:max(10px,env(safe-area-inset-top))}
   #fbbar button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);
@@ -773,7 +777,7 @@ function unlockBoard(id){
   if(r.top<8||r.bottom>window.innerHeight-8) card.scrollIntoView({block:'center'});
 }
 function openTerm(id,name){
-  curId=id;curUrl='';termLoaded=false;chatFails=0;
+  curId=id;curUrl='';termLoaded=false;chatFails=0;termGone=false;
   const cached=cacheGet(id);
   if(cached&&cached.messages&&cached.messages.length) showCached(cached); else showSkeleton();
   document.getElementById('termname').textContent=name;
@@ -789,14 +793,19 @@ function openTerm(id,name){
   if(barH) requestAnimationFrame(applyBar);
 }
 /* Swipe right to go back, the way the phone's own apps do. The overlay follows your finger with
-   resistance, then either settles back or carries on out to the right. */
-(function(){
-  const t=document.getElementById('term'), chat=document.getElementById('chat');
+   resistance, then either settles back or carries on out to the right.
+   Parameterised rather than written twice: the terminal overlay and the file browser are the same
+   gesture, and the half of it that is not obvious — the resistance curve, telling a flick from a
+   finger that stopped, and unwinding a swipe whose touchend never arrives because the tab went
+   away — is exactly the half a second copy would get subtly wrong. */
+function swipeBack(overlayId,scrollId,busySel,onClose){
+  const t=document.getElementById(overlayId), chat=document.getElementById(scrollId);
+  if(!t||!chat)return;
   let x0=0,y0=0,dx=0,t0=0,armed=false,active=false,vx=0,lastX=0,lastT=0;
   const reset=()=>{ armed=false; active=false; vx=0;
     t.classList.remove('dragging'); t.classList.remove('settle'); t.style.transform=''; };
   // places where a horizontal drag means something else
-  const busy=el=>!!(el&&el.closest&&el.closest('pre.code,.mbody,#presets,#keys,#inputbar,#tabs'));
+  const busy=el=>!!(el&&el.closest&&el.closest(busySel));
   chat.addEventListener('touchstart',e=>{
     if(e.touches.length!==1||busy(e.target)){armed=false;return;}
     const p=e.touches[0]; x0=lastX=p.clientX; y0=p.clientY; dx=0; vx=0;
@@ -829,7 +838,7 @@ function openTerm(id,name){
     t.classList.remove('dragging'); t.classList.add('settle');
     if(dx>90||(flick&&dx>50)){
       t.style.transform='translate3d(100%,0,0)';
-      setTimeout(()=>{ t.classList.remove('settle'); t.style.transform=''; closeTerm(); },210);
+      setTimeout(()=>{ t.classList.remove('settle'); t.style.transform=''; onClose(); },210);
     }else{
       t.style.transform='';
       setTimeout(()=>t.classList.remove('settle'),260);
@@ -841,7 +850,12 @@ function openTerm(id,name){
   // A gesture that never gets its touchend — the tab going away mid-swipe — must not leave the
   // overlay parked half off the screen.
   document.addEventListener('visibilitychange',()=>{ if(document.hidden&&active) reset(); });
-})();
+}
+swipeBack('term','chat','pre.code,.mbody,#presets,#keys,#inputbar,#tabs',()=>closeTerm());
+/* The file browser is the other full-screen overlay, and it was the one place on the phone with no
+   way back but the ‹ button. Its exclusions are its own: the crumb bar is selectable text you
+   long-press to copy, a code preview scrolls sideways, and a PDF is an iframe that pans itself. */
+swipeBack('fb','fbbody','#fbpath,#fbcrumbs,pre,iframe',()=>fbClose());
 function closeTerm(){
   document.getElementById('stickyq').classList.remove('on');
   document.getElementById('term').classList.remove('show');
@@ -886,9 +900,35 @@ function termError(msg,hint){
 }
 function retryTerm(){
   document.getElementById('termerr').classList.remove('on');
-  termLoaded=false; curUrl='';
+  termLoaded=false; curUrl=''; termGone=false;
   document.getElementById('termframe').src='about:blank';
   ensureTerm();
+}
+/* The session behind an already-loaded iframe can disappear — the terminal is closed on the Mac,
+   or its shell exits — and from that moment ttyd owns a frame it can do nothing useful with. Its
+   own message is "Press ⏎ to Reconnect", which is a dead end twice over: there is no session left
+   to attach to, and the ⏎ it is waiting for is an xterm.js key event inside the iframe, while the
+   Enter you actually have on a phone is FleetView's key row — that one goes to tmux over /key and
+   never reaches the closed socket. So the page reads it as "pressing Enter does nothing".
+   `canOpen` already says whether the session is alive; this is the only place that was not
+   listening, because tick() stops rendering while a terminal is open. */
+let termGone=false;
+function watchTermAlive(s){
+  if(!curId)return;
+  const t=(s.terminals||[]).find(x=>x.id===curId);
+  if(t&&t.canOpen){
+    /* Back. A reopened terminal comes back under the SAME tmux session name — it is derived from
+       the terminal's id — so this is the conversation you were already looking at, not a new one.
+       Pick it up instead of leaving a stale "closed" panel over a terminal that works again. */
+    if(termGone){termGone=false;document.getElementById('termerr').classList.remove('on');ensureTerm();}
+    return;
+  }
+  // `termLoaded` gates only this half: nothing was ever shown, so there is nothing to explain.
+  if(!termLoaded||termGone)return;           // already said so; don't rewrite it every 1.5s
+  termGone=true; termLoaded=false; curUrl='';
+  document.getElementById('termframe').src='about:blank';
+  termError('这个终端已经关闭',
+            '它的会话已经不在了，所以 ttyd 的“按 ⏎ 重连”接不上任何东西。回到看板点这张卡片可以重新打开，并接着原来的对话。');
 }
 async function ensureTerm(){
   if(termLoaded||!curId)return;
@@ -2122,7 +2162,7 @@ async function tick(){
     // the Mac's theme and watching the phone stay dark reads as broken. Redrawing the board behind
     // the overlay is not: that is what the guard below is for.
     applyScheme(state.dark);
-    if(termOpen())return;
+    if(termOpen()){watchTermAlive(state);return;}
     render(state);
     reportLocation(state);   // once per browser; no-op until the page is served over HTTPS
     document.getElementById('refresh').textContent='updated '+new Date().toLocaleTimeString();
