@@ -918,9 +918,13 @@ struct ProjectSection: View {
     @State private var showChart = true
     @State private var copied = false
     @State private var gripHot = false
-    // Scanned rather than observed: a skill is files on disk, with no event to subscribe to. Read
-    // once when the section appears (cheap — a readdir and a handful of small files) and again each
-    // time the list is opened, which is the moment someone would notice it being stale.
+    // Scanned rather than observed: a skill is files on disk, with no event to subscribe to.
+    //
+    // Two levels, because they cost different amounts. `skillCount` is a directory listing and runs
+    // for every project as its section appears — that is all the header needs. The SKILL.md bodies
+    // are only read when the drawer is opened, which is also the moment a stale list would be
+    // noticed, so the refresh and the laziness are the same act.
+    @State private var skillCount = 0
     @State private var skills: [SkillInfo] = []
     @State private var showSkills = false
     @State private var pickedSkill: SkillInfo?
@@ -967,7 +971,7 @@ struct ProjectSection: View {
         // The whole section is the drop target, not just its header: while you drag a project past
         // one with six cards open, the header is the smallest part of it you could be aiming at.
         .onDrop(of: [.text], delegate: ProjectReorderDrop(target: project.id, state: state))
-        .onAppear { skills = ProjectSkills.scan(projectPath: project.path) }
+        .onAppear { skillCount = ProjectSkills.count(projectPath: project.path) }
     }
 
     /// The skills drawer: names down the left, the picked one explained on the right.
@@ -975,26 +979,39 @@ struct ProjectSection: View {
     /// The absolute path is both selectable and copyable by button. Two ways to the same string
     /// because they answer different needs — dragging out part of a path to paste into a command,
     /// versus taking the whole thing without aiming.
+    /// Eight rows, then scroll. A row is pinned to a fixed height rather than left to size itself:
+    /// a ScrollView needs a definite height to stop at, and deriving that from a guess at the text's
+    /// intrinsic size is how the ninth row ends up sliced in half along the bottom edge.
+    private static let skillRowHeight: CGFloat = 24
+    private static let skillRowGap: CGFloat = 1
+    private static let skillsShown = 8
+
     private var skillsPanel: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 1) {
-                ForEach(skills) { s in
-                    let picked = (pickedSkill ?? skills.first)?.id == s.id
-                    Button { pickedSkill = s } label: {
-                        Text(s.name)
-                            .font(.system(size: 12, weight: picked ? .semibold : .regular))
-                            .foregroundColor(picked ? Theme.accent : Theme.text)
-                            .lineLimit(1).truncationMode(.middle)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(picked ? Theme.accent.opacity(0.12) : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 5))
-                            .contentShape(Rectangle())
+        let rows = min(skills.count, Self.skillsShown)
+        let listHeight = CGFloat(rows) * Self.skillRowHeight
+            + CGFloat(max(0, rows - 1)) * Self.skillRowGap
+        return HStack(alignment: .top, spacing: 10) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Self.skillRowGap) {
+                    ForEach(skills) { s in
+                        let picked = (pickedSkill ?? skills.first)?.id == s.id
+                        Button { pickedSkill = s } label: {
+                            Text(s.name)
+                                .font(.system(size: 12, weight: picked ? .semibold : .regular))
+                                .foregroundColor(picked ? Theme.accent : Theme.text)
+                                .lineLimit(1).truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .frame(height: Self.skillRowHeight)
+                                .background(picked ? Theme.accent.opacity(0.12) : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 5))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
-            .frame(width: 190)
+            .frame(width: 190, height: listHeight)
             Divider()
             if let s = pickedSkill ?? skills.first {
                 VStack(alignment: .leading, spacing: 6) {
@@ -1106,20 +1123,23 @@ struct ProjectSection: View {
             Spacer(minLength: 10)
             // Hidden when the project carries none: a control that opens an empty drawer on most
             // projects is noise on every header it appears in.
-            if !skills.isEmpty {
+            if skillCount > 0 {
                 Button {
                     withAnimation(.easeOut(duration: 0.18)) { showSkills.toggle() }
-                    if showSkills { skills = ProjectSkills.scan(projectPath: project.path) }
+                    if showSkills {
+                        skills = ProjectSkills.scan(projectPath: project.path)
+                        skillCount = skills.count
+                    }
                 } label: {
                     HStack(spacing: 3) {
                         Image(systemName: "wand.and.stars").font(.system(size: 11))
-                        Text("\(skills.count)").font(.system(size: 10, weight: .semibold))
+                        Text("\(skillCount)").font(.system(size: 10, weight: .semibold))
                     }
                     .foregroundColor(showSkills ? Theme.accent : Theme.subtext).padding(5)
                 }
                 .buttonStyle(.plain)
                 .help(showSkills ? "Hide this project's skills"
-                                 : "\(skills.count) skills in .claude/skills")
+                                 : "\(skillCount) skills in .claude/skills")
             }
             if deltas.count > 1 {
                 Button { withAnimation(.easeOut(duration: 0.18)) { showChart.toggle() } } label: {

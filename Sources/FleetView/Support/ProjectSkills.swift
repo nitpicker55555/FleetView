@@ -16,6 +16,23 @@ struct SkillInfo: Identifiable, Hashable {
 /// left out deliberately: this list answers "what does *this* repo carry", and folding in skills
 /// that follow the person around would make one project list differently on another machine.
 enum ProjectSkills {
+    /// How many skills a project has, without opening any of them.
+    ///
+    /// The header only needs a number, and it needs it for every project on the board every time a
+    /// section appears. `scan` reads each SKILL.md in full to get at its description — bytes that
+    /// are worth nothing until someone opens the drawer. This is the directory listing alone.
+    static func count(projectPath: String) -> Int {
+        guard !projectPath.isEmpty else { return 0 }
+        let root = URL(fileURLWithPath: projectPath).appendingPathComponent(".claude/skills",
+                                                                           isDirectory: true)
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: root.path) else { return 0 }
+        return names.filter {
+            fm.fileExists(atPath: root.appendingPathComponent($0)
+                .appendingPathComponent("SKILL.md").path)
+        }.count
+    }
+
     static func scan(projectPath: String) -> [SkillInfo] {
         guard !projectPath.isEmpty else { return [] }
         let root = URL(fileURLWithPath: projectPath).appendingPathComponent(".claude/skills",
