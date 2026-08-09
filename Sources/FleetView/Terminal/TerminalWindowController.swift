@@ -1,13 +1,27 @@
 import AppKit
 import SwiftTerm
 
+/// A terminal view that says when the system flipped between light and dark.
+///
+/// SwiftTerm holds resolved colours rather than dynamic ones, so a window cannot follow the
+/// appearance on its own — something has to notice the flip and repaint it. `NSView` already gets
+/// told; nothing above it does.
+private final class ThemedTerminalView: LocalProcessTerminalView {
+    var onAppearanceChange: (() -> Void)?
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
+    }
+}
+
 /// One independent terminal window (its own NSWindow hosting a SwiftTerm view), running an
 /// interactive login shell in the project cwd. The dashboard shows a card per controller.
 @MainActor
 final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrency LocalProcessTerminalViewDelegate {
     let termId: UUID
     private(set) var window: NSWindow!
-    private let termView: LocalProcessTerminalView
+    private let termView: ThemedTerminalView
     private var keyMonitor: Any?
     /// The window is on its way out, so the process ending is our own doing rather than the shell
     /// exiting under the user. Without it the card would land on "exited" instead of "closed".
@@ -19,10 +33,14 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
 
     init(termId: UUID, title: String, cwd: String, autoRunClaude: Bool, port: Int?, tmux: TmuxSpec?) {
         self.termId = termId
-        self.termView = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 920, height: 560))
+        self.termView = ThemedTerminalView(frame: NSRect(x: 0, y: 0, width: 920, height: 560))
         super.init()
 
         termView.processDelegate = self
+        termView.onAppearanceChange = { [weak self] in
+            MainActor.assumeIsolated { self?.applyAppearance() }   // AppKit only calls this on main
+        }
+        applyAppearance()
 
         // SwiftTerm's default env intentionally omits PATH, so we run a *login* shell to
         // restore the user's PATH (needed for `claude`), and inject our identity markers.
@@ -84,6 +102,31 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
             DispatchQueue.main.asyncAfter(deadline: .now() + (tmux == nil ? 0.7 : 1.1)) { [weak self] in
                 self?.type("claude\r")
             }
+        }
+    }
+
+    /// Repaint the terminal in the palette for the appearance now in effect.
+    ///
+    /// Order matters: the 256-colour cube is derived from the background and foreground as well as
+    /// the 16 base colours, so the two anchors go in before `installColors` — which is also what
+    /// triggers the full redraw, so the grid already on screen re-renders in the new palette rather
+    /// than waiting for the agent to print its next line.
+    private func applyAppearance() {
+        let palette = TerminalPalette.matching(termView.effectiveAppearance)
+        termView.nativeBackgroundColor = palette.background
+        termView.nativeForegroundColor = palette.foreground
+        termView.installColors(palette.ansi)
+        // The layer paints everything the character grid does not: the sliver below the last row,
+        // and the whole view during a live resize, when the drag outruns the redraw. SwiftTerm sets
+        // it once at setup and never again, so without this a flip leaves a black band under a
+        // white terminal — and a black flash on every resize.
+        termView.layer?.backgroundColor = palette.background.cgColor
+        // Re-assigning the same colour is not a no-op. `selectedControlColor` is already dynamic and
+        // right in both appearances, but SwiftTerm stores `caretColor.cgColor` — resolved against
+        // whatever appearance was current at assignment — so the caret keeps the tint it was born
+        // with. Assigning it inside the new appearance re-resolves it.
+        termView.effectiveAppearance.performAsCurrentDrawingAppearance {
+            termView.caretColor = .selectedControlColor
         }
     }
 
