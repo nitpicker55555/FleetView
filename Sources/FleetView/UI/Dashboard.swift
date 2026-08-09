@@ -918,6 +918,12 @@ struct ProjectSection: View {
     @State private var showChart = true
     @State private var copied = false
     @State private var gripHot = false
+    // Scanned rather than observed: a skill is files on disk, with no event to subscribe to. Read
+    // once when the section appears (cheap — a readdir and a handful of small files) and again each
+    // time the list is opened, which is the moment someone would notice it being stale.
+    @State private var skills: [SkillInfo] = []
+    @State private var showSkills = false
+    @State private var pickedSkill: SkillInfo?
 
     private var collapsed: Bool { state.isCollapsed(project.id) }
     // Counted over every terminal in the project, not the filtered list: what the header reports
@@ -936,6 +942,9 @@ struct ProjectSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             header
+            // Not gated on `collapsed`: folding a project puts its *terminals* away, and looking up
+            // what a skill does is exactly the kind of thing you do without wanting the cards back.
+            if showSkills { skillsPanel }
             // Folded: the header alone, which still carries the terminal count and the token
             // figures — a project you have put away should still be able to tell you it is busy.
             if !collapsed {
@@ -958,6 +967,61 @@ struct ProjectSection: View {
         // The whole section is the drop target, not just its header: while you drag a project past
         // one with six cards open, the header is the smallest part of it you could be aiming at.
         .onDrop(of: [.text], delegate: ProjectReorderDrop(target: project.id, state: state))
+        .onAppear { skills = ProjectSkills.scan(projectPath: project.path) }
+    }
+
+    /// The skills drawer: names down the left, the picked one explained on the right.
+    ///
+    /// The absolute path is both selectable and copyable by button. Two ways to the same string
+    /// because they answer different needs — dragging out part of a path to paste into a command,
+    /// versus taking the whole thing without aiming.
+    private var skillsPanel: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(skills) { s in
+                    let picked = (pickedSkill ?? skills.first)?.id == s.id
+                    Button { pickedSkill = s } label: {
+                        Text(s.name)
+                            .font(.system(size: 12, weight: picked ? .semibold : .regular))
+                            .foregroundColor(picked ? Theme.accent : Theme.text)
+                            .lineLimit(1).truncationMode(.middle)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(picked ? Theme.accent.opacity(0.12) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(width: 190)
+            Divider()
+            if let s = pickedSkill ?? skills.first {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(s.name).font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
+                    Text(s.description.isEmpty ? "SKILL.md declares no description." : s.description)
+                        .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 6) {
+                        Text(s.path)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Theme.subtext.opacity(0.75))
+                            .textSelection(.enabled)
+                            .lineLimit(2).truncationMode(.middle)
+                        Button { copyToClipboard(s.path) } label: {
+                            Image(systemName: "doc.on.doc").font(.system(size: 10))
+                                .foregroundColor(Theme.subtext).padding(3)
+                        }
+                        .buttonStyle(.plain).help("Copy the absolute path")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(11)
+        .background(Theme.card.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.stroke, lineWidth: 1))
     }
 
     private var header: some View {
@@ -1040,6 +1104,23 @@ struct ProjectSection: View {
                     .background(Theme.green).clipShape(Capsule()).transition(.opacity)
             }
             Spacer(minLength: 10)
+            // Hidden when the project carries none: a control that opens an empty drawer on most
+            // projects is noise on every header it appears in.
+            if !skills.isEmpty {
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) { showSkills.toggle() }
+                    if showSkills { skills = ProjectSkills.scan(projectPath: project.path) }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "wand.and.stars").font(.system(size: 11))
+                        Text("\(skills.count)").font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundColor(showSkills ? Theme.accent : Theme.subtext).padding(5)
+                }
+                .buttonStyle(.plain)
+                .help(showSkills ? "Hide this project's skills"
+                                 : "\(skills.count) skills in .claude/skills")
+            }
             if deltas.count > 1 {
                 Button { withAnimation(.easeOut(duration: 0.18)) { showChart.toggle() } } label: {
                     Image(systemName: "chart.bar.xaxis").font(.system(size: 12))

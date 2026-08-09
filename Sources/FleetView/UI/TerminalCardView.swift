@@ -124,20 +124,17 @@ struct TerminalCardView: View {
         .frame(minHeight: 34, alignment: .top)
     }
 
+    /// The bottom row. No "mark" chip: a marked card already says so four times over — the violet
+    /// card fill, the violet stroke, the violet divider above this row, and the bookmark glyph in
+    /// the header — and the fifth was the one costing the run clock the width it needed to be read.
     private var footer: some View {
         HStack(spacing: 8) {
             idChip
-            if done {
-                // Text only — the header already carries the bookmark glyph, and repeating it here
-                // was three of the same symbol on one card.
-                Text("mark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .lineLimit(1)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(Theme.markTint.opacity(0.18)).foregroundColor(Theme.markTint)
-                    .clipShape(Capsule())
-            }
-            runChip
+            // First claim on the row's width. It is the figure the board is read for, and the only
+            // one here that cannot survive being clipped: "1…" could be a minute or an hour, while
+            // a truncated id is still a recognisable prefix of a hash you copy by clicking anyway,
+            // and "5m ago" was a rounded-off number before the layout got to it.
+            runChip.layoutPriority(2)
             // While it runs, the clock is the only number worth the space — "last activity" then
             // says nothing but "just now". Afterwards the two answer different questions: how long
             // it took, and how long ago that was.
@@ -157,6 +154,7 @@ struct TerminalCardView: View {
                 }
                 .opacity(terminal.status == .working ? 0 : 1)
                 .allowsHitTesting(terminal.status != .working)   // no tooltip on an invisible label
+                .layoutPriority(1)                               // gives way after the clock, before the id
             }
             Spacer(minLength: 4)
             controls

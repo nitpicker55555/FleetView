@@ -39,6 +39,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$BUILD</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <!-- Where this bundle was built from. A first run with no state.json opens that checkout as its
+         first project, so a fresh install lands on something instead of an empty board. Recorded at
+         package time because the installed app in /Applications has no other way to know. -->
+    <key>FVSourceRepo</key><string>$ROOT</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSUIElement</key><false/>
     <key>NSPrincipalClass</key><string>NSApplication</string>

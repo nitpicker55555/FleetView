@@ -21,9 +21,9 @@ project-manager peers
 ```
 
 ```
-URL                    TERMS WORKING   PROJECTS
-http://192.168.2.2:8080 9     1         cosy voice, FleetView
-http://192.168.2.6:8080 26    2         FleetView, datagen_vision2web  ←self
+URL                    USER         TERMS WORKING   PROJECTS
+http://192.168.2.2:8080 tianyi       9     1         cosy voice, FleetView
+http://192.168.2.6:8080 puzhen       26    2         FleetView, datagen_vision2web  ←self
 ```
 
 It probes the local /24 on 8080–8082 and identifies an instance by whether `/state` answers with the
@@ -31,6 +31,11 @@ right shape. A whole subnet takes a few seconds. FleetView binds the next free p
 a machine whose 8080 was busy appears on 8081 — and **one machine can show up twice**, which means
 two instances are running there and they are fighting over the same hook events. That is worth
 reporting, not working around.
+
+`USER` is **inferred, not reported** — `/state` has no user field, so it is read off the `/Users/<name>`
+prefix of any project path, terminal cwd or transcript path the instance exposes. An instance with no
+projects and no terminals hands over no path at all and shows `-`; that means "nothing to read it from",
+not "no user". Say which machine you mean by URL anyway — a username is a hint, not an address.
 
 ## Drive one
 

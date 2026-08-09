@@ -1,17 +1,122 @@
 import AppKit
 import SwiftTerm
 
-/// A terminal view that says when the system flipped between light and dark.
+/// The terminal view, subclassed for the things that have to happen at view level.
 ///
-/// SwiftTerm holds resolved colours rather than dynamic ones, so a window cannot follow the
-/// appearance on its own — something has to notice the flip and repaint it. `NSView` already gets
-/// told; nothing above it does.
+/// Following the system appearance needs both halves: `NSView` is the lowest thing already told
+/// about a flip (SwiftTerm holds resolved colours, not dynamic ones, so nothing repaints on its
+/// own), and this is where pty bytes enter the emulator — the only place an agent's hard-coded
+/// 24-bit colours can still be reached. Pinch-to-zoom and file drops are here for the same reason:
+/// both are delivered to the view under the pointer.
 private final class ThemedTerminalView: LocalProcessTerminalView {
     var onAppearanceChange: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    /// Rescue the colours of a dark-themed agent painting into a light window (see `TerminalInk`).
+    /// Off in dark, where the stream is not touched at all.
+    var adaptsInk = false {
+        didSet {
+            guard adaptsInk != oldValue, let held = ink.flushPending() else { return }
+            // Whatever half-sequence the adapter was holding has to reach the emulator now, or the
+            // bytes that complete it arrive orphaned and print as text.
+            feed(byteArray: held[...])
+        }
+    }
+    private var ink = TerminalInk()
+
+    /// Live pinch, reported as a point size. Only this window follows along while the fingers are
+    /// moving; `onZoomEnded` is where the rest of the fleet catches up.
+    var onZoom: ((Double) -> Void)?
+    var onZoomEnded: (() -> Void)?
+    private var zoomBase: Double = 0
+    private var zoomScale: Double = 1
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         onAppearanceChange?()
+    }
+
+    override func magnify(with event: NSEvent) {
+        switch event.phase {
+        case .began:
+            zoomBase = Double(font.pointSize)
+            zoomScale = 1
+        case .changed:
+            // `.began` is not guaranteed — a gesture already in flight when the window takes focus
+            // arrives mid-stream, and without this the first pinch would scale from a size of zero.
+            if zoomBase == 0 { zoomBase = Double(font.pointSize); zoomScale = 1 }
+            zoomScale += Double(event.magnification)
+            // Fold the size limits back into the scale. Left to run free, pinching hard past a limit
+            // banks up scale that then has to be pinched back off before the text moves at all.
+            let target = min(TerminalWindowController.fontSizeRange.upperBound,
+                             max(TerminalWindowController.fontSizeRange.lowerBound,
+                                 zoomBase * zoomScale))
+            zoomScale = target / zoomBase
+            onZoom?(target)
+        case .ended, .cancelled:
+            zoomBase = 0
+            onZoomEnded?()
+        default:
+            break
+        }
+    }
+
+    // MARK: File drop
+
+    /// Dropping files types their paths, the way Terminal.app does it. SwiftTerm registers no
+    /// dragged types of its own, so none of this displaces existing behaviour.
+    ///
+    /// The path is *typed*, never executed — no newline is sent. A drop therefore lands wherever
+    /// the cursor already is: a shell prompt, or an agent's input box mid-sentence. Deciding what
+    /// the path is for belongs to the person, not to the drop.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedURLs(sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let paths = droppedURLs(sender).map { Self.shellQuoted($0.path) }
+        guard !paths.isEmpty else { return false }
+        // Trailing space so the next thing typed does not fuse onto the path; multiple files come
+        // through as one drop and read as separate arguments.
+        send(txt: paths.joined(separator: " ") + " ")
+        return true
+    }
+
+    private func droppedURLs(_ sender: NSDraggingInfo) -> [URL] {
+        let opts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        return sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: opts)
+            as? [URL] ?? []
+    }
+
+    /// Quote a path unless it is plainly safe to leave bare.
+    ///
+    /// Spaces are the obvious case; an apostrophe in a folder name ("Kim's Mac") is the one that
+    /// breaks naive quoting, so a `'` is closed, escaped and reopened — the only form every POSIX
+    /// shell agrees on. Anything non-ASCII (CJK paths are everywhere here) is quoted too rather
+    /// than reasoned about.
+    private static func shellQuoted(_ path: String) -> String {
+        let safe = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-/")
+        if !path.isEmpty, path.allSatisfy({ safe.contains($0) }) { return path }
+        return "'" + path.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+    }
+
+    /// `LocalProcess` delivers on the main queue (it is constructed without a queue of its own), so
+    /// `ink` is only ever touched from one thread — the same one `adaptsInk` is set on.
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        guard adaptsInk, let adapted = ink.adapt(slice) else {
+            super.dataReceived(slice: slice)
+            return
+        }
+        feed(byteArray: adapted[...])
     }
 }
 
@@ -30,8 +135,21 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     var onExit: ((UUID, Int32?) -> Void)?
     var onClose: ((UUID) -> Void)?
     var onInterrupt: ((UUID) -> Void)?   // user pressed Escape (Claude's interrupt key)
+    /// A pinch finished on this window, at this point size — the fleet's cue to follow.
+    var onZoomed: ((Double) -> Void)?
 
-    init(termId: UUID, title: String, cwd: String, autoRunClaude: Bool, port: Int?, tmux: TmuxSpec?) {
+    /// Read from the system rather than written down, because it is the same expression SwiftTerm
+    /// builds its own default font from — pinning a number here would silently stop meaning
+    /// "the default" the day the two disagree.
+    static let defaultFontSize = Double(NSFont.systemFontSize)
+    /// Below 8 the glyphs stop being letters; above 36 an 80-column line no longer fits a window
+    /// anybody would open. Both ends also bound how far one pinch can run away with the size.
+    static let fontSizeRange: ClosedRange<Double> = 8...36
+
+    private(set) var fontSize: Double = TerminalWindowController.defaultFontSize
+
+    init(termId: UUID, title: String, cwd: String, autoRunClaude: Bool, port: Int?, tmux: TmuxSpec?,
+         fontSize: Double) {
         self.termId = termId
         self.termView = ThemedTerminalView(frame: NSRect(x: 0, y: 0, width: 920, height: 560))
         super.init()
@@ -41,6 +159,16 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
             MainActor.assumeIsolated { self?.applyAppearance() }   // AppKit only calls this on main
         }
         applyAppearance()
+        // Before `startProcess`, which sizes the pty from the terminal's columns and rows — those
+        // come from the cell size, so a font applied afterwards would leave the child believing in
+        // a window that no longer exists.
+        setFontSize(fontSize)
+        termView.onZoom = { [weak self] size in
+            MainActor.assumeIsolated { self?.setFontSize(size) }
+        }
+        termView.onZoomEnded = { [weak self] in
+            MainActor.assumeIsolated { guard let self else { return }; self.onZoomed?(self.fontSize) }
+        }
 
         // SwiftTerm's default env intentionally omits PATH, so we run a *login* shell to
         // restore the user's PATH (needed for `claude`), and inject our identity markers.
@@ -113,6 +241,7 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     /// than waiting for the agent to print its next line.
     private func applyAppearance() {
         let palette = TerminalPalette.matching(termView.effectiveAppearance)
+        termView.adaptsInk = palette.rescuesDarkThemedInk
         termView.nativeBackgroundColor = palette.background
         termView.nativeForegroundColor = palette.foreground
         termView.installColors(palette.ansi)
@@ -128,6 +257,21 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
         termView.effectiveAppearance.performAsCurrentDrawingAppearance {
             termView.caretColor = .selectedControlColor
         }
+    }
+
+    /// Resize the text. The window keeps its frame and gains or loses columns and rows instead —
+    /// which is what a terminal is expected to do, and what makes this reach the child process:
+    /// SwiftTerm recomputes the grid from the new cell size and that lands as a `TIOCSWINSZ`.
+    ///
+    /// Rounded to whole points, and skipped when nothing changes: a pinch delivers deltas at screen
+    /// refresh rate, and every one of them would otherwise be a font rebuild, a grid resize and a
+    /// `SIGWINCH` into a full-screen agent that redraws on each.
+    func setFontSize(_ size: Double) {
+        let clamped = min(Self.fontSizeRange.upperBound,
+                          max(Self.fontSizeRange.lowerBound, size.rounded()))
+        guard clamped != fontSize else { return }
+        fontSize = clamped
+        termView.font = NSFont.monospacedSystemFont(ofSize: clamped, weight: .regular)
     }
 
     func show(cascadeFrom point: inout NSPoint) {

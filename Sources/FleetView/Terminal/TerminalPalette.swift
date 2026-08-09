@@ -16,6 +16,10 @@ struct TerminalPalette {
     /// these plus fg/bg (`Ansi256PaletteStrategy.base16Lab`, its default), so installing these is
     /// also what makes 256-colour output follow the appearance instead of staying tuned for black.
     let ansi: [SwiftTerm.Color]
+    /// Whether an agent's own 24-bit colours need rescuing on this background — see `TerminalInk`.
+    /// A property of the palette rather than of the appearance, because it follows from the one
+    /// thing that actually matters: what colour the text is being painted onto.
+    let rescuesDarkThemedInk: Bool
 
     static func matching(_ appearance: NSAppearance) -> TerminalPalette {
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
@@ -35,7 +39,8 @@ struct TerminalPalette {
         foreground: NSColor(srgbRed: 35389.0 / 65535, green: 35389.0 / 65535,
                             blue: 35389.0 / 65535, alpha: 1),
         ansi: ansi([0x000000, 0xC23621, 0x25BC24, 0xADAD27, 0x492EE1, 0xD338D3, 0x33BBC8, 0xCBCCCD,
-                    0x818383, 0xFC391F, 0x31E722, 0xEAEC23, 0x5833FF, 0xF935F8, 0x14F0F0, 0xE9EBEB]))
+                    0x818383, 0xFC391F, 0x31E722, 0xEAEC23, 0x5833FF, 0xF935F8, 0x14F0F0, 0xE9EBEB]),
+        rescuesDarkThemedInk: false)
 
     /// Light is GitHub Primer light, the same source `Theme`'s light column comes from, so a
     /// terminal window and the board behind it are the same two colours. Its `fg.default #1F2328`
@@ -50,7 +55,8 @@ struct TerminalPalette {
         background: rgb(0xFFFFFF),
         foreground: rgb(0x1F2328),
         ansi: ansi([0x24292F, 0xCF222E, 0x116329, 0x4D2D00, 0x0969DA, 0x8250DF, 0x1B7C83, 0x6E7781,
-                    0x57606A, 0xA40E26, 0x1A7F37, 0x633C01, 0x218BFF, 0xA475F9, 0x3192AA, 0x8C959F]))
+                    0x57606A, 0xA40E26, 0x1A7F37, 0x633C01, 0x218BFF, 0xA475F9, 0x3192AA, 0x8C959F]),
+        rescuesDarkThemedInk: true)
 
     private static func rgb(_ hex: UInt32) -> NSColor {
         NSColor(srgbRed: Double((hex >> 16) & 0xFF) / 255,

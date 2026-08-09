@@ -123,8 +123,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         search.target = self
         editMenu.addItem(search)
 
+        // Terminal text size. The gesture for it is a pinch on the terminal window itself; these
+        // exist so it is discoverable at all, and so there is a way back to the default size that
+        // does not involve pinching until it looks about right.
+        let viewItem = NSMenuItem()
+        mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        let bigger = NSMenuItem(title: "终端字体放大", action: #selector(terminalFontBigger), keyEquivalent: "+")
+        bigger.target = self
+        viewMenu.addItem(bigger)
+        let smaller = NSMenuItem(title: "终端字体缩小", action: #selector(terminalFontSmaller), keyEquivalent: "-")
+        smaller.target = self
+        viewMenu.addItem(smaller)
+        let actual = NSMenuItem(title: "终端字体实际大小", action: #selector(terminalFontActual), keyEquivalent: "0")
+        actual.target = self
+        viewMenu.addItem(actual)
+
         NSApp.mainMenu = mainMenu
     }
+
+    @objc private func terminalFontBigger()  { state.setTerminalFontSize(state.terminalFontSize + 1) }
+    @objc private func terminalFontSmaller() { state.setTerminalFontSize(state.terminalFontSize - 1) }
+    @objc private func terminalFontActual()  { state.setTerminalFontSize(TerminalWindowController.defaultFontSize) }
 
     @objc private func uninstallHooks() {
         HookInstaller.uninstall()

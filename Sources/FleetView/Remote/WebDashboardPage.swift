@@ -18,8 +18,7 @@ enum WebDashboardPage {
 <style>
   /* Dark is the default, and these are the same values the desktop app's Theme uses, so the two
      palettes can be compared line by line. `html.light` below is the other appearance; which one is
-     applied comes from the Mac (state.dark), not from the phone — the dashboard is a mirror of that
-     window, and the two disagreeing looks like a bug. */
+     applied follows the Mac (state.dark) until this browser says otherwise — see `applyScheme`. */
   :root{
     --bg:#14171c; --panel:#1c1f25; --card:#25282f; --cardHover:#2e3039;
     --stroke:rgba(255,255,255,.08); --text:#ebedf2; --sub:#99a1b0; --accent:#7a9eff;
@@ -496,7 +495,7 @@ enum WebDashboardPage {
   #term.dropping{outline:2px dashed var(--accent);outline-offset:-6px}
   /* Files an agent handed over. Lives in the header rather than inside a conversation: it is the
      one thing you want to reach without first knowing which terminal produced it. */
-  #traybtn,#markbtn{position:relative;background:var(--card);color:var(--text);border:1px solid var(--stroke);
+  #traybtn,#markbtn,#schemebtn{position:relative;background:var(--card);color:var(--text);border:1px solid var(--stroke);
     border-radius:8px;padding:5px 9px;font-size:14px;line-height:1;cursor:pointer}
   #traybtn.has{border-color:var(--accent)}
   /* Filled tint while it is filtering: a board hiding most of itself has to say so somewhere that
@@ -579,6 +578,7 @@ enum WebDashboardPage {
   <span id="pills"></span>
   <span class="spacer"></span>
   <button id="markbtn" onclick="toggleOnlyMarked()" title="Only show marked terminals">🔖<span id="markcount"></span></button>
+  <button id="schemebtn" onclick="cycleScheme()">🖥</button>
   <button id="traybtn" onclick="toggleTray()" title="Files agents have sent you">📥<span id="traybadge"></span></button>
   <span class="refresh" id="refresh"></span>
 </header>
@@ -2148,19 +2148,44 @@ function toggleOnlyMarked(){
   toast(onlyMarked?'showing marked only':'showing all terminals');
 }
 
-/* Follow the Mac's appearance, not the phone's. The dashboard is a mirror of that window, so the
-   two disagreeing reads as a bug; and it is one flag on /state, which is polled anyway. Applied to
-   <html> rather than <body> so `color-scheme` reaches the scrollbars and form controls too. */
+/* Appearance. Following the Mac is still the default — the dashboard is a mirror of that window and
+   the two disagreeing reads as a bug — but only the default: the Mac is in one room and the phone
+   is wherever you are, and a board that is dark because the desk is dark is no help outdoors. So
+   the button cycles Mac → dark → light, and the choice sticks per browser rather than per device or
+   per session, which is the only scope localStorage actually gives us.
+
+   `macDark` is remembered rather than re-read, because /state is polled and `cycleScheme` is not:
+   the tick passes the Mac's flag, the button passes nothing, and both have to end up applying the
+   same rule. Applied to <html> rather than <body> so `color-scheme` reaches the scrollbars and form
+   controls too. */
+let scheme=localStorage.getItem('fv_scheme')||'auto';
+let macDark=true;
 function applyScheme(dark){
-  document.documentElement.classList.toggle('light', dark===false);
+  if(dark!==undefined)macDark=dark;
+  document.documentElement.classList.toggle('light',
+    scheme==='light'||(scheme==='auto'&&macDark===false));
+  const b=document.getElementById('schemebtn');
+  if(b){
+    b.textContent=scheme==='auto'?'🖥':(scheme==='dark'?'🌙':'☀️');
+    b.title=scheme==='auto'?'Appearance: following the Mac':('Appearance: '+scheme+' (tap to change)');
+  }
 }
+function cycleScheme(){
+  scheme=scheme==='auto'?'dark':(scheme==='dark'?'light':'auto');
+  localStorage.setItem('fv_scheme',scheme);
+  applyScheme();
+  toast(scheme==='auto'?'appearance follows the Mac':('appearance: '+scheme));
+}
+/* Before the first /state lands, so a saved choice is on the page it paints rather than one poll
+   later — and so the button carries the right glyph from the start. */
+applyScheme();
 async function tick(){
   if(dragging)return;
   try{
     const r=await fetch('/state',{cache:'no-store'});state=await r.json();
-    // The appearance is the one thing worth keeping current while a conversation is open — flipping
-    // the Mac's theme and watching the phone stay dark reads as broken. Redrawing the board behind
-    // the overlay is not: that is what the guard below is for.
+    // The appearance is the one thing worth keeping current while a conversation is open — for a
+    // browser that is following the Mac, flipping the Mac's theme and watching the phone stay dark
+    // reads as broken. Redrawing the board behind the overlay is not: that is the guard below.
     applyScheme(state.dark);
     if(termOpen()){watchTermAlive(state);return;}
     render(state);

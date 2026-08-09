@@ -168,6 +168,24 @@ def cmd_peers(a):
                 out.add(ip)
         return out
 
+    def owner(d):
+        """The macOS account a peer runs as, inferred from any absolute path it reports.
+
+        /state has no user field, but every project path, terminal cwd and transcript path lives
+        under /Users/<name>. So this is inference, not a lookup: an instance with no projects and
+        no terminals reports no path at all and comes back "-" — which is the honest answer, and
+        the reason this is not presented as something the API tells us.
+        """
+        paths = [p.get("path") or "" for p in d.get("projects", [])]
+        for t in d.get("terminals", []):
+            paths += [t.get("cwd") or "", t.get("transcript") or ""]
+        names = set()
+        for p in paths:
+            m = re.match(r"/Users/([^/]+)/", p)
+            if m and m.group(1) != "Shared":   # /Users/Shared is nobody's account
+                names.add(m.group(1))
+        return "/".join(sorted(names)) or "-"
+
     mine = own_ips()
     if not mine:
         sys.exit("no IPv4 address on en0/en1/en2 — not on a network?")
@@ -197,14 +215,14 @@ def cmd_peers(a):
         print("no FleetView instances found on %s.0/24" % ",".join(sorted(prefixes)))
         return
     found.sort(key=lambda r: (r[0], r[1]))
-    print("%-22s %-5s %-9s %s" % ("URL", "TERMS", "WORKING", "PROJECTS"))
+    print("%-22s %-12s %-5s %-9s %s" % ("URL", "USER", "TERMS", "WORKING", "PROJECTS"))
     for host, port, d in found:
         terms = d.get("terminals", [])
         working = sum(1 for t in terms if t.get("status") == "working")
-        projects = ", ".join(p.get("name", "") for p in d.get("projects", []))[:44]
+        projects = ", ".join(p.get("name", "") for p in d.get("projects", []))[:36]
         self_mark = c("32", " ←self") if host in mine else ""
-        print("%-22s %-5d %-9d %s%s" % ("http://%s:%d" % (host, port), len(terms),
-                                        working, projects, self_mark))
+        print("%-22s %-12s %-5d %-9d %s%s" % ("http://%s:%d" % (host, port), owner(d)[:12],
+                                              len(terms), working, projects, self_mark))
     print(c("90", "\nuse:  project-manager -u <URL> ls        (or FLEETVIEW_URL=<URL>)"))
 
 

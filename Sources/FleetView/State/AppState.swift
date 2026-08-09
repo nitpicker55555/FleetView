@@ -37,6 +37,13 @@ final class AppState: ObservableObject {
     /// (see `reconnectLiveTerminals`). Turning it on makes quitting mean "stop the fleet too".
     @Published var closeTerminalsOnQuit: Bool = false
 
+    /// Point size for terminal windows. One size for the fleet rather than one per window: cards are
+    /// opened and closed constantly, so a size that lived on the window would have to be re-chosen
+    /// every time — "how big is terminal text on this Mac" is a preference, not a property of a
+    /// session. Pinching one window therefore settles it for all of them (on gesture end, so the
+    /// other windows are not resized once per frame) and for every terminal opened afterwards.
+    @Published var terminalFontSize: Double = TerminalWindowController.defaultFontSize
+
     /// Set once the app is tearing down. Terminal windows disappearing during a quit must not be
     /// read as the user closing a terminal, which now kills the session behind it — that would make
     /// every quit a fleet-wide kill regardless of the setting above.
@@ -455,12 +462,31 @@ final class AppState: ObservableObject {
         var showOnlyMarked: Bool?
         var closeTerminalsOnQuit: Bool?
         var collapsedProjects: [UUID]?
+        var terminalFontSize: Double?
+    }
+
+    /// A first run — no `state.json` at all — opens the checkout this bundle was built from, so a
+    /// fresh install lands on something instead of an empty board. `package_app.sh` records the path
+    /// as `FVSourceRepo`, since the copy in /Applications has no other way to know where it came from.
+    ///
+    /// Keyed on the file being *absent*, not on `projects` being empty: someone who deliberately
+    /// removes every project would otherwise be handed FleetView back at every launch.
+    private func seedFirstProject() {
+        guard let repo = Bundle.main.object(forInfoDictionaryKey: "FVSourceRepo") as? String,
+              !repo.isEmpty else { return }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: repo, isDirectory: &isDir), isDir.boolValue
+        else { return }   // the checkout was moved or deleted since packaging
+        addProject(path: repo)
     }
 
     func load() {
         FV.ensureSupportDir()
         guard let data = try? Data(contentsOf: FV.stateFile),
-              let p = try? JSONDecoder().decode(Persisted.self, from: data) else { return }
+              let p = try? JSONDecoder().decode(Persisted.self, from: data) else {
+            seedFirstProject()
+            return
+        }
         projects = p.projects
         terminals = p.terminals.map { row in
             var t = row
@@ -477,6 +503,12 @@ final class AppState: ObservableObject {
         notesCollapsed = p.notesCollapsed ?? false
         showOnlyMarked = p.showOnlyMarked ?? false
         closeTerminalsOnQuit = p.closeTerminalsOnQuit ?? false
+        // Clamped on the way in as well as on the way out: state.json is a file on disk that people
+        // do edit, and a 400pt terminal is a window with one character in it.
+        if let s = p.terminalFontSize {
+            terminalFontSize = min(TerminalWindowController.fontSizeRange.upperBound,
+                                   max(TerminalWindowController.fontSizeRange.lowerBound, s))
+        }
         // Intersected with what actually exists: a project removed while collapsed would otherwise
         // leave its id here forever, and if a future one were ever created with that id it would
         // open folded for no reason anybody could explain.
@@ -515,7 +547,8 @@ final class AppState: ObservableObject {
                           tasksCollapsed: tasksCollapsed, notesCollapsed: notesCollapsed,
                           treePanelWidth: treePanelWidth, showOnlyMarked: showOnlyMarked,
                           closeTerminalsOnQuit: closeTerminalsOnQuit,
-                          collapsedProjects: Array(collapsedProjects))
+                          collapsedProjects: Array(collapsedProjects),
+                          terminalFontSize: terminalFontSize)
         // .atomic: without it a crash or a full disk mid-write leaves a truncated state.json, and
         // that file IS the board — every project, terminal and cluster.
         if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile, options: .atomic) }
@@ -1842,7 +1875,8 @@ final class AppState: ObservableObject {
         let spec = remote.tmuxSpec(for: t.id)
         let autoRun = autoRun ?? (t.autoRunClaude && !(spec != nil && remote.sessionExists(t.id)))
         let ctrl = TerminalWindowController(termId: t.id, title: t.name, cwd: t.cwd,
-                                            autoRunClaude: autoRun, port: hookPort, tmux: spec)
+                                            autoRunClaude: autoRun, port: hookPort, tmux: spec,
+                                            fontSize: terminalFontSize)
         ctrl.onExit = { [weak self] id, _ in
             Task { @MainActor in self?.setStatus(id, .exited) }
         }
@@ -1852,8 +1886,23 @@ final class AppState: ObservableObject {
         ctrl.onInterrupt = { [weak self] id in
             Task { @MainActor in self?.handleInterrupt(id) }
         }
+        ctrl.onZoomed = { [weak self] size in
+            Task { @MainActor in self?.setTerminalFontSize(size) }
+        }
         controllers[t.id] = ctrl
         ctrl.show(cascadeFrom: &cascadePoint)
+    }
+
+    /// Adopt a terminal font size for the whole fleet: every open window, and every one opened from
+    /// here on. Called by the ⌘+/⌘− menu items and by a pinch once the fingers lift.
+    func setTerminalFontSize(_ size: Double) {
+        let clamped = min(TerminalWindowController.fontSizeRange.upperBound,
+                          max(TerminalWindowController.fontSizeRange.lowerBound, size.rounded()))
+        // Not guarded on `clamped != terminalFontSize`: the window that was pinched is already at
+        // this size while the others are not, so the setting agreeing does not mean the fleet does.
+        terminalFontSize = clamped
+        for c in controllers.values { c.setFontSize(clamped) }
+        save()
     }
 
     /// A terminal window closed — so close the terminal.
