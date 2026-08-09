@@ -52,6 +52,9 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager log <id> [-p\|-c\|-f]` | Locate the agent's transcript file; `-p` path only, `-c` cat, `-f` follow (tail -f) |
 | `project-manager new <project>` | Open a new terminal in a project (matched by name) |
 | `project-manager rm <id>` | Remove a terminal (kills its session) |
+| `project-manager notes [-f Q] [-p]` | The sidebar Notes list — also the web dashboard's quick-command chips. `-f` filters, `-p` prints raw text for copying |
+| `project-manager notes add <text…>` | Append a note (newlines and quotes survive; use single quotes in zsh) |
+| `project-manager notes rm <note>` | Delete a note, selected by its number, id prefix, or a text substring. It prints the note back — that's the only undo |
 | `project-manager peers` | Scan the LAN and list every FleetView instance with its URL (for `-u`) |
 
 ## How to answer an agent's prompt

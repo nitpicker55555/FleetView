@@ -42,7 +42,12 @@ project-manager -u http://192.168.2.2:8080 send cosy "继续"
 
 `-u` applies to every subcommand; `FLEETVIEW_URL` does the same thing if you would rather export it
 once. Everything in the [[project-manager]] skill works unchanged against a remote instance —
-`ls`, `watch`, `show`, `tail`, `send`, `key`, `choose`, `check`, `new`, `rm`.
+`ls`, `watch`, `show`, `tail`, `send`, `key`, `choose`, `check`, `new`, `rm`, `notes`.
+
+`notes` crossing the network is worth knowing: the other machine's sidebar notes (and the quick-command
+chips on its web dashboard) are readable *and* writable from here, so `notes add` is a way to leave a
+path or a command where someone at that Mac will see it. An empty list means that instance has no
+notes — not that the notes could not be read.
 
 ## Three things do not cross the network
 

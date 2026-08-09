@@ -20,8 +20,12 @@ auto-discovers the local server via ~/.fleetview/web-port.
   project-manager log <sel> [-f|-c|-p]     locate the agent's conversation-history file (Claude/Codex)
   project-manager new <project-sel>        open a new terminal in a project
   project-manager rm <sel>                 remove a terminal
+  project-manager notes [-f Q] [-p]        the shared Notes list (the web's quick-command chips)
+  project-manager notes add <text...>      append a note
+  project-manager notes rm <note-sel>      delete a note (prints it back, so you can re-add it)
 
 <sel> matches a terminal by name substring (case-insensitive) or id prefix.
+<note-sel> matches a note by its number in `notes`, its id prefix, or a text substring.
 """
 import argparse, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 
@@ -118,6 +122,26 @@ def resolve(st, sel):
     print("ambiguous %r — matches:" % sel, file=sys.stderr)
     for t in hits:
         print("  %s  %s" % (t["id"][:8], t["name"]), file=sys.stderr)
+    sys.exit(2)
+
+def resolve_note(notes, sel):
+    """Find one note by its 1-based number in `notes`, id prefix, or text substring.
+
+    The number is the one `notes` printed, which is why the listing numbers against the *full*
+    list even when filtered — a number you can see has to stay a selector you can use.
+    """
+    sl = sel.lower()
+    if sl.isdigit() and 1 <= int(sl) <= len(notes):
+        return notes[int(sl) - 1]
+    hits = [n for n in notes if n["id"].lower().startswith(sl)]
+    if len(hits) != 1:
+        hits = [n for n in notes if sl in n["text"].lower()]
+    if len(hits) == 1: return hits[0]
+    if not hits:
+        sys.exit("no note matches %r" % sel)
+    print("ambiguous %r — matches:" % sel, file=sys.stderr)
+    for n in hits:
+        print("  %s  %s" % (n["id"][:8].lower(), n["text"].splitlines()[0][:60]), file=sys.stderr)
     sys.exit(2)
 
 # ---- commands ----
@@ -360,13 +384,61 @@ def cmd_rm(a):
     api_json("/action?" + urllib.parse.urlencode({"id": t["id"], "do": "remove"}))
     print("removed %s" % t["name"])
 
+def cmd_notes(a):
+    """The sidebar Notes list, which is also the web dashboard's quick-command chips.
+
+    It rides on /state and /note like everything else here, so -u reaches another machine's notes
+    exactly the same way it reaches its terminals.
+    """
+    notes = state().get("notes", [])
+    act = a.action or "ls"
+
+    if act == "add":
+        text = " ".join(a.rest).strip()
+        if not text:
+            sys.exit("nothing to add")
+        # quote_via=quote so a literal "+" survives: the server reads "+" as a space (form encoding).
+        api_json("/note?" + urllib.parse.urlencode({"add": text}, quote_via=urllib.parse.quote))
+        print("added: %s" % text.splitlines()[0][:70])
+        return
+
+    if act == "rm":
+        if not a.rest:
+            sys.exit("which note? (number, id prefix, or text substring)")
+        n = resolve_note(notes, " ".join(a.rest))
+        api_json("/note?" + urllib.parse.urlencode({"del": n["id"]}))
+        # Echo the full text back: deletion is not undoable in the app, so this is the re-add path.
+        print("removed note %s:" % n["id"][:8].lower())
+        for line in n["text"].splitlines() or [""]:
+            print("  " + line)
+        return
+
+    if not notes:
+        print("no notes"); return
+    q = " ".join(a.rest).strip().lower() or (a.filter or "").strip().lower()
+    shown = [(i, n) for i, n in enumerate(notes, 1) if not q or q in n["text"].lower()]
+    if not shown:
+        print("no note matches %r (%d notes)" % (q, len(notes))); return
+    for i, n in shown:
+        if a.plain:
+            print(n["text"]); continue
+        head = "%3d  %s  " % (i, c("90", n["id"][:8].lower()))
+        lines = n["text"].splitlines() or [""]
+        print(head + lines[0])
+        for extra in lines[1:]:
+            print(" " * 15 + extra)   # keep a multi-line note visibly one item
+    if q and not a.plain:
+        print(c("90", "%d of %d notes" % (len(shown), len(notes))))
+
 def main():
     p = argparse.ArgumentParser(prog="project-manager", description="Control a running FleetView instance.")
     p.add_argument("-u", "--url", help="target another FleetView (same as FLEETVIEW_URL)")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("peers", help="find FleetView instances on this network")
     s.add_argument("--ports", help="ports to probe (default 8080,8081,8082)")
-    s.add_argument("--timeout", type=float, default=0.6)
+    # 0.6s used to miss a live instance on a quiet LAN — a peer that answers slowly reads as "no
+    # peers at all", which is the one wrong answer this command must not give.
+    s.add_argument("--timeout", type=float, default=1.5)
     s.add_argument("--jobs", type=int, default=128)
     s.set_defaults(fn=cmd_peers)
     s = sub.add_parser("ls", help="list terminals")
@@ -387,6 +459,12 @@ def main():
     s.add_argument("-p", "--path", dest="path_only", action="store_true", help="print only the path"); s.set_defaults(fn=cmd_log)
     s = sub.add_parser("new"); s.add_argument("sel", help="project"); s.set_defaults(fn=cmd_new)
     s = sub.add_parser("rm"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
+    s = sub.add_parser("notes", help="the shared Notes list / web quick-commands")
+    s.add_argument("action", nargs="?", choices=("ls", "add", "rm"), help="default: ls")
+    s.add_argument("rest", nargs="*", help="text to add, or which note to remove")
+    s.add_argument("-f", "--filter", help="only notes containing this (ls)")
+    s.add_argument("-p", "--plain", action="store_true", help="raw text only, for copying (ls)")
+    s.set_defaults(fn=cmd_notes)
     a = p.parse_args()
     if a.url:
         global BASE
