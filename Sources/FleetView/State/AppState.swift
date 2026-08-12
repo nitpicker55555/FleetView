@@ -84,6 +84,32 @@ final class AppState: ObservableObject {
     /// Offers a newer release when there is one (see UpdateCheck).
     let updates = UpdateCheck()
 
+    // MARK: - Other FleetViews on the LAN
+    //
+    // Discovery lives in `peerFleet`; the two bits the content column switches on live here, because
+    // a change published by a sub-object does not redraw a view observing AppState.
+
+    let peerFleet = PeerFleet()
+    /// nil == this Mac's own board. Set to a peer and the content column shows that machine.
+    @Published var peerSelected: Peer?
+    @Published var peerStripVisible = false
+
+    /// Open the switcher, scanning the first time. Deliberately not on a timer: sweeping ~760
+    /// addresses in the background forever is how an app ends up looking like a port scanner.
+    func togglePeerStrip() {
+        peerStripVisible.toggle()
+        if !peerStripVisible { peerSelected = nil; return }
+        guard !peerFleet.scanned else { return }
+        Task { await rescanPeers() }
+    }
+
+    func rescanPeers() async {
+        let live = await peerFleet.scan()
+        // A peer that went away — laptop closed, FleetView quit — must not stay selected showing a
+        // page that will never load again.
+        if let sel = peerSelected, !live.contains(where: { $0.id == sel.id }) { peerSelected = nil }
+    }
+
     /// A node being dragged toward the board — from the tree panel, or from a search result.
     /// A search drag carries the hit instead of a uuid: it has to be resolved against its own
     /// project (which may have no terminal open at all), not against the tree panel's.

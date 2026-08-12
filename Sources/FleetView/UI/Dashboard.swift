@@ -31,11 +31,22 @@ struct DashboardView: View {
                     DynamicPanel()      // agent-authored dynamic UI — tops the content column, beside the sidebar
                     TopBar()
                     Divider().overlay(Theme.stroke)
-                    MainArea()
-                        .background(GeometryReader { g in     // the tree-drag drop area ("fleet" space)
-                            Color.clear.preference(key: BoardFrameKey.self,
-                                                   value: g.frame(in: .named("fleet")))
-                        })
+                    if state.peerStripVisible {
+                        PeerStrip(fleet: state.peerFleet)
+                        Divider().overlay(Theme.stroke)
+                    }
+                    // A peer's board replaces this Mac's rather than floating over it: the two look
+                    // alike enough that anything less than taking the whole column would leave you
+                    // unsure which fleet you are looking at — and these boards start terminals.
+                    if let peer = state.peerSelected {
+                        PeerWebBoard(peer: peer).id(peer.id)
+                    } else {
+                        MainArea()
+                            .background(GeometryReader { g in     // the tree-drag drop area ("fleet" space)
+                                Color.clear.preference(key: BoardFrameKey.self,
+                                                       value: g.frame(in: .named("fleet")))
+                            })
+                    }
                 }
             }
             .receded(receded, blurred: dashboardBlurred)
@@ -547,6 +558,7 @@ struct TopBar: View {
             markFilterButton
             updateButton
             searchButton
+            peersButton
             powerButton
             webButton
         }
@@ -715,6 +727,26 @@ struct TopBar: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16).frame(width: 260)
+    }
+
+    /// Opens the LAN switcher. The count appears once a scan has run — before that there is nothing
+    /// honest to put there, and a "0" would read as "nobody is out there" rather than "not looked".
+    private var peersButton: some View {
+        let others = state.peerFleet.found.filter { !$0.isSelf }.count
+        return Button { state.togglePeerStrip() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "network").font(.system(size: 11, weight: .semibold))
+                if state.peerFleet.scanned && others > 0 {
+                    Text("\(others)").font(.system(size: 11, weight: .semibold))
+                }
+            }
+            .foregroundColor(state.peerStripVisible ? Theme.accent : Theme.text)
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.stroke, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Other FleetViews on this network")
     }
 
     private var webButton: some View {
@@ -918,6 +950,9 @@ struct ProjectSection: View {
     @State private var showChart = true
     @State private var copied = false
     @State private var gripHot = false
+    /// A fixed point for the rate chip's 5s schedule. Held in @State so it survives the re-renders
+    /// it would otherwise be reset by; the actual instant is irrelevant, only that it stops moving.
+    @State private var rateEpoch = Date()
     // Scanned rather than observed: a skill is files on disk, with no event to subscribe to.
     //
     // Two levels, because they cost different amounts. `skillCount` is a directory listing and runs
@@ -1087,23 +1122,36 @@ struct ProjectSection: View {
                 if needsYou > 0 { statusPill("\(needsYou) needs you", .needsYou) }
                 if working > 0 { statusPill("\(working) running", .working) }
             }
+            // Both chips are pinned to one line at their intrinsic width. This row is width-critical
+            // (see the name's lineLimit above) and these two were the only Texts in it still free to
+            // wrap: squeezed, they took a second line, the header grew, and every card below it moved
+            // — once every five seconds, as the rate chip re-measured. Squeezing has to fall on the
+            // path, which is built to be truncated, not on figures that then change the row's height.
             if newTokens > 0 {
                 HStack(spacing: 3) {
                     Image(systemName: "sum").font(.system(size: 9, weight: .bold))
                     Text(TokenUsage.short(newTokens)).font(.system(size: 11, weight: .medium))
                 }
+                .lineLimit(1).fixedSize()
                 .foregroundColor(Theme.accent)
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(Theme.accent.opacity(0.12)).clipShape(Capsule())
                 .help("\(newTokens) new tokens used (input + output, excluding cache reads)")
             }
             if newTokens > 0 {
-                TimelineView(.periodic(from: .now, by: 5)) { context in
+                // Anchored on a date this view keeps, never on `.now` — the same mistake the card's
+                // run clock documents: `.now` is re-evaluated on every body pass, so each of the
+                // board's many re-renders handed this a brand-new schedule and restarted its tick.
+                TimelineView(.periodic(from: rateEpoch, by: 5)) { context in
                     let recent = state.projectTokensRecent(project.id, now: context.date)
                     HStack(spacing: 3) {
                         Image(systemName: "bolt.fill").font(.system(size: 8))
                         Text("+\(TokenUsage.short(recent))/min").font(.system(size: 10, weight: .medium))
+                            // Digits of the same width, so the chip stops resizing every time the
+                            // rate crosses a digit — the horizontal half of the same twitch.
+                            .monospacedDigit()
                     }
+                    .lineLimit(1).fixedSize()
                     .foregroundColor(recent > 0 ? Theme.green : Theme.subtext)
                     .padding(.horizontal, 6).padding(.vertical, 1)
                     .background((recent > 0 ? Theme.green : Theme.subtext).opacity(0.14)).clipShape(Capsule())
