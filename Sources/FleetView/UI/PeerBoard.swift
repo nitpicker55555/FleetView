@@ -66,10 +66,17 @@ struct PeerStrip: View {
             }
             if fleet.scanning {
                 ProgressView().controlSize(.small).scaleEffect(0.6)
-                Text("Scanning the network…").font(.system(size: 11)).foregroundColor(Theme.subtext)
+                Text("Scanning \(fleet.sweepSize) addresses…")
+                    .font(.system(size: 11)).foregroundColor(Theme.subtext)
             } else if fleet.scanned && others.isEmpty {
                 Text("No other FleetView on this network")
                     .font(.system(size: 11)).foregroundColor(Theme.subtext)
+            }
+            // Said out loud, always — a sweep that quietly covered a slice of a large network would
+            // otherwise let "none found" be read as "none there".
+            if fleet.scanned && fleet.narrowed {
+                Text("subnet too large — only this /24 was scanned")
+                    .font(.system(size: 10)).foregroundColor(Theme.amber)
             }
             Spacer()
             if let p = state.peerSelected {

@@ -156,17 +156,42 @@ def cmd_peers(a):
     import concurrent.futures
     import socket as _socket
 
-    def own_ips():
-        out = set()
-        for iface in ("en0", "en1", "en2"):
-            try:
-                ip = subprocess.run(["ipconfig", "getifaddr", iface],
-                                    capture_output=True, text=True, timeout=2).stdout.strip()
-            except (OSError, subprocess.SubprocessError):
+    import ipaddress
+
+    def own_nets():
+        """Our IPv4 addresses with the subnet each actually belongs to.
+
+        The netmask matters and used to be assumed: chopping the last octet off our address and
+        sweeping .1-.254 is a /24, and on anything wider it is wrong in a way that looks like
+        success. On a 255.255.248.0 network — a /21, eight /24s joined — it probes an eighth of the
+        addresses, misses even the gateway, and prints "no FleetView instances found".
+
+        `ifconfig` reports the mask as a hex word (netmask 0xfffff800), which is why this parses
+        rather than calling `ipconfig getifaddr`, which only ever returns the address.
+        """
+        ips, nets = set(), []
+        try:
+            out = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ips, nets
+        for line in out.splitlines():
+            f = line.split()
+            if len(f) < 4 or f[0] != "inet" or "netmask" not in f:
                 continue
-            if ip:
-                out.add(ip)
-        return out
+            ip = f[1]
+            mask = f[f.index("netmask") + 1]
+            if ip.startswith(("127.", "169.254.")):
+                continue
+            ips.add(ip)
+            try:
+                bits = bin(int(mask, 16)).count("1") if mask.startswith("0x") else None
+                net = ipaddress.IPv4Network(f"{ip}/{bits if bits is not None else mask}",
+                                            strict=False)
+            except ValueError:
+                continue
+            if net not in nets:
+                nets.append(net)
+        return ips, nets
 
     def owner(d):
         """The macOS account a peer runs as, inferred from any absolute path it reports.
@@ -186,10 +211,22 @@ def cmd_peers(a):
                 names.add(m.group(1))
         return "/".join(sorted(names)) or "-"
 
-    mine = own_ips()
-    if not mine:
-        sys.exit("no IPv4 address on en0/en1/en2 — not on a network?")
-    prefixes = {ip.rsplit(".", 1)[0] for ip in mine}
+    HOST_CAP = 4096   # above this, fall back to the /24 we sit in — a /16 is not a scan you wait for
+
+    mine, nets = own_nets()
+    if not mine or not nets:
+        sys.exit("no usable IPv4 subnet on any interface — not on a network?")
+    hosts, narrowed = [], False
+    for net in nets:
+        use = net
+        if net.num_addresses > HOST_CAP:
+            narrowed = True
+            inside = [i for i in mine if ipaddress.IPv4Address(i) in net]
+            if not inside:
+                continue
+            use = ipaddress.IPv4Network(inside[0] + "/24", strict=False)
+        hosts += [str(h) for h in use.hosts()]
+    hosts = sorted(set(hosts), key=lambda s: tuple(int(x) for x in s.split(".")))
     ports = [int(p) for p in (a.ports or "8080,8081,8082").split(",")]
 
     def probe(hostport):
@@ -205,14 +242,20 @@ def cmd_peers(a):
         except Exception:
             return None
 
-    targets = [("%s.%d" % (pre, h), p) for pre in prefixes for h in range(1, 255) for p in ports]
+    targets = [(h, p) for h in hosts for p in ports]
+    scope = ", ".join(str(n) for n in nets)
+    if narrowed:
+        # Never silent: a sweep that covered a slice of a large network would otherwise let
+        # "none found" be read as "none there".
+        scope += "  (too large — only the local /24 of it was scanned)"
+    sys.stderr.write("scanning %d addresses on %s\n" % (len(hosts), scope))
     found = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as ex:
         for r in ex.map(probe, targets):
             if r:
                 found.append(r)
     if not found:
-        print("no FleetView instances found on %s.0/24" % ",".join(sorted(prefixes)))
+        print("no FleetView instances found on %s" % scope)
         return
     found.sort(key=lambda r: (r[0], r[1]))
     print("%-22s %-12s %-5s %-9s %s" % ("URL", "USER", "TERMS", "WORKING", "PROJECTS"))
