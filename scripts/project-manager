@@ -189,9 +189,41 @@ def cmd_peers(a):
                                             strict=False)
             except ValueError:
                 continue
+            # /31 and /32 are point-to-point and tunnel interfaces: one address, no subnet to walk.
+            # Tailscale is the one that matters, and it is reached by asking it (see tailnet_hosts).
+            if net.prefixlen >= 31:
+                continue
             if net not in nets:
                 nets.append(net)
         return ips, nets
+
+    def tailnet_hosts():
+        """Every IPv4 on this tailnet, from Tailscale itself.
+
+        A tailnet cannot be swept: the interface carries a /32 — one address, no subnet — and the
+        range it sits in, 100.64.0.0/10, is four million addresses. This is why a Tailscale machine
+        never appeared in the scan; there was nothing for a subnet sweep to find. The node already
+        knows its peers by name and address, so ask instead of look. Offline peers are skipped so
+        the probe does not spend its timeout on machines known to be down.
+        """
+        for binary in ("/usr/local/bin/tailscale", "/opt/homebrew/bin/tailscale",
+                       "/Applications/Tailscale.app/Contents/MacOS/Tailscale"):
+            if not os.access(binary, os.X_OK):
+                continue
+            try:
+                out = subprocess.run([binary, "status", "--json"],
+                                     capture_output=True, text=True, timeout=10).stdout
+                st = json.loads(out)
+            except (OSError, subprocess.SubprocessError, ValueError):
+                return []
+            hosts = []
+            for node, skip_offline in [(st.get("Self") or {}, False)] + \
+                                      [(v, True) for v in (st.get("Peer") or {}).values()]:
+                if skip_offline and not node.get("Online"):
+                    continue
+                hosts += [i for i in (node.get("TailscaleIPs") or []) if ":" not in i]
+            return hosts
+        return []
 
     def owner(d):
         """The macOS account a peer runs as, inferred from any absolute path it reports.
@@ -226,15 +258,17 @@ def cmd_peers(a):
                 continue
             use = ipaddress.IPv4Network(inside[0] + "/24", strict=False)
         hosts += [str(h) for h in use.hosts()]
+    tailnet = tailnet_hosts()
+    hosts += tailnet
     hosts = sorted(set(hosts), key=lambda s: tuple(int(x) for x in s.split(".")))
     ports = [int(p) for p in (a.ports or "8080,8081,8082").split(",")]
 
-    def probe(hostport):
-        host, port = hostport
+    def probe(target):
+        host, port, timeout = target
         try:
             req = urllib.request.Request("http://%s:%d/state" % (host, port),
                                          headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=a.timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 d = json.loads(r.read().decode("utf-8", "replace"))
             if not isinstance(d, dict) or "terminals" not in d or "projects" not in d:
                 return None
@@ -242,8 +276,17 @@ def cmd_peers(a):
         except Exception:
             return None
 
-    targets = [(h, p) for h in hosts for p in ports]
+    # A LAN probe is multiplied by every address in the subnet and has to stay short. A tailnet hop
+    # is not the same animal: ~700ms round trip, and /state has been measured coming back in 2.0s
+    # from a machine that was up the whole time. At the LAN timeout it never answered in time, and a
+    # timeout is indistinguishable from "not running FleetView" — which is why tailnet machines
+    # looked absent. There are only a handful of them, so the wait is affordable where it is needed.
+    slow = set(tailnet)
+    tail_timeout = max(8.0, a.timeout * 4)
+    targets = [(h, p, tail_timeout if h in slow else a.timeout) for h in hosts for p in ports]
     scope = ", ".join(str(n) for n in nets)
+    if tailnet:
+        scope += " + %d tailnet node%s" % (len(tailnet), "" if len(tailnet) == 1 else "s")
     if narrowed:
         # Never silent: a sweep that covered a slice of a large network would otherwise let
         # "none found" be read as "none there".

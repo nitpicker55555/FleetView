@@ -74,10 +74,10 @@ final class PeerFleet: ObservableObject {
         guard !scanning else { return found }
         scanning = true
         narrowed = false
-        let (hosts, mine, cut) = Self.sweepTargets()
+        let (hosts, slow, mine, cut) = Self.sweepTargets()
         narrowed = cut
         sweepSize = hosts.count
-        let hits = await Self.probeAll(hosts: hosts, ports: Self.ports, mine: mine)
+        let hits = await Self.probeAll(hosts: hosts, slow: slow, ports: Self.ports, mine: mine)
         found = hits.sorted {
             if $0.isSelf != $1.isSelf { return $0.isSelf }      // this machine first
             return ($0.host, $0.port) < ($1.host, $1.port)
@@ -119,10 +119,18 @@ final class PeerFleet: ObservableObject {
 
     // MARK: - Probing
 
-    private nonisolated static func probeAll(hosts: [String], ports: [Int],
+    private nonisolated static func probeAll(hosts: [String], slow: Set<String>, ports: [Int],
                                              mine: Set<String>) async -> [Peer] {
-        var targets: [(host: String, port: Int)] = []
-        for h in hosts { for p in ports { targets.append((h, p)) } }
+        var targets: [(host: String, port: Int, timeout: TimeInterval)] = []
+        for h in hosts {
+            // A LAN probe has to stay short — it is multiplied by thousands of addresses. A tailnet
+            // hop is a different animal: ~700ms round trip, and `/state` came back in 2.0s from a
+            // machine that was up the whole time. At the LAN timeout it never answered in time, and
+            // "timed out" is indistinguishable from "not running FleetView". There are only a
+            // handful of tailnet addresses, so the wait is affordable exactly where it is needed.
+            let t: TimeInterval = slow.contains(h) ? 8 : 1.5
+            for p in ports { targets.append((h, p, t)) }
+        }
         guard !targets.isEmpty else { return [] }
         // Bounded fan-out: thousands of sockets opened at once is a burst some routers answer by
         // dropping the lot, which reads back as "no peers on this network". Raised from 64 once the
@@ -135,7 +143,7 @@ final class PeerFleet: ObservableObject {
                 guard next < targets.count else { return }
                 let t = targets[next]
                 next += 1
-                group.addTask { await probe(host: t.host, port: t.port, mine: mine) }
+                group.addTask { await probe(host: t.host, port: t.port, timeout: t.timeout, mine: mine) }
             }
             for _ in 0..<min(inFlight, targets.count) { launch() }
             while let result = await group.next() {
@@ -146,10 +154,11 @@ final class PeerFleet: ObservableObject {
         }
     }
 
-    private nonisolated static func probe(host: String, port: Int, mine: Set<String>) async -> Peer? {
+    private nonisolated static func probe(host: String, port: Int, timeout: TimeInterval,
+                                          mine: Set<String>) async -> Peer? {
         guard let url = URL(string: "http://\(host):\(port)/state") else { return nil }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 1.5
+        req.timeoutInterval = timeout
         req.cachePolicy = .reloadIgnoringLocalCacheData
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
@@ -189,12 +198,12 @@ final class PeerFleet: ObservableObject {
     /// address. That shortcut is a hidden assumption that every network is a /24, and it is wrong in
     /// a way that looks like success: on a 255.255.248.0 network — a /21, eight /24s joined — it
     /// probes an eighth of the addresses, misses even the gateway, and reports "no peers found".
-    private nonisolated static func sweepTargets() -> (hosts: [String], mine: Set<String>,
-                                                       narrowed: Bool) {
+    private nonisolated static func sweepTargets() -> (hosts: [String], slow: Set<String>,
+                                                       mine: Set<String>, narrowed: Bool) {
         var mine: Set<String> = []
         var ifaces: [(ip: UInt32, mask: UInt32)] = []
         var head: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&head) == 0, let first = head else { return ([], [], false) }
+        guard getifaddrs(&head) == 0, let first = head else { return ([], [], [], false) }
         defer { freeifaddrs(head) }
         for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let flags = Int32(ptr.pointee.ifa_flags)
@@ -212,6 +221,10 @@ final class PeerFleet: ObservableObject {
             // A self-assigned 169.254 address means the DHCP lease never arrived; there is no
             // subnet there to find anybody on.
             guard !text.hasPrefix("169.254."), mask != 0 else { continue }
+            // /31 and /32 are point-to-point and tunnel interfaces — one address, no subnet to
+            // enumerate. Tailscale is the one that matters here, and it is reached by asking it
+            // for its peers rather than by sweeping (see `tailnetHosts`).
+            guard mask < 0xFFFF_FFFE else { continue }
             ifaces.append((ip, mask))
         }
         var hosts: [String] = []
@@ -225,7 +238,57 @@ final class PeerFleet: ObservableObject {
             guard seenNets.insert(iface.ip & (cut ? 0xFFFF_FF00 : iface.mask)).inserted else { continue }
             hosts.append(contentsOf: addrs)
         }
-        return (hosts, mine, narrowed)
+        // The tailnet is not on any subnet we could walk, so its members are added by name. Our own
+        // tailnet address is already in `mine`: the interface walk records every address it sees
+        // before deciding whether the subnet is worth sweeping.
+        var seenHost = Set(hosts)
+        var slow: Set<String> = []
+        for h in tailnetHosts() {
+            slow.insert(h)                      // reached over the tunnel, so it gets the long wait
+            if seenHost.insert(h).inserted { hosts.append(h) }
+        }
+        return (hosts, slow, mine, narrowed)
+    }
+
+    /// Every IPv4 address on this tailnet, from Tailscale itself.
+    ///
+    /// A tailnet cannot be swept and there is no point pretending otherwise: the interface carries a
+    /// /32 — one address, no subnet — and the range it sits in, 100.64.0.0/10, is four million
+    /// addresses. The node already knows every peer by name and address, so this asks rather than
+    /// looks. That is also why a Tailscale machine never showed up in the LAN scan: there was
+    /// nothing for a subnet sweep to find.
+    ///
+    /// Absolute paths because a GUI app inherits almost no PATH; offline peers are skipped so the
+    /// probe does not spend its timeout on machines that are known to be down.
+    private nonisolated static func tailnetHosts() -> [String] {
+        let candidates = ["/usr/local/bin/tailscale",
+                          "/opt/homebrew/bin/tailscale",
+                          "/Applications/Tailscale.app/Contents/MacOS/Tailscale"]
+        guard let bin = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+        else { return [] }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: bin)
+        proc.arguments = ["status", "--json"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        guard (try? proc.run()) != nil else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+
+        var out: [String] = []
+        func collect(_ node: [String: Any], skipOffline: Bool) {
+            if skipOffline, (node["Online"] as? Bool) != true { return }
+            for ip in (node["TailscaleIPs"] as? [String]) ?? [] where !ip.contains(":") {
+                out.append(ip)      // IPv4 only; the v6 half of a tailnet address reaches the same node
+            }
+        }
+        if let me = obj["Self"] as? [String: Any] { collect(me, skipOffline: false) }
+        for (_, peer) in (obj["Peer"] as? [String: [String: Any]]) ?? [:] {
+            collect(peer, skipOffline: true)
+        }
+        return out
     }
 
     /// Every host address in the subnet holding `ip`, excluding the network and broadcast addresses.
