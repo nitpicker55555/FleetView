@@ -93,6 +93,11 @@ final class AppState: ObservableObject {
     /// nil == this Mac's own board. Set to a peer and the content column shows that machine.
     @Published var peerSelected: Peer?
     @Published var peerStripVisible = false
+    /// Other machines' notes, mirrored into the sidebar list. Not persisted: they belong to those
+    /// machines, and a copy surviving a relaunch would go on claiming to be current long after the
+    /// machine it came from had been closed.
+    @Published var peerNotes: [MirroredNote] = []
+    @Published var peerNotesLoading = false
 
     /// Open the switcher, scanning the first time. Deliberately not on a timer: sweeping ~760
     /// addresses in the background forever is how an app ends up looking like a port scanner.
@@ -108,6 +113,46 @@ final class AppState: ObservableObject {
         // A peer that went away — laptop closed, FleetView quit — must not stay selected showing a
         // page that will never load again.
         if let sel = peerSelected, !live.contains(where: { $0.id == sel.id }) { peerSelected = nil }
+        await refreshPeerNotes()
+    }
+
+    /// Pull every known peer's notes into the sidebar list.
+    ///
+    /// Separate from the scan so it can be repeated cheaply: re-reading a handful of `/state`
+    /// responses costs nothing next to sweeping a subnet, and notes are the part that actually
+    /// changes while you work. Peers found in an earlier scan are reused, so the sidebar's refresh
+    /// never has to sweep the network again.
+    func refreshPeerNotes() async {
+        let peers = peerFleet.found.filter { !$0.isSelf }
+        guard !peers.isEmpty else { peerNotes = []; return }
+        peerNotesLoading = true
+        var out: [MirroredNote] = []
+        for p in peers {
+            guard let d = await PeerFleet.detail(for: p) else { continue }   // asleep or gone: skip
+            out += d.notes.map {
+                MirroredNote(id: "\(p.id)/\($0.id)", text: $0.text, from: p.label,
+                             peerURL: p.url, noteId: $0.id)
+            }
+        }
+        peerNotes = out
+        peerNotesLoading = false
+    }
+
+    /// Edit a mirrored note on the machine it lives on, then re-read so the row shows what that
+    /// machine actually holds rather than what we hoped it would.
+    func updatePeerNote(_ note: MirroredNote, text: String) {
+        Task {
+            await PeerFleet.writeNote(peerURL: note.peerURL,
+                                      query: ["upd": note.noteId, "text": text])
+            await refreshPeerNotes()
+        }
+    }
+
+    func removePeerNote(_ note: MirroredNote) {
+        Task {
+            await PeerFleet.writeNote(peerURL: note.peerURL, query: ["del": note.noteId])
+            await refreshPeerNotes()
+        }
     }
 
     /// A node being dragged toward the board — from the tree panel, or from a search result.
@@ -1662,8 +1707,14 @@ final class AppState: ObservableObject {
             remote.scroll(id, up: query["dir"] != "down")
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         case "/note":
-            // Manage the shared Notes list from the web (it drives the quick-command chips).
+            // Manage the shared Notes list from the web (it drives the quick-command chips) and,
+            // through the same route, from another FleetView mirroring this list in its sidebar.
+            // `upd` exists so an edit stays an edit: delete-then-add would give the note a new id
+            // and move it to the end of everyone's list for a change of one character.
             if let add = query["add"] { addNote(add) }
+            else if let u = query["upd"], let nid = UUID(uuidString: u) {
+                updateNote(nid, text: query["text"] ?? "")
+            }
             else if let d = query["del"], let nid = UUID(uuidString: d) { removeNote(nid) }
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         case "/favicon.ico":

@@ -46,9 +46,35 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>LSUIElement</key><false/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <!-- FleetView talks plain HTTP to FleetViews on private networks. Its own server offers no TLS
+         and no certificate, and neither does any peer's, so ATS's model — public internet, TLS
+         everywhere — does not describe this app's traffic at all.
+
+         NSAllowsLocalNetworking is NOT enough and is deliberately absent. It exempts RFC1918
+         (10/8, 172.16/12, 192.168/16) and .local, while Tailscale addresses live in 100.64.0.0/10
+         — CGNAT, not private — so every request to a tailnet peer failed with NSURLErrorDomain
+         -1022 while the same URL answered fine from curl, which ATS does not police. The addresses
+         are only known at run time, so they cannot be listed as exceptions.
+
+         The trap: naming NSAllowsLocalNetworking alongside NSAllowsArbitraryLoads makes modern
+         macOS ignore the latter, and the -1022 comes straight back. Measured, not assumed — both
+         keys together still failed; removing this one is what let the request through.
+
+         So ATS is off in general and put back, strictly, for the only public host this app
+         contacts (github.com, for update checks and release downloads; api.github.com is covered
+         by NSIncludesSubdomains). -->
     <key>NSAppTransportSecurity</key>
     <dict>
-        <key>NSAllowsLocalNetworking</key><true/>
+        <key>NSAllowsArbitraryLoads</key><true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>github.com</key>
+            <dict>
+                <key>NSIncludesSubdomains</key><true/>
+                <key>NSExceptionMinimumTLSVersion</key><string>TLSv1.2</string>
+                <key>NSExceptionRequiresForwardSecrecy</key><true/>
+            </dict>
+        </dict>
     </dict>
 </dict>
 </plist>

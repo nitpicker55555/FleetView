@@ -153,7 +153,14 @@ enum WebDashboardPage {
   .prompt{font-size:12px;color:var(--sub);display:flex;gap:6px;min-height:32px}
   .prompt .sig{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;flex:none}
   .prompt .txt{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-  .ago{font-size:10px;color:var(--sub);opacity:.75;text-align:right;margin-top:-3px}
+  .ago{font-size:10px;color:var(--sub);opacity:.75;text-align:right}
+  /* Footer row: the id on the left, the clock on the right — the same places the desktop card
+     puts them, because this board is now also read side by side with that one. */
+  .foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:-3px}
+  .uid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:var(--sub);
+       opacity:.55;cursor:pointer;letter-spacing:.2px}
+  .uid:hover{opacity:.9}
+  .uid:active{color:var(--accent)}
   /* tabular-nums so a ticking clock doesn't shuffle the card's right edge every second */
   .run{color:var(--green);font-weight:600;font-variant-numeric:tabular-nums}
   /* The run is over: same figure, no longer green — the status label already says how it ended. */
@@ -2027,9 +2034,24 @@ function card(t){
       <span class="status" style="color:${COLORS[t.status]||COLORS.closed}">${esc(t.statusLabel)}${tok}</span>
     </div>
     <div class="prompt"><span class="sig">${sig}</span><span class="txt">${t.prompt?esc(t.prompt):'—'}</span></div>
-    ${t.running>=0?`<div class="ago"><span class="run" data-run="${t.id}"></span></div>`
-                  :((t.lastRun>=0||t.idle>=0)?`<div class="ago">${t.lastRun>=0?`<span class="run done">⏱ ${clockText(t.lastRun*1000)}</span> `:''}${ago(t.idle)}</div>`:'')}
+    <div class="foot">
+      <span class="uid" onclick="event.stopPropagation();copyTermAddress('${t.id}')"
+            title="Click to copy this terminal's ip/uuid">${t.id.slice(0,8).toLowerCase()}</span>
+      ${t.running>=0?`<span class="ago"><span class="run" data-run="${t.id}"></span></span>`
+                    :((t.lastRun>=0||t.idle>=0)?`<span class="ago">${t.lastRun>=0?`<span class="run done">⏱ ${clockText(t.lastRun*1000)}</span> `:''}${t.idle>=0?ago(t.idle):''}</span>`:'<span></span>')}
+    </div>
   </div>`;
+}
+/* The id in the form another machine can act on: `ip/uuid`, which splits straight into
+   `project-manager -u http://<ip>:8080 <uuid>`.
+
+   The page fills in its own host, so whoever is reading this board — this Mac, a phone, or another
+   FleetView embedding it — copies an address that resolves from where they are standing; nothing
+   has to be told who is looking. The port is spelled out only when it is not 8080: two instances
+   on one machine take 8080 and 8081, and a bare ip would send the agent to the wrong one. */
+function copyTermAddress(id){
+  const host=location.hostname, port=location.port;
+  copyText((port&&port!=='8080'?host+':'+port:host)+'/'+id);
 }
 /* How long the current run has been going. The number is deliberately NOT in the markup above: the
    board is only rebuilt when its HTML differs, and a clock baked into it would differ every second

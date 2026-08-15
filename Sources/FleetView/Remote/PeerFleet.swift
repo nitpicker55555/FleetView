@@ -23,6 +23,24 @@ struct PeerNote: Identifiable, Hashable {
     let text: String
 }
 
+/// A note read off another machine, carried into the local list with its origin attached.
+///
+/// Read-only on purpose. The sidebar's own rows edit and delete on a click and a double-click, and
+/// the same gestures over someone else's note would reach across the network and change their
+/// machine — a keystroke away from a mistake nobody could see happen.
+struct MirroredNote: Identifiable, Hashable {
+    /// Peer and note id together: two machines can hand out the same note id, and a list that
+    /// collapsed them would drop one of the notes.
+    let id: String
+    let text: String
+    /// What the "from …" tag shows — the peer's user name, or its address when there is none.
+    let from: String
+    /// Where a change is sent. Carried on the note rather than looked up again, so an edit cannot
+    /// land on a different machine than the one the row was read from.
+    let peerURL: String
+    let noteId: String
+}
+
 /// One terminal on a peer, with the id you address it by from here.
 struct PeerTerminal: Identifiable, Hashable {
     let id: String
@@ -115,6 +133,25 @@ final class PeerFleet: ObservableObject {
                                               project: projectName[(t["projectId"] as? String) ?? ""] ?? ""))
         }
         return out
+    }
+
+    /// Change or remove a note on the machine it belongs to.
+    ///
+    /// `/note` is the same route the peer's own web dashboard writes through, so nothing here is a
+    /// back door — but it is still someone else's list, which is why only the rows carrying a
+    /// `peerURL` can reach it and why the caller re-reads afterwards instead of assuming.
+    /// Returns whether the peer accepted it; a peer too old to know `upd` answers 200 and does
+    /// nothing, which the re-read will reveal as an edit that did not take.
+    @discardableResult
+    nonisolated static func writeNote(peerURL: String, query: [String: String]) async -> Bool {
+        var comps = URLComponents(string: peerURL + "/note")
+        comps?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
+        guard let url = comps?.url else { return false }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 8       // a tailnet peer needs the long wait here too
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return false }
+        return (resp as? HTTPURLResponse)?.statusCode == 200
     }
 
     // MARK: - Probing

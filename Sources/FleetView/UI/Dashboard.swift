@@ -39,8 +39,6 @@ struct DashboardView: View {
                     // alike enough that anything less than taking the whole column would leave you
                     // unsure which fleet you are looking at — and these boards start terminals.
                     if let peer = state.peerSelected {
-                        PeerInspector(peer: peer).id("insp-" + peer.id)
-                        Divider().overlay(Theme.stroke)
                         PeerWebBoard(peer: peer).id(peer.id)
                     } else {
                         MainArea()
