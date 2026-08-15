@@ -42,6 +42,115 @@ struct PeerWebBoard: NSViewRepresentable {
     }
 }
 
+/// The selected peer's Notes and terminal ids, read from its `/state` and drawn here.
+///
+/// Native rather than left to the embedded page for two different reasons. The Notes live in that
+/// page's composer, so they are only reachable after opening a terminal — switching to a peer *to
+/// read its notes* would find a board with no notes on it. And the terminal ids are not on that
+/// page at all: they are what you need to address a terminal from here, and copying one is the
+/// whole point of showing it.
+struct PeerInspector: View {
+    let peer: Peer
+    @State private var detail: PeerDetail?
+    @State private var loading = false
+    @State private var copied: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("NOTES & TERMINALS").font(.system(size: 10, weight: .bold))
+                    .foregroundColor(Theme.subtext)
+                Text(peer.label).font(.system(size: 10)).foregroundColor(Theme.accent)
+                if loading { ProgressView().controlSize(.small).scaleEffect(0.5) }
+                Spacer()
+                if let c = copied {
+                    Text("Copied  \(c)").font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(Theme.green).lineLimit(1).truncationMode(.middle)
+                }
+                Button { Task { await load() } } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 10))
+                        .foregroundColor(Theme.subtext)
+                }
+                .buttonStyle(.plain).help("Re-read this peer's state")
+            }
+            HStack(alignment: .top, spacing: 14) {
+                column("Notes", empty: "This peer has no notes.") {
+                    ForEach(detail?.notes ?? []) { n in
+                        row(n.text, mono: false) { copy(n.text, label: "note") }
+                    }
+                }
+                Divider()
+                column("Terminals", empty: "No terminals on this peer.") {
+                    ForEach(detail?.terminals ?? []) { t in
+                        row("\(t.name.isEmpty ? t.id.prefix(8).description : t.name)   \(address(t))",
+                            mono: true, dim: t.status == "closed") {
+                            copy(address(t), label: t.name)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 150)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 9)
+        .background(Theme.panel.opacity(0.25))
+        .task(id: peer.id) { await load() }
+    }
+
+    /// `ip/uuid` — the form asked for, so a local agent can split it and reach the terminal with
+    /// `project-manager -u http://<ip>:8080 <uuid>`. The port is only spelled out when it is not
+    /// 8080, because that is the one case where leaving it off would send the agent to the wrong
+    /// instance on the same machine.
+    private func address(_ t: PeerTerminal) -> String {
+        peer.port == 8080 ? "\(peer.host)/\(t.id)" : "\(peer.host):\(peer.port)/\(t.id)"
+    }
+
+    private func copy(_ s: String, label: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        withAnimation(.easeOut(duration: 0.15)) { copied = s }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+            withAnimation(.easeOut(duration: 0.25)) { copied = nil }
+        }
+    }
+
+    private func load() async {
+        loading = true
+        detail = await PeerFleet.detail(for: peer)
+        loading = false
+    }
+
+    @ViewBuilder
+    private func column<C: View>(_ title: String, empty: String,
+                                 @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 10, weight: .semibold)).foregroundColor(Theme.subtext)
+            let isEmpty = title == "Notes" ? (detail?.notes.isEmpty ?? true)
+                                           : (detail?.terminals.isEmpty ?? true)
+            if detail != nil && isEmpty {
+                Text(empty).font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.7))
+            } else {
+                ScrollView(.vertical) { VStack(alignment: .leading, spacing: 1) { content() } }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func row(_ text: String, mono: Bool, dim: Bool = false,
+                     _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.system(size: 11, design: mono ? .monospaced : .default))
+                .foregroundColor(dim ? Theme.subtext.opacity(0.6) : Theme.text)
+                .lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Click to copy")
+    }
+}
+
 /// The switcher under the top bar: this machine, then every FleetView found on the LAN.
 struct PeerStrip: View {
     @EnvironmentObject var state: AppState

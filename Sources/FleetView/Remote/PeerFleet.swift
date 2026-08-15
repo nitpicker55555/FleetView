@@ -17,6 +17,28 @@ struct Peer: Identifiable, Hashable {
     var label: String { user.isEmpty ? host : user }
 }
 
+/// A note on a peer's sidebar list.
+struct PeerNote: Identifiable, Hashable {
+    let id: String
+    let text: String
+}
+
+/// One terminal on a peer, with the id you address it by from here.
+struct PeerTerminal: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let status: String
+    let project: String
+}
+
+/// What a peer reports about itself beyond the card board — read natively rather than looked for in
+/// the embedded page, because the page only shows its Notes inside a terminal's composer. Somebody
+/// switching to a peer to *read its notes* would find the board and no notes anywhere on it.
+struct PeerDetail {
+    var notes: [PeerNote] = []
+    var terminals: [PeerTerminal] = []
+}
+
 /// Finds the other FleetViews on the LAN and remembers which one the board is showing.
 ///
 /// There is nothing to listen for — no announcement, no registry — so this probes: every address on
@@ -63,6 +85,36 @@ final class PeerFleet: ObservableObject {
         scanned = true
         scanning = false
         return found
+    }
+
+    /// One peer's notes and terminals. Same `/state` the switcher already identifies peers by, asked
+    /// again on demand: it is a few KB and only fetched for the peer you are actually looking at.
+    nonisolated static func detail(for peer: Peer) async -> PeerDetail? {
+        guard let url = URL(string: peer.url + "/state") else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 6
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        var out = PeerDetail()
+        for n in (obj["notes"] as? [[String: Any]]) ?? [] {
+            guard let id = n["id"] as? String, let text = n["text"] as? String else { continue }
+            out.notes.append(PeerNote(id: id, text: text))
+        }
+        let projects = (obj["projects"] as? [[String: Any]]) ?? []
+        var projectName: [String: String] = [:]
+        for p in projects {
+            if let id = p["id"] as? String { projectName[id] = (p["name"] as? String) ?? "" }
+        }
+        for t in (obj["terminals"] as? [[String: Any]]) ?? [] {
+            guard let id = t["id"] as? String else { continue }
+            out.terminals.append(PeerTerminal(id: id,
+                                              name: (t["name"] as? String) ?? "",
+                                              status: (t["status"] as? String) ?? "",
+                                              project: projectName[(t["projectId"] as? String) ?? ""] ?? ""))
+        }
+        return out
     }
 
     // MARK: - Probing
