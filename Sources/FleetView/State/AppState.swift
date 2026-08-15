@@ -98,6 +98,10 @@ final class AppState: ObservableObject {
     /// machine it came from had been closed.
     @Published var peerNotes: [MirroredNote] = []
     @Published var peerNotesLoading = false
+    /// The selected peer's terminals, so the sidebar's TASKS list can show that machine's work
+    /// while you are looking at it. Only ever the one being viewed — holding every peer's would
+    /// mean polling machines nobody is looking at.
+    @Published var peerTerminals: [PeerTerminal] = []
 
     /// Open the switcher, scanning the first time. Deliberately not on a timer: sweeping ~760
     /// addresses in the background forever is how an app ends up looking like a port scanner.
@@ -122,20 +126,30 @@ final class AppState: ObservableObject {
     /// responses costs nothing next to sweeping a subnet, and notes are the part that actually
     /// changes while you work. Peers found in an earlier scan are reused, so the sidebar's refresh
     /// never has to sweep the network again.
+    /// Turn the sidebar to a peer — or back to this Mac with nil.
+    func selectPeer(_ peer: Peer?) {
+        peerSelected = peer
+        peerNotes = []
+        peerTerminals = []
+        guard peer != nil else { return }
+        Task { await refreshPeerNotes() }
+    }
+
+    /// Read the selected peer's notes and terminals.
+    ///
+    /// Only the selected one. Reading every peer as soon as the scan found them is what put other
+    /// people's notes into this machine's list uninvited — and it polled machines nobody had asked
+    /// to look at. Finding a machine and going to look at it are different acts.
     func refreshPeerNotes() async {
-        let peers = peerFleet.found.filter { !$0.isSelf }
-        guard !peers.isEmpty else { peerNotes = []; return }
+        guard let p = peerSelected else { peerNotes = []; peerTerminals = []; return }
         peerNotesLoading = true
-        var out: [MirroredNote] = []
-        for p in peers {
-            guard let d = await PeerFleet.detail(for: p) else { continue }   // asleep or gone: skip
-            out += d.notes.map {
-                MirroredNote(id: "\(p.id)/\($0.id)", text: $0.text, from: p.label,
-                             peerURL: p.url, noteId: $0.id)
-            }
+        defer { peerNotesLoading = false }
+        guard let d = await PeerFleet.detail(for: p) else { return }   // asleep or gone: keep what we had
+        peerNotes = d.notes.map {
+            MirroredNote(id: "\(p.id)/\($0.id)", text: $0.text, from: p.label,
+                         peerURL: p.url, noteId: $0.id)
         }
-        peerNotes = out
-        peerNotesLoading = false
+        peerTerminals = d.terminals
     }
 
     /// Edit a mirrored note on the machine it lives on, then re-read so the row shows what that
@@ -144,6 +158,15 @@ final class AppState: ObservableObject {
         Task {
             await PeerFleet.writeNote(peerURL: note.peerURL,
                                       query: ["upd": note.noteId, "text": text])
+            await refreshPeerNotes()
+        }
+    }
+
+    func addPeerNote(to peer: Peer, text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        Task {
+            await PeerFleet.writeNote(peerURL: peer.url, query: ["add": t])
             await refreshPeerNotes()
         }
     }

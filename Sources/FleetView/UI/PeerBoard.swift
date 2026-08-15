@@ -42,6 +42,72 @@ struct PeerWebBoard: NSViewRepresentable {
     }
 }
 
+/// The selected peer's terminals, in the sidebar's TASKS slot.
+///
+/// Grouped by project and read-only. The rows do not open anything: a terminal on another machine
+/// is reached through that machine's board, which is already filling the content column beside
+/// this list — a second, subtly different way in would only be a way to be surprised.
+struct PeerTaskList: View {
+    @EnvironmentObject var state: AppState
+    let peer: Peer
+
+    /// Project name → its terminals, in the order the peer reported them.
+    private var groups: [(name: String, terms: [PeerTerminal])] {
+        var order: [String] = []
+        var byProject: [String: [PeerTerminal]] = [:]
+        for t in state.peerTerminals {
+            let key = t.project.isEmpty ? "—" : t.project
+            if byProject[key] == nil { order.append(key) }
+            byProject[key, default: []].append(t)
+        }
+        return order.map { ($0, byProject[$0] ?? []) }
+    }
+
+    var body: some View {
+        if state.peerTerminals.isEmpty {
+            Text(state.peerNotesLoading ? "Reading \(peer.label)…"
+                                        : "No terminals on \(peer.label)")
+                .font(.system(size: 12)).foregroundColor(Theme.subtext.opacity(0.55))
+                .padding(.horizontal, 16).padding(.top, 6)
+            Spacer(minLength: 0)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(groups.enumerated()), id: \.element.name) { idx, g in
+                        if idx > 0 { DashedLine().padding(.horizontal, 12).padding(.vertical, 7) }
+                        HStack(spacing: 5) {
+                            Image(systemName: "folder.fill").font(.system(size: 8))
+                                .foregroundColor(Theme.subtext.opacity(0.55))
+                            Text(g.name.uppercased())
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(Theme.subtext.opacity(0.6)).lineLimit(1)
+                        }
+                        .padding(.horizontal, 12).padding(.bottom, 3)
+                        ForEach(g.terms) { t in row(t) }
+                    }
+                }
+                .padding(.horizontal, 8).padding(.top, 2)
+            }
+            .frame(maxHeight: .infinity)
+        }
+    }
+
+    private func row(_ t: PeerTerminal) -> some View {
+        HStack(spacing: 7) {
+            Circle().fill(Theme.statusColor(TermStatus(rawValue: t.status) ?? .closed))
+                .frame(width: 7, height: 7)
+            Text(t.name.isEmpty ? String(t.id.prefix(8)) : t.name)
+                .font(.system(size: 12.5)).foregroundColor(Theme.text).lineLimit(1)
+            Spacer(minLength: 4)
+            Text(TermStatus(rawValue: t.status)?.label ?? t.status)
+                .font(.system(size: 10))
+                .foregroundColor(Theme.statusColor(TermStatus(rawValue: t.status) ?? .closed))
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+}
+
 /// The switcher under the top bar: this machine, then every FleetView found on the LAN.
 struct PeerStrip: View {
     @EnvironmentObject var state: AppState
@@ -54,14 +120,14 @@ struct PeerStrip: View {
     var body: some View {
         HStack(spacing: 6) {
             tab(title: "This Mac", detail: nil, active: state.peerSelected == nil) {
-                state.peerSelected = nil
+                state.selectPeer(nil)
             }
             ForEach(others) { p in
                 tab(title: p.label,
                     detail: p.working > 0 ? "\(p.terminals) · \(p.working) running"
                                           : "\(p.terminals) terminals",
                     active: state.peerSelected?.id == p.id) {
-                    state.peerSelected = p
+                    state.selectPeer(p)
                 }
             }
             if fleet.scanning {

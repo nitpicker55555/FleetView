@@ -329,13 +329,19 @@ struct Sidebar: View {
             }
             .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 14)
 
-            // TASKS (collapsible)
-            sectionHeader(title: "TASKS", count: state.tasks.count, collapsed: state.tasksCollapsed) {
+            // TASKS (collapsible) — the selected peer's terminals while one is being viewed, so the
+            // sidebar turns to that machine along with the board rather than describing this one.
+            sectionHeader(title: "TASKS",
+                          count: state.peerSelected == nil ? state.tasks.count
+                                                           : state.peerTerminals.count,
+                          collapsed: state.tasksCollapsed) {
                 withAnimation(.easeOut(duration: 0.18)) { state.tasksCollapsed.toggle() }
                 state.save()
             }
             if !state.tasksCollapsed {
-                if state.taskGroups.isEmpty {
+                if let peer = state.peerSelected {
+                    PeerTaskList(peer: peer)
+                } else if state.taskGroups.isEmpty {
                     // "No terminals yet" is a lie when there are plenty and the filter is hiding them.
                     Text(state.showOnlyMarked && !state.terminals.isEmpty
                          ? "No marked terminals" : "No terminals yet")

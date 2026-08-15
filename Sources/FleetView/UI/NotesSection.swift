@@ -15,31 +15,40 @@ struct NotesSection: View {
 
     private var query: String { filter.trimmingCharacters(in: .whitespaces).lowercased() }
 
-    /// Notes matching the filter (case-insensitive substring).
+    /// Whose notes this list is showing. Selecting a peer turns the whole sidebar to that machine,
+    /// so the list follows: mixing your own notes in would leave you reading a list that is half
+    /// this Mac and half another one, with no way to tell at a glance which half you were acting on.
+    private var viewingPeer: Peer? { state.peerSelected }
+
+    /// Local notes — none of them while a peer is being viewed.
     private var shown: [Note] {
-        query.isEmpty ? state.notes : state.notes.filter { $0.text.lowercased().contains(query) }
+        guard viewingPeer == nil else { return [] }
+        return query.isEmpty ? state.notes : state.notes.filter { $0.text.lowercased().contains(query) }
     }
 
-    /// Other machines' notes, filtered by the same box. The peer's name is searchable too, so
-    /// "reginabai" narrows the list to one machine without a separate control for it.
+    /// The selected peer's notes — and nothing at all when no peer is selected.
+    ///
+    /// Finding a machine on the network is not a request to read its notes. Merging them in on
+    /// discovery quietly grew this list by other people's items, and the count going up was the
+    /// only warning. They appear when you go and look at that machine, which is when you asked.
     private var shownPeer: [MirroredNote] {
-        query.isEmpty ? state.peerNotes
-                      : state.peerNotes.filter {
-                            $0.text.lowercased().contains(query) || $0.from.lowercased().contains(query)
-                        }
+        guard let p = viewingPeer else { return [] }
+        let pool = state.peerNotes.filter { $0.peerURL == p.url }
+        return query.isEmpty ? pool : pool.filter { $0.text.lowercased().contains(query) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             if !state.notesCollapsed {
-                if state.notes.isEmpty && state.peerNotes.isEmpty {
-                    Text("Click to copy · double-click to edit")
+                if shown.isEmpty && shownPeer.isEmpty && query.isEmpty {
+                    Text(viewingPeer == nil ? "Click to copy · double-click to edit"
+                                            : "\(viewingPeer!.label) has no notes")
                         .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.5))
                         .padding(.horizontal, 16).padding(.vertical, 6)
                 } else {
-                    // Counted across both lists: the row earns its place once the list is long,
-                    // and a list is long whether the length came from here or from a peer.
+                    // Counted across whatever is in view: the row earns its place once the list is
+                    // long, and a list is long whether the length came from here or from a peer.
                     if state.notes.count + state.peerNotes.count > 5 { filterField }
                     if shown.isEmpty && shownPeer.isEmpty {
                         Text("No note matches “\(filter)”")
@@ -98,18 +107,18 @@ struct NotesSection: View {
                     .font(.system(size: 9, weight: .semibold)).foregroundColor(Theme.subtext)
                     .rotationEffect(.degrees(state.notesCollapsed ? 0 : 90))
                 Text("NOTES").font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.subtext)
-                Spacer()
-                if state.peerNotesLoading {
-                    ProgressView().controlSize(.small).scaleEffect(0.45)
-                } else if !state.peerNotes.isEmpty {
-                    // Kept apart from the local count rather than summed: these live on other
-                    // machines and can vanish when a laptop closes, and a single total would make
-                    // that look like your own notes disappearing.
-                    Text("+\(state.peerNotes.count)")
-                        .font(.system(size: 10, weight: .semibold)).foregroundColor(Theme.accent)
-                        .help("\(state.peerNotes.count) notes mirrored from other FleetViews")
+                if let p = viewingPeer {
+                    // Named in the header, not only on the rows: this list is somebody else's while
+                    // a peer is selected, and every edit made in it lands on their machine.
+                    Text("from \(p.label)")
+                        .font(.system(size: 10, weight: .medium)).foregroundColor(Theme.accent)
+                        .lineLimit(1)
                 }
-                Text(filter.isEmpty ? "\(state.notes.count)" : "\(shown.count)/\(state.notes.count)")
+                Spacer()
+                if state.peerNotesLoading && viewingPeer != nil {
+                    ProgressView().controlSize(.small).scaleEffect(0.45)
+                }
+                Text(viewingPeer == nil ? "\(state.notes.count)" : "\(shownPeer.count)")
                     .font(.system(size: 11)).foregroundColor(Theme.subtext.opacity(0.7))
             }
             .contentShape(Rectangle())
@@ -122,7 +131,8 @@ struct NotesSection: View {
         HStack(spacing: 7) {
             Image(systemName: "plus.circle.fill").font(.system(size: 12))
                 .foregroundColor(Theme.accent.opacity(0.85))
-            TextField("Add a note…", text: $newNote)
+            TextField(viewingPeer == nil ? "Add a note…" : "Add a note on \(viewingPeer!.label)…",
+                      text: $newNote)
                 .textFieldStyle(.plain).font(.system(size: 12.5)).foregroundColor(Theme.text)
                 .focused($addFocused)
                 .onSubmit(add)
@@ -135,9 +145,13 @@ struct NotesSection: View {
         .padding(.horizontal, 12).padding(.top, 3).padding(.bottom, 10)
     }
 
+    /// Adds where the list is pointing. While a peer is selected the whole section is that
+    /// machine's, so a note typed here belongs there — writing it locally would put it somewhere
+    /// the list is not even showing.
     private func add() {
-        state.addNote(newNote)
+        let text = newNote
         newNote = ""
+        if let p = viewingPeer { state.addPeerNote(to: p, text: text) } else { state.addNote(text) }
     }
 }
 
@@ -161,20 +175,15 @@ struct PeerNoteRow: View {
         if editing { editor } else { row }
     }
 
+    /// No per-row origin tag: the whole section belongs to one machine while a peer is selected and
+    /// the header says which, so repeating it on every row was the same sentence N times.
     private var row: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(note.text.isEmpty ? "empty note" : note.text)
-                .font(.system(size: 12.5))
-                .foregroundColor(note.text.isEmpty ? Theme.subtext.opacity(0.5) : Theme.text)
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 4) {
-                Image(systemName: "network").font(.system(size: 8))
-                Text("from \(note.from)").font(.system(size: 9.5, weight: .medium))
-            }
-            .foregroundColor(Theme.accent.opacity(0.85))
-        }
-        .padding(.horizontal, 10).padding(.vertical, 8)
+        Text(note.text.isEmpty ? "empty note" : note.text)
+            .font(.system(size: 12.5))
+            .foregroundColor(note.text.isEmpty ? Theme.subtext.opacity(0.5) : Theme.text)
+            .lineLimit(3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.vertical, 8)
         .background(hover ? Theme.cardHover : Theme.card)
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .overlay(alignment: .topTrailing) { if copied { copiedChip } }

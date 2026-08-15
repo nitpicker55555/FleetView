@@ -1943,6 +1943,11 @@ function zoneAt(x,y){
   }return null;
 }
 function onDown(e){
+  // The id chip is neither a drag handle nor a way in: a tap on it copies the address and nothing
+  // else. It has to be refused here rather than in its own click handler — the card is driven from
+  // pointerdown, so by the time a click fires the tap has already been taken as "open this
+  // terminal", and stopPropagation on the click is too late to call it back.
+  if(e.target.closest('.uid'))return;
   const card=e.target.closest('.card');if(!card)return;
   drag.id=card.dataset.id;drag.name=card.dataset.name;drag.cluster=card.dataset.cluster==='1';
   drag.done=card.dataset.done==='1';drag.canopen=card.dataset.canopen==='1';drag.card=card;
