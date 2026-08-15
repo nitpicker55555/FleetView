@@ -148,10 +148,23 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
 
     private(set) var fontSize: Double = TerminalWindowController.defaultFontSize
 
+    /// How wide a new terminal window opens.
+    ///
+    /// Derived from the font instead of fixed, because what a terminal is judged by is columns and a
+    /// fixed 920pt quietly meant fewer of them as the font grew — at 24pt it came to about 64, which
+    /// is where the wrapping came from. 80 is the width terminal output is written for. Clamped to
+    /// the screen, so a large font cannot open a window wider than the display it appears on.
+    static func defaultWidth(for fontSize: Double) -> Double {
+        let cell = fontSize * 0.6      // monospace advance is ~0.6em in the fonts SwiftTerm picks
+        let room = (NSScreen.main?.visibleFrame.width ?? 1440) - 100
+        return max(920, min(cell * 80 + 28, room))
+    }
+
     init(termId: UUID, title: String, cwd: String, autoRunClaude: Bool, port: Int?, tmux: TmuxSpec?,
          fontSize: Double) {
         self.termId = termId
-        self.termView = ThemedTerminalView(frame: NSRect(x: 0, y: 0, width: 920, height: 560))
+        self.termView = ThemedTerminalView(
+            frame: NSRect(x: 0, y: 0, width: Self.defaultWidth(for: fontSize), height: 560))
         super.init()
 
         termView.processDelegate = self
@@ -202,7 +215,8 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
                                   currentDirectory: cwd)
         }
 
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 560),
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0,
+                                               width: Self.defaultWidth(for: fontSize), height: 560),
                            styleMask: [.titled, .closable, .miniaturizable, .resizable],
                            backing: .buffered, defer: false)
         win.title = title
