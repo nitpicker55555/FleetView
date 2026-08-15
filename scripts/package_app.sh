@@ -54,8 +54,32 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc code-sign so macOS keeps TCC/permissions stable across rebuilds.
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+# Sign with a stable identity if one exists, and only fall back to ad-hoc if none does.
+#
+# This is what decides whether the permissions you grant survive the next install. TCC identifies an
+# app by its designated requirement, and the two forms are not comparable:
+#
+#   ad-hoc   designated => cdhash H"aa3d8a32…"                        ← the binary itself
+#   identity designated => identifier FleetView and certificate leaf = H"4904e521…"
+#
+# An ad-hoc signature *is* the hash of the build, so every rebuild is a different app as far as
+# macOS is concerned, and every grant — Full Disk Access included — is void the moment you install.
+# That is the "why does it keep asking me" you were about to ask about. (The old comment here
+# claimed ad-hoc kept permissions stable across rebuilds. It does the opposite.)
+#
+# Create the identity once, then it is picked up automatically:
+#   Keychain Access → Certificate Assistant → Create a Certificate…
+#   name: FleetView Local Signing · type: Code Signing · self-signed
+FV_SIGN_ID="${FV_SIGN_ID:-FleetView Local Signing}"
+if security find-identity -p codesigning | grep -qF "$FV_SIGN_ID"; then
+    echo "▸ Signing with \"$FV_SIGN_ID\" (permissions will survive this install)"
+    codesign --force --deep --sign "$FV_SIGN_ID" "$APP" >/dev/null 2>&1 \
+        || { echo "  ! signing failed — falling back to ad-hoc; macOS will re-ask for permissions"
+             codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true; }
+else
+    echo "▸ No \"$FV_SIGN_ID\" identity — signing ad-hoc; macOS will re-ask for permissions"
+    codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+fi
 
 echo "▸ Built $APP  (version $VERSION, build $BUILD)"
 
