@@ -969,8 +969,6 @@ struct ProjectSection: View {
     @State private var skills: [SkillInfo] = []
     @State private var showSkills = false
     @State private var pickedSkill: SkillInfo?
-    @State private var showHistory = false
-    @State private var copiedHistory: String?
 
     private var archived: [TerminalArchive] { state.archived(inProject: project.id) }
 
@@ -994,7 +992,6 @@ struct ProjectSection: View {
             // Not gated on `collapsed`: folding a project puts its *terminals* away, and looking up
             // what a skill does is exactly the kind of thing you do without wanting the cards back.
             if showSkills { skillsPanel }
-            if showHistory { historyPanel }
             // Folded: the header alone, which still carries the terminal count and the token
             // figures — a project you have put away should still be able to tell you it is busy.
             if !collapsed {
@@ -1018,121 +1015,6 @@ struct ProjectSection: View {
         // one with six cards open, the header is the smallest part of it you could be aiming at.
         .onDrop(of: [.text], delegate: ProjectReorderDrop(target: project.id, state: state))
         .onAppear { skillCount = ProjectSkills.count(projectPath: project.path) }
-    }
-
-    /// Terminals this project has lost, newest first — read the way search results are read, and
-    /// reopened the same way too.
-    ///
-    /// A row is dragged onto the board rather than clicked, which is the rule the search panel
-    /// already sets and for the same reason: reopening a conversation writes a file (a fork, or a
-    /// synthesised rollout), and the one action with a cost should not be reachable by a stray
-    /// click while you are still reading the list. Dropping on the board opens a terminal; dropping
-    /// on a card joins that card's cluster — both come free from reusing the search drag.
-    private var historyPanel: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text("REMOVED TERMINALS").font(.system(size: 10, weight: .bold))
-                    .foregroundColor(Theme.subtext)
-                if let c = copiedHistory {
-                    Text("Copied  \(c)").font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(Theme.green).lineLimit(1).truncationMode(.middle)
-                } else {
-                    Text("拖到主区域开新终端，或拖到某张卡片加入它的 cluster")
-                        .font(.system(size: 9)).foregroundColor(Theme.subtext.opacity(0.6))
-                }
-                Spacer()
-            }
-            ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 5) {
-                    ForEach(archived) { row in historyRow(row) }
-                }
-            }
-            .frame(maxHeight: 240)
-        }
-        .padding(11)
-        .background(Theme.card.opacity(0.4))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.stroke, lineWidth: 1))
-    }
-
-    private func historyRow(_ row: TerminalArchive) -> some View {
-        let tint = row.agentKind == .codex ? Theme.codexTint : Theme.claudeTint
-        return HStack(alignment: .top, spacing: 9) {
-            Circle().fill(tint).frame(width: 6, height: 6).padding(.top, 5)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 7) {
-                    Button { copyHistory(row.name, label: row.name) } label: {
-                        Text(row.name).font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(Theme.text).lineLimit(1)
-                    }
-                    .buttonStyle(.plain).help("Click to copy the name")
-                    Button {
-                        copyHistory(row.id.uuidString, label: String(row.id.uuidString.prefix(8)))
-                    } label: {
-                        Text(row.id.uuidString.prefix(8).lowercased())
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(Theme.subtext.opacity(0.8))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Click to copy the full terminal id\n\(row.id.uuidString)")
-                    if let sid = row.sessionId {
-                        Button { copyHistory(sid, label: String(sid.prefix(8))) } label: {
-                            Text(sid.prefix(8)).font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(tint)
-                        }
-                        .buttonStyle(.plain).help("Agent session — click to copy\n\(sid)")
-                    }
-                    Spacer(minLength: 4)
-                    Text(RelativeTime.short(row.removedAt, now: Date()) ?? "")
-                        .font(.system(size: 9)).foregroundColor(Theme.subtext.opacity(0.6))
-                }
-                // The last thing said in it — the same thing a search result leads with, and what
-                // actually tells one removed terminal from another.
-                if !row.lastPrompt.isEmpty {
-                    Text(row.lastPrompt)
-                        .font(.system(size: 11)).foregroundColor(Theme.subtext)
-                        .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            Image(systemName: "hand.draw")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(Theme.onAccent)
-                .frame(width: 26, height: 20)
-                .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
-                .gesture(dragArchivedToBoard(row))
-                .onHover { $0 ? NSCursor.openHand.push() : NSCursor.pop() }
-                .help("拖到主区域开新终端，或拖到某张卡片加入它的 cluster")
-            Button { state.forgetArchived(row.id) } label: {
-                Image(systemName: "xmark").font(.system(size: 9)).foregroundColor(Theme.subtext)
-            }
-            .buttonStyle(.plain).help("Forget this entry").padding(.top, 3)
-        }
-        .padding(.horizontal, 9).padding(.vertical, 7)
-        .background(Theme.card.opacity(0.55))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-    }
-
-    /// Same gesture the search panel uses, against the transcript's last node — resuming a removed
-    /// terminal is resuming the conversation whole.
-    private func dragArchivedToBoard(_ row: TerminalArchive) -> some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .named("fleet"))
-            .onChanged { value in
-                guard let path = row.transcriptPath else { return }
-                if let hit = state.archivedHit(for: path) {
-                    state.searchDragChanged(hit: hit, location: value.location)
-                }
-            }
-            .onEnded { state.treeDragEnded(at: $0.location) }
-    }
-
-    private func copyHistory(_ s: String, label: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(s, forType: .string)
-        withAnimation(.easeOut(duration: 0.15)) { copiedHistory = label }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
-            withAnimation(.easeOut(duration: 0.25)) { copiedHistory = nil }
-        }
     }
 
     /// The skills drawer: names down the left, the picked one explained on the right.
@@ -1318,16 +1200,15 @@ struct ProjectSection: View {
             // Hidden until this project has actually lost a card, so it stays out of the way on a
             // board where nothing has been removed yet.
             if !archived.isEmpty {
-                Button { withAnimation(.easeOut(duration: 0.18)) { showHistory.toggle() } } label: {
+                Button { state.openArchive(projectId: project.id) } label: {
                     HStack(spacing: 3) {
                         Image(systemName: "clock.arrow.circlepath").font(.system(size: 11))
                         Text("\(archived.count)").font(.system(size: 10, weight: .semibold))
                     }
-                    .foregroundColor(showHistory ? Theme.accent : Theme.subtext).padding(5)
+                    .foregroundColor(Theme.subtext).padding(5)
                 }
                 .buttonStyle(.plain)
-                .help(showHistory ? "Hide removed terminals"
-                                  : "\(archived.count) removed terminals — name, id and session")
+                .help("\(archived.count) removed terminals — open them in search, drag one back")
             }
             if deltas.count > 1 {
                 Button { withAnimation(.easeOut(duration: 0.18)) { showChart.toggle() } } label: {

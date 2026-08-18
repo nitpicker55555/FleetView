@@ -10,6 +10,19 @@ extension AppState {
         searchModel.refreshIndex()
     }
 
+    /// Open the search panel on one project's removed terminals.
+    ///
+    /// The same panel rather than a drawer of its own: listing them was never the hard part —
+    /// dragging one back onto the board is, and that gesture already works here, in the overlay
+    /// that floats above the board rather than inside its scroll view.
+    func openArchive(projectId: UUID?) {
+        searchModel.app = self
+        searchModel.query = ""
+        searchModel.archiveProject = projectId
+        searchModel.mode = .archive
+        searchOpen = true
+    }
+
     func closeSearch() { searchOpen = false }
 
     func toggleSearch() { searchOpen ? closeSearch() : openSearch() }

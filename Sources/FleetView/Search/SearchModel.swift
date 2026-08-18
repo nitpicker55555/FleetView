@@ -17,13 +17,14 @@ final class SearchModel: ObservableObject {
     /// - `session` — inside the conversation you have open.
     /// - `history` — every conversation ever recorded, live or not.
     enum Mode: Int, CaseIterable, Identifiable {
-        case fleet, session, history
+        case fleet, session, history, archive
         var id: Int { rawValue }
         var title: String {
             switch self {
             case .fleet:   return "Fleet"
             case .session: return "当前会话"
             case .history: return "全部历史"
+            case .archive: return "已移除"
             }
         }
         var next: Mode { Mode(rawValue: rawValue + 1) ?? .fleet }
@@ -127,8 +128,13 @@ final class SearchModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.09, execute: work)
     }
 
+    /// In archive mode, which project's removed terminals are listed. nil = every project.
+    @Published var archiveProject: UUID? { didSet { runSearch() } }
+
     func runSearch() {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Archive mode lists rather than searches, so an empty box is a full list, not no result.
+        if mode == .archive { runArchiveSearch(q); return }
         guard !q.isEmpty else {
             groups = []; projectGroups = []; total = 0; elapsed = 0; truncated = false
             return
@@ -158,6 +164,41 @@ final class SearchModel: ObservableObject {
                 self.projectGroups = self.byProject(sessions)
                 self.total = hits.count
                 self.truncated = hits.count >= limit
+                self.elapsed = ms
+                self.autoFocusSingleProject()
+            }
+        }
+    }
+
+    /// Removed terminals, as search results.
+    ///
+    /// Built as `Hit`s and pushed through the same grouping the index feeds, so the panel renders
+    /// them, previews them and — the point of doing it this way — drags them onto the board with
+    /// the code that already works. A drawer of its own had to re-implement that drag, and did it
+    /// wrong: inside the board's ScrollView a plain gesture loses to the scroll.
+    ///
+    /// The hit is the transcript's last node, which is what resuming a whole conversation means
+    /// when what you are holding is a file rather than a search result.
+    private func runArchiveSearch(_ q: String) {
+        guard let app else { groups = []; projectGroups = []; total = 0; return }
+        let rows = archiveProject.map { app.archived(inProject: $0) } ?? app.terminalArchive
+        let needle = q.lowercased()
+        let matched = needle.isEmpty ? rows : rows.filter {
+            $0.name.lowercased().contains(needle) || $0.lastPrompt.lowercased().contains(needle)
+        }
+        let paths = matched.compactMap(\.transcriptPath)
+        failure = nil
+        let started = Date()
+        Task.detached(priority: .userInitiated) {
+            let hits = paths.compactMap { SearchIndex.lastHit(path: $0) }
+            let sessions = Self.group(hits)
+            let ms = Date().timeIntervalSince(started) * 1000
+            await MainActor.run { [weak self] in
+                guard let self, self.mode == .archive else { return }
+                self.groups = sessions
+                self.projectGroups = self.byProject(sessions)
+                self.total = hits.count
+                self.truncated = false
                 self.elapsed = ms
                 self.autoFocusSingleProject()
             }

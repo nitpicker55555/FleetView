@@ -176,8 +176,45 @@ enum SearchIndex {
             sqlite3_close(db)
             return nil
         }
+        migrate(db)
         handle = db
         return db
+    }
+
+    /// The parser generation this index was built with.
+    ///
+    /// Indexing is incremental by byte offset, which is what makes a refresh cost ~0.1 s — and also
+    /// means a *parser* fix reaches nothing already read. When Codex moved its conversation out of
+    /// `event_msg`, the old reading consumed those rollouts whole and stored nothing, leaving
+    /// `done` at EOF: every one of those sessions would have stayed permanently invisible to search,
+    /// with no error anywhere to say so. Bumping this re-reads them.
+    private static let parserGeneration: Int32 = 2
+
+    private static func migrate(_ db: OpaquePointer) {
+        var stmt: OpaquePointer?
+        var current: Int32 = 0
+        if sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, nil) == SQLITE_OK,
+           sqlite3_step(stmt) == SQLITE_ROW {
+            current = sqlite3_column_int(stmt, 0)
+        }
+        sqlite3_finalize(stmt)
+        guard current < parserGeneration else { return }
+        // Only Codex files: Claude's reading did not change, and re-reading 12 GB to fix a format
+        // that never affected it would turn one launch into a very long one.
+        let sql = """
+            DELETE FROM msg_fts WHERE rowid IN
+                (SELECT id FROM msg WHERE path IN (SELECT path FROM file WHERE src = 1));
+            DELETE FROM msg WHERE path IN (SELECT path FROM file WHERE src = 1);
+            UPDATE file SET done = 0, prompts = 0 WHERE src = 1;
+            PRAGMA user_version = \(parserGeneration);
+            """
+        var err: UnsafeMutablePointer<CChar>?
+        if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+            FV.log("search: codex re-index migration failed — \(err.map { String(cString: $0) } ?? "?")")
+            sqlite3_free(err)
+            return
+        }
+        FV.log("search: re-reading Codex rollouts (parser generation \(parserGeneration))")
     }
 
     // MARK: - Build

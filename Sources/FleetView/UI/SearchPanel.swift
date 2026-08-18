@@ -76,7 +76,13 @@ struct SearchPanel: View {
     private var scopeBar: some View {
         HStack(spacing: 6) {
             ForEach(SearchModel.Mode.allCases) { m in
-                segment(m.title, on: model.mode == m) { model.mode = m }
+                segment(m.title, on: model.mode == m) {
+                    // Picking "已移除" here means every project; the scoped view is what a
+                    // project's own button opens. Without this the scope from that button would
+                    // stick, and the tab would quietly keep showing one project's rows.
+                    if m == .archive { model.archiveProject = nil }
+                    model.mode = m
+                }
             }
             Text("⇥")
                 .font(.system(size: 10, design: .monospaced))
