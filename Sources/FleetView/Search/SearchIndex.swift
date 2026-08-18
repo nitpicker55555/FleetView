@@ -199,22 +199,47 @@ enum SearchIndex {
         }
         sqlite3_finalize(stmt)
         guard current < parserGeneration else { return }
-        // Only Codex files: Claude's reading did not change, and re-reading 12 GB to fix a format
-        // that never affected it would turn one launch into a very long one.
-        let sql = """
-            DELETE FROM msg_fts WHERE rowid IN
-                (SELECT id FROM msg WHERE path IN (SELECT path FROM file WHERE src = 1));
+
+        // `msg_fts` is contentless, so its rows cannot be deleted selectively — the text they were
+        // built from is exactly what a contentless table does not keep. (Trying is not a silent
+        // no-op either: sqlite3_exec stops at the error, so the version would never advance and
+        // this would run, and fail, on every launch.) So the FTS side is dropped whole and rebuilt
+        // from the bodies in `msg`, which is what storing them buys. Only Codex *transcripts* are
+        // re-read; Claude's 12 GB is never touched, because its reading did not change.
+        let reset = """
             DELETE FROM msg WHERE path IN (SELECT path FROM file WHERE src = 1);
             UPDATE file SET done = 0, prompts = 0 WHERE src = 1;
-            PRAGMA user_version = \(parserGeneration);
+            DROP TABLE IF EXISTS msg_fts;
+            CREATE VIRTUAL TABLE msg_fts
+                USING fts5(seg, content='', tokenize='unicode61 remove_diacritics 2');
             """
         var err: UnsafeMutablePointer<CChar>?
-        if sqlite3_exec(db, sql, nil, nil, &err) != SQLITE_OK {
+        guard sqlite3_exec(db, reset, nil, nil, &err) == SQLITE_OK else {
             FV.log("search: codex re-index migration failed — \(err.map { String(cString: $0) } ?? "?")")
             sqlite3_free(err)
             return
         }
-        FV.log("search: re-reading Codex rollouts (parser generation \(parserGeneration))")
+
+        var read: OpaquePointer?, write: OpaquePointer?
+        sqlite3_exec(db, "BEGIN", nil, nil, nil)
+        sqlite3_prepare_v2(db, "SELECT id, body FROM msg", -1, &read, nil)
+        sqlite3_prepare_v2(db, "INSERT INTO msg_fts(rowid, seg) VALUES(?,?)", -1, &write, nil)
+        var rebuilt = 0
+        while sqlite3_step(read) == SQLITE_ROW {
+            let rowid = sqlite3_column_int64(read, 0)
+            let body = sqlite3_column_text(read, 1).map { String(cString: $0) } ?? ""
+            sqlite3_reset(write)
+            sqlite3_bind_int64(write, 1, rowid)
+            let seg = segment(body)
+            sqlite3_bind_text(write, 2, seg, -1, transient)
+            if sqlite3_step(write) == SQLITE_DONE { rebuilt += 1 }
+        }
+        sqlite3_finalize(read)
+        sqlite3_finalize(write)
+        sqlite3_exec(db, "COMMIT", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA user_version = \(parserGeneration)", nil, nil, nil)
+        FV.log("search: rebuilt \(rebuilt) FTS rows, re-reading Codex rollouts "
+               + "(parser generation \(parserGeneration))")
     }
 
     // MARK: - Build
