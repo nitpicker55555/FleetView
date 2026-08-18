@@ -595,6 +595,37 @@ enum SearchIndex {
         }
     }
 
+    /// The last message of one transcript, as a hit.
+    ///
+    /// What "resume this conversation" means when you are holding a file rather than a search
+    /// result: the drag-to-board machinery is written against a `Hit`, and the tail of a transcript
+    /// is the node that resumes it whole. Returns nil for a transcript the index has never seen,
+    /// which is also the honest answer — there is nothing to reopen from.
+    static func lastHit(path: String) -> Hit? {
+        queue.sync {
+            guard let db = open() else { return nil }
+            var stmt: OpaquePointer?
+            let sql = """
+                SELECT m.id, m.src, m.role, m.ts, m.node, m.body,
+                       COALESCE(f.session, ''), COALESCE(f.project, '')
+                FROM msg m LEFT JOIN file f ON f.path = m.path
+                WHERE m.path = ? ORDER BY m.id DESC LIMIT 1
+                """
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            bind(stmt, 1, path)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            func text(_ c: Int32) -> String {
+                sqlite3_column_text(stmt, c).map { String(cString: $0) } ?? ""
+            }
+            return Hit(id: sqlite3_column_int64(stmt, 0),
+                       src: Source(rawValue: Int(sqlite3_column_int(stmt, 1))) ?? .claude,
+                       role: Role(rawValue: Int(sqlite3_column_int(stmt, 2))) ?? .user,
+                       ts: text(3), path: path, node: text(4), body: text(5),
+                       session: text(6), project: text(7))
+        }
+    }
+
     /// Every message of one transcript, in file order.
     ///
     /// The windowed `context` is what paints first — it is two small queries and arrives instantly.

@@ -1042,10 +1042,14 @@ final class AppState: ObservableObject {
     /// second chance to look. Same id every time, so removing a restored terminal updates its row
     /// instead of leaving two claiming to be the same uuid.
     private func archive(_ t: TerminalSession) {
+        // A card that only ever held a shell has nothing to come back to — no transcript, nothing
+        // to resume, nothing to read. Keeping those rows would fill the drawer with entries whose
+        // only possible answer is "shell only", and push out the ones you would actually reopen.
+        guard let transcript = t.transcriptPath ?? lastSessionFile(for: t) else { return }
         let entry = TerminalArchive(id: t.id, projectId: t.projectId, name: t.name, cwd: t.cwd,
                                     agentKind: t.agentKind,
                                     sessionId: t.sessionId,
-                                    transcriptPath: t.transcriptPath ?? lastSessionFile(for: t),
+                                    transcriptPath: transcript,
                                     newTokens: t.newTokens, lastPrompt: t.lastPrompt,
                                     removedAt: Date())
         terminalArchive.removeAll { $0.id == t.id }
@@ -1063,19 +1067,19 @@ final class AppState: ObservableObject {
         terminalArchive.filter { $0.projectId == id }
     }
 
-    /// Bring a removed terminal back: a new card in the same project, under its old name, resuming
-    /// the conversation it left off. The uuid is necessarily new — the old tmux session is gone and
-    /// the id is what addresses a *live* terminal — so the archive row stays as the record of what
-    /// that uuid used to be.
-    func restoreArchived(_ row: TerminalArchive) {
-        guard let t = newTerminal(projectId: row.projectId, name: row.name, autoRunClaude: false)
-        else { return }
-        guard let path = row.transcriptPath else { return }   // shell-only card: nothing to resume
-        if let idx = terminals.firstIndex(where: { $0.id == t.id }) {
-            terminals[idx].agentKind = row.agentKind
-        }
-        resumeSession(terminals.first(where: { $0.id == t.id }) ?? t, transcript: path)
-        save()
+    /// The node a dragged archive row resolves to: the last message of its transcript, which is
+    /// what "resume this conversation" means when you are holding a file rather than a search hit.
+    ///
+    /// Cached because a drag's `onChanged` fires every frame, and a SQLite round trip per frame is
+    /// the difference between a drag and a stutter. Misses are cached too — a transcript the index
+    /// has never seen will not appear on the next frame either.
+    private var archivedHits: [String: SearchIndex.Hit?] = [:]
+
+    func archivedHit(for path: String) -> SearchIndex.Hit? {
+        if let cached = archivedHits[path] { return cached }
+        let hit = SearchIndex.lastHit(path: path)
+        archivedHits[path] = hit
+        return hit
     }
 
     func forgetArchived(_ id: UUID) {

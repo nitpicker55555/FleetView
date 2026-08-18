@@ -1020,12 +1020,14 @@ struct ProjectSection: View {
         .onAppear { skillCount = ProjectSkills.count(projectPath: project.path) }
     }
 
-    /// Terminals this project has lost, newest first.
+    /// Terminals this project has lost, newest first — read the way search results are read, and
+    /// reopened the same way too.
     ///
-    /// Three things per row, because they are the three ways you would come looking: the name you
-    /// remember it by, the uuid another machine addressed it with, and the agent session that still
-    /// holds the conversation. Each is click-to-copy — a removed terminal is something you are
-    /// usually reconstructing a command around, not just reading.
+    /// A row is dragged onto the board rather than clicked, which is the rule the search panel
+    /// already sets and for the same reason: reopening a conversation writes a file (a fork, or a
+    /// synthesised rollout), and the one action with a cost should not be reachable by a stray
+    /// click while you are still reading the list. Dropping on the board opens a terminal; dropping
+    /// on a card joins that card's cluster — both come free from reusing the search drag.
     private var historyPanel: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -1034,15 +1036,18 @@ struct ProjectSection: View {
                 if let c = copiedHistory {
                     Text("Copied  \(c)").font(.system(size: 10, design: .monospaced))
                         .foregroundColor(Theme.green).lineLimit(1).truncationMode(.middle)
+                } else {
+                    Text("拖到主区域开新终端，或拖到某张卡片加入它的 cluster")
+                        .font(.system(size: 9)).foregroundColor(Theme.subtext.opacity(0.6))
                 }
                 Spacer()
             }
             ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 4) {
+                LazyVStack(alignment: .leading, spacing: 5) {
                     ForEach(archived) { row in historyRow(row) }
                 }
             }
-            .frame(maxHeight: 220)
+            .frame(maxHeight: 240)
         }
         .padding(11)
         .background(Theme.card.opacity(0.4))
@@ -1051,52 +1056,74 @@ struct ProjectSection: View {
     }
 
     private func historyRow(_ row: TerminalArchive) -> some View {
-        HStack(spacing: 8) {
-            Button { copyHistory(row.name, label: row.name) } label: {
-                Text(row.name).font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Theme.text).lineLimit(1)
-            }
-            .buttonStyle(.plain).help("Click to copy the name")
-            Button { copyHistory(row.id.uuidString, label: String(row.id.uuidString.prefix(8))) } label: {
-                Text(row.id.uuidString.prefix(8).lowercased())
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(Theme.subtext.opacity(0.8))
-            }
-            .buttonStyle(.plain).help("Click to copy the full terminal id\n\(row.id.uuidString)")
-            if let sid = row.sessionId {
-                Button { copyHistory(sid, label: String(sid.prefix(8))) } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "bubble.left.and.text.bubble.right").font(.system(size: 8))
-                        Text(sid.prefix(8)).font(.system(size: 10, design: .monospaced))
+        let tint = row.agentKind == .codex ? Theme.codexTint : Theme.claudeTint
+        return HStack(alignment: .top, spacing: 9) {
+            Circle().fill(tint).frame(width: 6, height: 6).padding(.top, 5)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Button { copyHistory(row.name, label: row.name) } label: {
+                        Text(row.name).font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(Theme.text).lineLimit(1)
                     }
-                    .foregroundColor(Theme.accent.opacity(0.85))
+                    .buttonStyle(.plain).help("Click to copy the name")
+                    Button {
+                        copyHistory(row.id.uuidString, label: String(row.id.uuidString.prefix(8)))
+                    } label: {
+                        Text(row.id.uuidString.prefix(8).lowercased())
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Theme.subtext.opacity(0.8))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Click to copy the full terminal id\n\(row.id.uuidString)")
+                    if let sid = row.sessionId {
+                        Button { copyHistory(sid, label: String(sid.prefix(8))) } label: {
+                            Text(sid.prefix(8)).font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(tint)
+                        }
+                        .buttonStyle(.plain).help("Agent session — click to copy\n\(sid)")
+                    }
+                    Spacer(minLength: 4)
+                    Text(RelativeTime.short(row.removedAt, now: Date()) ?? "")
+                        .font(.system(size: 9)).foregroundColor(Theme.subtext.opacity(0.6))
                 }
-                .buttonStyle(.plain).help("Agent session — click to copy\n\(sid)")
-            } else {
-                // Said rather than left blank: "no session" is the answer to why Restore is missing.
-                Text("shell only").font(.system(size: 9)).foregroundColor(Theme.subtext.opacity(0.5))
-            }
-            Spacer(minLength: 6)
-            Text(RelativeTime.short(row.removedAt, now: Date()) ?? "")
-                .font(.system(size: 9)).foregroundColor(Theme.subtext.opacity(0.6))
-            if row.transcriptPath != nil {
-                Button { state.restoreArchived(row) } label: {
-                    Text("Restore").font(.system(size: 10, weight: .medium))
-                        .foregroundColor(Theme.accent)
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(Theme.accent.opacity(0.12)).clipShape(Capsule())
+                // The last thing said in it — the same thing a search result leads with, and what
+                // actually tells one removed terminal from another.
+                if !row.lastPrompt.isEmpty {
+                    Text(row.lastPrompt)
+                        .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                        .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(.plain)
-                .help("Open a new terminal here and resume this conversation")
             }
+            Image(systemName: "hand.draw")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Theme.onAccent)
+                .frame(width: 26, height: 20)
+                .background(Theme.accent).clipShape(RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
+                .gesture(dragArchivedToBoard(row))
+                .onHover { $0 ? NSCursor.openHand.push() : NSCursor.pop() }
+                .help("拖到主区域开新终端，或拖到某张卡片加入它的 cluster")
             Button { state.forgetArchived(row.id) } label: {
                 Image(systemName: "xmark").font(.system(size: 9)).foregroundColor(Theme.subtext)
             }
-            .buttonStyle(.plain).help("Forget this entry")
+            .buttonStyle(.plain).help("Forget this entry").padding(.top, 3)
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(Theme.card.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 9).padding(.vertical, 7)
+        .background(Theme.card.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+    }
+
+    /// Same gesture the search panel uses, against the transcript's last node — resuming a removed
+    /// terminal is resuming the conversation whole.
+    private func dragArchivedToBoard(_ row: TerminalArchive) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .named("fleet"))
+            .onChanged { value in
+                guard let path = row.transcriptPath else { return }
+                if let hit = state.archivedHit(for: path) {
+                    state.searchDragChanged(hit: hit, location: value.location)
+                }
+            }
+            .onEnded { state.treeDragEnded(at: $0.location) }
     }
 
     private func copyHistory(_ s: String, label: String) {
