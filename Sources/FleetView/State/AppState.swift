@@ -801,21 +801,30 @@ final class AppState: ObservableObject {
 
     /// `claude --resume <sid>` / `codex resume <sid>` for a transcript on disk, with the `cd` that
     /// makes it resolve. Pure and off-actor: it only touches the filesystem.
+    /// `codex resume <id>` or `codex fork <id>` for a rollout, run from the cwd it was recorded in.
+    ///
+    /// One function for both verbs so the two cannot drift: a rollout is named
+    /// `rollout-<timestamp>-<uuid>.jsonl` and the CLI wants the UUID alone — handing it the whole
+    /// filename opens the session picker instead, which looks like the command being ignored.
+    nonisolated static func codexCommand(transcript path: String, termCwd: String,
+                                         verb: String) -> String? {
+        let base = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let parts = base.split(separator: "-")
+        guard parts.count >= 5 else { return nil }
+        let sid = parts.suffix(5).joined(separator: "-")
+        guard UUID(uuidString: sid) != nil else { return nil }
+        let cwd = CodexSession.rolloutCwd(path) ?? termCwd
+        let cmd = "codex \(verb) \(sid)"
+        return cwd == termCwd ? cmd : "cd \(SessionForge.shellQuote(cwd)) && \(cmd)"
+    }
+
     nonisolated static func resumeCommand(transcript path: String, kind: AgentKind,
                                           termCwd: String) -> String? {
         let base = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         guard !base.isEmpty else { return nil }
 
         if kind == .codex || path.contains("/.codex/") {
-            // A rollout is named `rollout-<timestamp>-<uuid>.jsonl` and `codex resume` wants the
-            // UUID alone — handing it the whole filename opens the session picker instead.
-            let parts = base.split(separator: "-")
-            guard parts.count >= 5 else { return nil }
-            let sid = parts.suffix(5).joined(separator: "-")
-            guard UUID(uuidString: sid) != nil else { return nil }
-            let cwd = CodexSession.rolloutCwd(path) ?? termCwd
-            let cmd = "codex resume \(sid)"
-            return cwd == termCwd ? cmd : "cd \(SessionForge.shellQuote(cwd)) && \(cmd)"
+            return codexCommand(transcript: path, termCwd: termCwd, verb: "resume")
         }
 
         // Claude resolves `--resume <sid>` against the *current* folder's project slug, so the
@@ -936,9 +945,27 @@ final class AppState: ObservableObject {
         guard let src = terminals.first(where: { $0.id == id }) else { return }
         let clusterId = ensureCluster(for: id)
 
+        let livePath = !blank ? (hookSessionPath(for: id) ?? src.transcriptPath) : nil
+        let onDisk = livePath.map { FileManager.default.fileExists(atPath: $0) } == true
+
+        // Codex forks natively now, and a duplicate is exactly the case it covers — a branch from
+        // the tip. This used to be excluded, back when it could not, and the exclusion outlived the
+        // reason: duplicating a Codex card silently handed you an empty terminal. (Branching from a
+        // turn in the *middle* is still treeflow's synthesised rollout; `codex fork` has no way to
+        // land on one.)
+        if let path = livePath, onDisk, path.contains("/.codex/"),
+           let cmd = Self.codexCommand(transcript: path, termCwd: src.cwd, verb: "fork") {
+            guard let newT = newTerminal(projectId: src.projectId, name: src.name + " ⑂",
+                                         clusterId: clusterId, autoRunClaude: false) else { return }
+            if let idx = terminals.firstIndex(where: { $0.id == newT.id }) {
+                terminals[idx].agentKind = .codex
+            }
+            typeIntoTerminal(newT.id, cmd, after: 1.4)
+            return
+        }
+
         var forkSid: String?
-        if !blank, let path = hookSessionPath(for: id) ?? src.transcriptPath,
-           !path.contains("/.codex/"), FileManager.default.fileExists(atPath: path) {
+        if let path = livePath, onDisk, !path.contains("/.codex/") {
             forkSid = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         }
         guard let sid = forkSid else {
