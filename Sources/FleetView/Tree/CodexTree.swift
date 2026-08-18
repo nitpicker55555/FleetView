@@ -167,11 +167,19 @@ enum CodexTree {
 
     /// A rollout's user prompts, with the agent messages that answered each folded in.
     ///
-    /// The numbering has to match treeflow's exactly or a node's address opens the wrong turn:
-    /// only `event_msg` records count (the `response_item` copies repeat the same text wrapped in
-    /// developer scaffolding), and a prompt filtered out as noise still advances the counter,
-    /// because treeflow counted it. This mirrors `SearchIndex.parseCodex`, deliberately — the tree
-    /// and the search index address the same nodes and must not drift apart.
+    /// Read from `response_item` messages, which is where treeflow reads them and — since Codex
+    /// 0.147 — the only place they exist. Rollouts used to carry a parallel `event_msg` stream
+    /// (`user_message` / `agent_message`) and this counted those instead; the two happened to agree
+    /// because the extra `response_item` copies were exactly the `<environment_context>` blocks
+    /// treeflow filters out. Verified on a July rollout: 80 event_msg prompts, 85 response_item
+    /// ones, 80 after the filter. The new format dropped the event_msg stream, so that reading
+    /// found nothing at all and every Codex session showed an empty tree.
+    ///
+    /// The numbering still has to match treeflow's exactly or a node's address opens the wrong
+    /// turn: a prompt treeflow keeps but this considers unshowable still advances the counter,
+    /// while one treeflow never counted (the environment blocks) must not. This mirrors
+    /// `SearchIndex.parseCodex`, deliberately — the tree and the search index address the same
+    /// nodes and must not drift apart.
     static func turns(of path: String) -> [Turn] {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let size = (attrs?[.size] as? Int64) ?? 0
@@ -196,21 +204,26 @@ enum CodexTree {
                     var hi = lo
                     while hi < p.count, p[hi] != 0x0A { hi += 1 }
                     defer { lo = hi + 1 }
-                    guard hi > lo, p[lo] == UInt8(ascii: "{"), contains(p, lo, hi, Self.eventMsg),
+                    guard hi > lo, p[lo] == UInt8(ascii: "{"), contains(p, lo, hi, Self.roleKey),
                           let obj = (try? JSONSerialization.jsonObject(
                               with: Data(raw[lo..<hi]))) as? [String: Any],
-                          (obj["type"] as? String) == "event_msg",
+                          (obj["type"] as? String) == "response_item",
                           let payload = obj["payload"] as? [String: Any],
-                          let kind = payload["type"] as? String else { continue }
+                          (payload["type"] as? String) == "message",
+                          let role = payload["role"] as? String else { continue }
                     let ts = (obj["timestamp"] as? String) ?? ""
-                    switch kind {
-                    case "user_message":
+                    switch role {
+                    case "user":
+                        let raw = contentText(payload)
+                        // Not a turn at all, in treeflow's counting or ours — skipping it before the
+                        // counter is what keeps the two numbering schemes on the same items.
+                        guard isRealUserText(raw) else { continue }
                         defer { n += 1 }
-                        guard let t = cleanPrompt(payload["message"] as? String ?? "") else { continue }
+                        guard let t = cleanPrompt(raw) else { continue }
                         out.append(Turn(n: n, text: clip(t, SessionTreeBuilder.promptCap),
                                         answer: "", ts: ts))
-                    case "agent_message":
-                        guard !out.isEmpty, let t = trimmed(payload["message"] as? String ?? "") else { continue }
+                    case "assistant":
+                        guard !out.isEmpty, let t = trimmed(contentText(payload)) else { continue }
                         // A reply belongs to the prompt it answers — the last one seen.
                         let i = out.count - 1
                         guard out[i].answer.count < SessionTreeBuilder.answerCap else { continue }
@@ -226,8 +239,32 @@ enum CodexTree {
         return out
     }
 
-    /// Only `event_msg` records carry a turn; everything else in a rollout is tool traffic.
-    private static let eventMsg: [UInt8] = Array(#""type":"event_msg""#.utf8)
+    /// Only message items carry a role, and only they carry a turn; the rest of a rollout is
+    /// reasoning and tool traffic. A better reject than the record type itself — `response_item` is
+    /// the majority of the file, `"role":` is 8-12% of it.
+    private static let roleKey: [UInt8] = Array(#""role":""#.utf8)
+
+    /// The text of a `response_item` message, joined across its content blocks.
+    /// Mirrors treeflow's `_codex_extract_text`.
+    static func contentText(_ payload: [String: Any]) -> String {
+        guard let blocks = payload["content"] as? [[String: Any]] else { return "" }
+        var parts: [String] = []
+        for b in blocks {
+            let t = (b["text"] as? String) ?? (b["input_text"] as? String)
+                ?? (b["output_text"] as? String) ?? ""
+            if !t.isEmpty { parts.append(t) }
+        }
+        return parts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Codex injects `<environment_context>` and `<turn_aborted>` blocks as role=user messages.
+    /// treeflow (`_codex_is_real_user_text`) never counts them, so neither can we — an extra item
+    /// in the index shifts every node address after it by one.
+    static func isRealUserText(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return false }
+        return !t.hasPrefix("<environment_context>") && !t.hasPrefix("<turn_aborted>")
+    }
 
     /// Substring search over a raw line. A fast *reject* only — everything it keeps is still
     /// validated by the real JSON parse.

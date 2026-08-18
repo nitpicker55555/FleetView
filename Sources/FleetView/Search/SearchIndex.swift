@@ -420,7 +420,9 @@ enum SearchIndex {
     private static let toolResult: [UInt8] = Array("\"tool_result\"".utf8)
     private static let textBlock: [UInt8] = Array("\"type\":\"text\"".utf8)
     private static let stringContent: [UInt8] = Array("\"content\":\"".utf8)
-    private static let codexEvent: [UInt8] = Array("\"type\":\"event_msg\"".utf8)
+    // Only message items carry a role, and only they carry a turn. A better reject than the record
+    // type: `response_item` is most of a rollout, `"role":` is 8-12% of it.
+    private static let codexRole: [UInt8] = Array("\"role\":\"".utf8)
     // `cwd` lives only on the rollout's opening session_meta record, so it has to survive the
     // filter even though it carries no conversation.
     private static let codexMeta: [UInt8] = Array("\"type\":\"session_meta\"".utf8)
@@ -434,7 +436,7 @@ enum SearchIndex {
     }
 
     private static func wantCodex(_ p: UnsafeBufferPointer<UInt8>, _ lo: Int, _ hi: Int) -> Bool {
-        has(p, lo, hi, codexEvent) || has(p, lo, hi, codexMeta)
+        has(p, lo, hi, codexRole) || has(p, lo, hi, codexMeta)
     }
 
     private static func json(_ d: Data) -> [String: Any]? {
@@ -488,22 +490,28 @@ enum SearchIndex {
         out.consumed = forEachLine(url, from: from, wanted: wantCodex) { line in
             guard let obj = json(line), let payload = obj["payload"] as? [String: Any] else { return }
             if out.project.isEmpty, let cwd = payload["cwd"] as? String { out.project = cwd }
-            // Only `event_msg` carries the clean text; `response_item` repeats it with the
-            // developer/system scaffolding mixed in, and counting those would break the numbering.
-            guard (obj["type"] as? String) == "event_msg",
-                  let kind = payload["type"] as? String else { return }
+            // Read from `response_item` messages, as treeflow does and as Codex 0.147 requires: the
+            // parallel `event_msg` stream this used to count is gone. Kept identical to
+            // `CodexTree.turns` — the tree and this index address the same nodes.
+            guard (obj["type"] as? String) == "response_item",
+                  (payload["type"] as? String) == "message",
+                  let role = payload["role"] as? String else { return }
             let ts = (obj["timestamp"] as? String) ?? ""
-            switch kind {
-            case "user_message":
-                guard let t = cleanPrompt(payload["message"] as? String ?? "") else {
+            switch role {
+            case "user":
+                let raw = CodexTree.contentText(payload)
+                // Never a node for treeflow, so never one here: counting it would shift every
+                // address after it.
+                guard CodexTree.isRealUserText(raw) else { return }
+                guard let t = cleanPrompt(raw) else {
                     // Still a node as far as treeflow is concerned — keep the counter aligned.
                     out.prompts += 1
                     return
                 }
                 out.rows.append(Row(role: .user, ts: ts, node: "\(sid):\(out.prompts)", body: t))
                 out.prompts += 1
-            case "agent_message":
-                guard let t = trimmed(payload["message"] as? String ?? "") else { return }
+            case "assistant":
+                guard let t = trimmed(CodexTree.contentText(payload)) else { return }
                 // A reply belongs to the prompt it answers — the last one seen.
                 out.rows.append(Row(role: .assistant, ts: ts,
                                     node: "\(sid):\(max(0, out.prompts - 1))", body: t))
