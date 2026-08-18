@@ -317,6 +317,13 @@ final class SearchModel: ObservableObject {
     /// nodes are natively resumable, so opening every result you glance at would write a ~10 MB
     /// fork each time. Reading comes from the index, so browsing stays free and forking becomes a
     /// deliberate second step.
+    /// Paints the window first, then replaces it with the whole conversation.
+    ///
+    /// Two steps rather than one because they cost differently: the window is two indexed lookups
+    /// and is on screen immediately, while a long rollout is thousands of rows. Waiting for the
+    /// second before showing anything would make every result feel slow; showing only the first is
+    /// what made a hit a fragment. The guard on `preview?.id` is what stops a slow load from
+    /// landing on a result you have already clicked past.
     func showPreview(_ hit: SearchIndex.Hit) {
         let current = preview
         Task.detached(priority: .userInitiated) {
@@ -324,6 +331,12 @@ final class SearchModel: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self, current?.id == self.preview?.id else { return }
                 self.preview = Preview(id: hit.id, hit: hit, context: context)
+            }
+            let whole = SearchIndex.conversation(of: hit)
+            guard whole.count > context.count else { return }   // already the whole thing
+            await MainActor.run { [weak self] in
+                guard let self, self.preview?.id == hit.id else { return }
+                self.preview = Preview(id: hit.id, hit: hit, context: whole)
             }
         }
     }

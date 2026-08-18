@@ -8,6 +8,9 @@ import SwiftUI
 final class AppState: ObservableObject {
     @Published var projects: [Project] = []
     @Published var terminals: [TerminalSession] = []
+    /// Terminals that have been removed, newest first. The board forgets a card the moment it is
+    /// removed; this is what remembers the name, uuid and session it had (see `TerminalArchive`).
+    @Published var terminalArchive: [TerminalArchive] = []
     @Published var clusters: [Cluster] = []
     @Published var selectedProjectId: UUID? = nil   // nil == All Projects
     @Published var sidebarWidth: Double = 236
@@ -557,6 +560,7 @@ final class AppState: ObservableObject {
         var closeTerminalsOnQuit: Bool?
         var collapsedProjects: [UUID]?
         var terminalFontSize: Double?
+        var terminalArchive: [TerminalArchive]?
     }
 
     /// A first run — no `state.json` at all — opens the checkout this bundle was built from, so a
@@ -590,6 +594,7 @@ final class AppState: ObservableObject {
             return t                   // keep transcriptPath so we can rebuild the token curve
         }
         clusters = p.clusters
+        terminalArchive = p.terminalArchive ?? []
         selectedProjectId = p.selectedProjectId
         if let w = p.sidebarWidth { sidebarWidth = min(520, max(180, w)) }
         notes = p.notes ?? []
@@ -642,7 +647,8 @@ final class AppState: ObservableObject {
                           treePanelWidth: treePanelWidth, showOnlyMarked: showOnlyMarked,
                           closeTerminalsOnQuit: closeTerminalsOnQuit,
                           collapsedProjects: Array(collapsedProjects),
-                          terminalFontSize: terminalFontSize)
+                          terminalFontSize: terminalFontSize,
+                          terminalArchive: terminalArchive)
         // .atomic: without it a crash or a full disk mid-write leaves a truncated state.json, and
         // that file IS the board — every project, terminal and cluster.
         if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile, options: .atomic) }
@@ -982,7 +988,14 @@ final class AppState: ObservableObject {
         audited(AuditIntent("terminal.remove")) { removeTerminalUnaudited(id) }
     }
 
+    /// How many removed terminals a project keeps. Old enough entries stop being something you are
+    /// looking for and start being weight in state.json, which is rewritten on every hook event.
+    static let archiveCap = 200
+
     private func removeTerminalUnaudited(_ id: UUID) {
+        // Archive before anything is torn down — `transcriptPath(for:)` needs the terminal to still
+        // be in `terminals`, and after this line the session id is unrecoverable.
+        if let t = terminals.first(where: { $0.id == id }) { archive(t) }
         if treePanelTerminalId == id { closeSessionTree() }
         controllers[id]?.closeWindow()
         controllers[id] = nil
@@ -992,6 +1005,54 @@ final class AppState: ObservableObject {
         lastParsedTranscriptSize[id] = nil
         lastTokenRefreshAt[id] = nil
         pruneClusters()
+        save()
+    }
+
+    /// Record a terminal on its way out.
+    ///
+    /// The transcript is resolved here rather than trusted from the card: a terminal that ran an
+    /// agent may never have had `transcriptPath` written back, and once the row is gone there is no
+    /// second chance to look. Same id every time, so removing a restored terminal updates its row
+    /// instead of leaving two claiming to be the same uuid.
+    private func archive(_ t: TerminalSession) {
+        let entry = TerminalArchive(id: t.id, projectId: t.projectId, name: t.name, cwd: t.cwd,
+                                    agentKind: t.agentKind,
+                                    sessionId: t.sessionId,
+                                    transcriptPath: t.transcriptPath ?? lastSessionFile(for: t),
+                                    newTokens: t.newTokens, lastPrompt: t.lastPrompt,
+                                    removedAt: Date())
+        terminalArchive.removeAll { $0.id == t.id }
+        terminalArchive.insert(entry, at: 0)          // newest first, which is how it is read
+        // Trimmed per project, so a busy project cannot push a quiet one's history out.
+        var kept: [UUID: Int] = [:]
+        terminalArchive = terminalArchive.filter { row in
+            let n = (kept[row.projectId] ?? 0) + 1
+            kept[row.projectId] = n
+            return n <= Self.archiveCap
+        }
+    }
+
+    func archived(inProject id: UUID) -> [TerminalArchive] {
+        terminalArchive.filter { $0.projectId == id }
+    }
+
+    /// Bring a removed terminal back: a new card in the same project, under its old name, resuming
+    /// the conversation it left off. The uuid is necessarily new — the old tmux session is gone and
+    /// the id is what addresses a *live* terminal — so the archive row stays as the record of what
+    /// that uuid used to be.
+    func restoreArchived(_ row: TerminalArchive) {
+        guard let t = newTerminal(projectId: row.projectId, name: row.name, autoRunClaude: false)
+        else { return }
+        guard let path = row.transcriptPath else { return }   // shell-only card: nothing to resume
+        if let idx = terminals.firstIndex(where: { $0.id == t.id }) {
+            terminals[idx].agentKind = row.agentKind
+        }
+        resumeSession(terminals.first(where: { $0.id == t.id }) ?? t, transcript: path)
+        save()
+    }
+
+    func forgetArchived(_ id: UUID) {
+        terminalArchive.removeAll { $0.id == id }
         save()
     }
 

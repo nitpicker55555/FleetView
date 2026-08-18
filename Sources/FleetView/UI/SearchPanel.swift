@@ -346,6 +346,12 @@ struct SearchPanel: View {
                             .padding(12)
                         }
                         .onAppear { proxy.scrollTo(preview.hit.id, anchor: .center) }
+                        // The window paints first and the whole conversation replaces it a moment
+                        // later; without this the hit slides off screen exactly when the thing you
+                        // clicked finishes loading.
+                        .onChange(of: preview.context.count) { _, _ in
+                            proxy.scrollTo(preview.hit.id, anchor: .center)
+                        }
                     }
                     Divider().overlay(Theme.stroke)
                     previewFooter(preview)
@@ -372,6 +378,10 @@ struct SearchPanel: View {
                 .background(tint.opacity(0.14)).clipShape(Capsule())
             Text(shortDate(preview.hit.ts))
                 .font(.system(size: 10, design: .monospaced)).foregroundColor(Theme.subtext)
+            // How much of the conversation this is. It climbs from the first window to the whole
+            // thing a moment after opening, which is also the signal that the load finished.
+            Text("\(preview.context.count) 条")
+                .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.7))
             Spacer()
             Button { model.closePreview() } label: {
                 Image(systemName: "xmark").font(.system(size: 10, weight: .medium))

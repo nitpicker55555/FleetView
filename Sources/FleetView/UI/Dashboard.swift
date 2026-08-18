@@ -969,6 +969,10 @@ struct ProjectSection: View {
     @State private var skills: [SkillInfo] = []
     @State private var showSkills = false
     @State private var pickedSkill: SkillInfo?
+    @State private var showHistory = false
+    @State private var copiedHistory: String?
+
+    private var archived: [TerminalArchive] { state.archived(inProject: project.id) }
 
     private var collapsed: Bool { state.isCollapsed(project.id) }
     // Counted over every terminal in the project, not the filtered list: what the header reports
@@ -990,6 +994,7 @@ struct ProjectSection: View {
             // Not gated on `collapsed`: folding a project puts its *terminals* away, and looking up
             // what a skill does is exactly the kind of thing you do without wanting the cards back.
             if showSkills { skillsPanel }
+            if showHistory { historyPanel }
             // Folded: the header alone, which still carries the terminal count and the token
             // figures — a project you have put away should still be able to tell you it is busy.
             if !collapsed {
@@ -1013,6 +1018,94 @@ struct ProjectSection: View {
         // one with six cards open, the header is the smallest part of it you could be aiming at.
         .onDrop(of: [.text], delegate: ProjectReorderDrop(target: project.id, state: state))
         .onAppear { skillCount = ProjectSkills.count(projectPath: project.path) }
+    }
+
+    /// Terminals this project has lost, newest first.
+    ///
+    /// Three things per row, because they are the three ways you would come looking: the name you
+    /// remember it by, the uuid another machine addressed it with, and the agent session that still
+    /// holds the conversation. Each is click-to-copy — a removed terminal is something you are
+    /// usually reconstructing a command around, not just reading.
+    private var historyPanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("REMOVED TERMINALS").font(.system(size: 10, weight: .bold))
+                    .foregroundColor(Theme.subtext)
+                if let c = copiedHistory {
+                    Text("Copied  \(c)").font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(Theme.green).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer()
+            }
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(archived) { row in historyRow(row) }
+                }
+            }
+            .frame(maxHeight: 220)
+        }
+        .padding(11)
+        .background(Theme.card.opacity(0.4))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.stroke, lineWidth: 1))
+    }
+
+    private func historyRow(_ row: TerminalArchive) -> some View {
+        HStack(spacing: 8) {
+            Button { copyHistory(row.name, label: row.name) } label: {
+                Text(row.name).font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Theme.text).lineLimit(1)
+            }
+            .buttonStyle(.plain).help("Click to copy the name")
+            Button { copyHistory(row.id.uuidString, label: String(row.id.uuidString.prefix(8))) } label: {
+                Text(row.id.uuidString.prefix(8).lowercased())
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Theme.subtext.opacity(0.8))
+            }
+            .buttonStyle(.plain).help("Click to copy the full terminal id\n\(row.id.uuidString)")
+            if let sid = row.sessionId {
+                Button { copyHistory(sid, label: String(sid.prefix(8))) } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "bubble.left.and.text.bubble.right").font(.system(size: 8))
+                        Text(sid.prefix(8)).font(.system(size: 10, design: .monospaced))
+                    }
+                    .foregroundColor(Theme.accent.opacity(0.85))
+                }
+                .buttonStyle(.plain).help("Agent session — click to copy\n\(sid)")
+            } else {
+                // Said rather than left blank: "no session" is the answer to why Restore is missing.
+                Text("shell only").font(.system(size: 9)).foregroundColor(Theme.subtext.opacity(0.5))
+            }
+            Spacer(minLength: 6)
+            Text(RelativeTime.short(row.removedAt, now: Date()) ?? "")
+                .font(.system(size: 9)).foregroundColor(Theme.subtext.opacity(0.6))
+            if row.transcriptPath != nil {
+                Button { state.restoreArchived(row) } label: {
+                    Text("Restore").font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.accent)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Theme.accent.opacity(0.12)).clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("Open a new terminal here and resume this conversation")
+            }
+            Button { state.forgetArchived(row.id) } label: {
+                Image(systemName: "xmark").font(.system(size: 9)).foregroundColor(Theme.subtext)
+            }
+            .buttonStyle(.plain).help("Forget this entry")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(Theme.card.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func copyHistory(_ s: String, label: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        withAnimation(.easeOut(duration: 0.15)) { copiedHistory = label }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            withAnimation(.easeOut(duration: 0.25)) { copiedHistory = nil }
+        }
     }
 
     /// The skills drawer: names down the left, the picked one explained on the right.
@@ -1194,6 +1287,20 @@ struct ProjectSection: View {
                 .buttonStyle(.plain)
                 .help(showSkills ? "Hide this project's skills"
                                  : "\(skillCount) skills in .claude/skills")
+            }
+            // Hidden until this project has actually lost a card, so it stays out of the way on a
+            // board where nothing has been removed yet.
+            if !archived.isEmpty {
+                Button { withAnimation(.easeOut(duration: 0.18)) { showHistory.toggle() } } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "clock.arrow.circlepath").font(.system(size: 11))
+                        Text("\(archived.count)").font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundColor(showHistory ? Theme.accent : Theme.subtext).padding(5)
+                }
+                .buttonStyle(.plain)
+                .help(showHistory ? "Hide removed terminals"
+                                  : "\(archived.count) removed terminals — name, id and session")
             }
             if deltas.count > 1 {
                 Button { withAnimation(.easeOut(duration: 0.18)) { showChart.toggle() } } label: {

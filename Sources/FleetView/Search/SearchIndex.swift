@@ -595,6 +595,45 @@ enum SearchIndex {
         }
     }
 
+    /// Every message of one transcript, in file order.
+    ///
+    /// The windowed `context` is what paints first — it is two small queries and arrives instantly.
+    /// This is what replaces it, because a hit read seven messages either side is a fragment, and
+    /// the question a result raises is usually what the conversation did next. Served from the
+    /// index like the window, so it still touches no transcript file.
+    ///
+    /// Capped: a long Codex rollout runs to thousands of rows, and past a few thousand the answer
+    /// stops being "the conversation" and starts being a scroll nobody finishes. The cap keeps the
+    /// *end* of the conversation, which is where it was going.
+    static func conversation(of hit: Hit, limit: Int = 4000) -> [Hit] {
+        queue.sync {
+            guard let db = open() else { return [] }
+            var stmt: OpaquePointer?
+            // `msg` holds no session/project columns — those live on `file`, and the hit already
+            // carries them for this transcript. Same shape `context` reads.
+            let sql = """
+                SELECT id, role, ts, node, body FROM msg
+                WHERE path = ? ORDER BY id DESC LIMIT ?
+                """
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            bind(stmt, 1, hit.path)
+            sqlite3_bind_int(stmt, 2, Int32(limit))
+            var out: [Hit] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                func text(_ c: Int32) -> String {
+                    sqlite3_column_text(stmt, c).map { String(cString: $0) } ?? ""
+                }
+                out.append(Hit(id: sqlite3_column_int64(stmt, 0),
+                               src: hit.src,
+                               role: Role(rawValue: Int(sqlite3_column_int(stmt, 1))) ?? .user,
+                               ts: text(2), path: hit.path, node: text(3), body: text(4),
+                               session: hit.session, project: hit.project))
+            }
+            return out.reversed()
+        }
+    }
+
     /// The conversation immediately around a hit, from the same transcript.
     ///
     /// This is what makes browsing results free. Resuming a node is what costs a synthesized

@@ -51,6 +51,29 @@ struct Project: Identifiable, Codable, Hashable {
     var isGit: Bool = false
 }
 
+/// A terminal that used to be on the board, kept after its card was removed.
+///
+/// Removing a card destroys the tmux session, and until now it also destroyed the only record that
+/// the conversation existed: the name it was called, the uuid other machines addressed it by, and
+/// the agent session that holds the transcript. The work outlives the card, so the address of it
+/// should too — this is what the project's history drawer lists, and what a restore resumes from.
+struct TerminalArchive: Identifiable, Codable, Hashable {
+    /// The terminal's own uuid, not a fresh one: this row *is* that terminal, and the uuid is the
+    /// thing you came looking for (it is what `project-manager` and a card's `ip/uuid` address).
+    var id: UUID
+    var projectId: UUID
+    var name: String
+    var cwd: String
+    var agentKind: AgentKind = .unknown
+    /// The agent session id and its transcript, when the terminal ever started one. Both nil for a
+    /// card that only ever held a shell — there is nothing to resume and the drawer says so.
+    var sessionId: String?
+    var transcriptPath: String?
+    var newTokens: Int = 0
+    var lastPrompt: String = ""
+    var removedAt: Date
+}
+
 struct TerminalSession: Identifiable, Codable, Hashable {
     var id = UUID()
     var projectId: UUID
