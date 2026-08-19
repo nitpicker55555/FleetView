@@ -594,7 +594,9 @@ final class AppState: ObservableObject {
             return t                   // keep transcriptPath so we can rebuild the token curve
         }
         clusters = p.clusters
-        terminalArchive = p.terminalArchive ?? []
+        // Rows without a transcript predate the rule that stopped recording shell-only cards.
+        // Dropped on the way in rather than filtered forever, so the stored file converges too.
+        terminalArchive = (p.terminalArchive ?? []).filter { $0.transcriptPath != nil }
         selectedProjectId = p.selectedProjectId
         if let w = p.sidebarWidth { sidebarWidth = min(520, max(180, w)) }
         notes = p.notes ?? []
@@ -1063,8 +1065,11 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The rows the drawer lists — which is also what the button should count. A row with no
+    /// transcript cannot be reopened and is never shown, so counting it made the badge disagree
+    /// with the list it opens.
     func archived(inProject id: UUID) -> [TerminalArchive] {
-        terminalArchive.filter { $0.projectId == id }
+        terminalArchive.filter { $0.projectId == id && $0.transcriptPath != nil }
     }
 
     /// The node a dragged archive row resolves to: the last message of its transcript, which is
