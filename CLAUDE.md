@@ -42,6 +42,15 @@ directory outside the repo when you have one.
 - **Don't rename persisted keys casually.** `Terminal.subtaskDone` is the "mark" flag; the UI says
   Mark/Unmark but the stored key stays, because renaming it decodes as `false` against every mark
   already in `state.json` and silently clears them. Same care for anything else in `state.json`.
+- **A field added to anything already in `state.json` must be Optional.** A default value does not
+  help: synthesised `Codable` treats a missing key as an error even when the property has one. This
+  has already cost the whole board once — one added non-optional field made every existing row
+  undecodable, `Persisted` failed as a unit, `load()` read that as a fresh install and the next save
+  wrote the emptiness over every project, terminal and note, with no error anywhere. `Persisted`
+  now decodes field by field so a slip costs one field instead of the file, but the rule stands.
+  Test the change against a *real* `state.json` that has data in it — an empty one decodes fine and
+  proves nothing. See [`docs/design/2026-08-19-state-json-wipe.md`](docs/design/2026-08-19-state-json-wipe.md),
+  which also records how the audit log in `~/.fleetview/logs/` was replayed to recover.
 - **The user runs a long-lived production FleetView.** A second instance steals its hook events.
   Don't launch the app to test — build (`swift build`), and let the user deploy
   (`./scripts/package_app.sh --install`, which needs the running app quit first).

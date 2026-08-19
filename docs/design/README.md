@@ -29,3 +29,4 @@ YYYY-MM-DD-<主题>.md
 |---|---|---|---|
 | 2026-07-27 | [审计日志规范 v1](2026-07-27-audit-logging-spec.md) | 已实现 | 结构化 JSONL 审计日志：终端/集群/项目生命周期、shell 命令、Agent 会话（只存 transcript 指针）、Web 访问与地理位置、UI 点击、Panel 版本归档 |
 | 2026-07-28 | [审计日志实施：分层拦截架构](2026-07-28-audit-logging-implementation.md) | 已实现 | 意图 + 状态 diff 双层拦截，视图层零打点；模块划分、测试策略、实测记录 |
+| 2026-08-19 | [state.json 被清空事故](2026-08-19-state-json-wipe.md) | 已修复 | 给已上盘结构体加了个非可选字段 → 整个 `Persisted` 解码失败 → 当成全新安装 → 覆盖掉全部项目/终端/notes。规则：新字段必须 Optional；解码要逐字段容错。附审计日志重放恢复的做法 |
