@@ -62,6 +62,11 @@ struct TerminalArchive: Identifiable, Codable, Hashable {
     /// thing you came looking for (it is what `project-manager` and a card's `ip/uuid` address).
     var id: UUID
     var projectId: UUID
+    /// The project's folder. Kept alongside the id because the id does not survive the project
+    /// being closed and reopened — `addProject` mints a fresh one for the same folder, and every
+    /// archived row would suddenly belong to a project that no longer exists. The path is what
+    /// stayed the same, so the path is what the lookup uses.
+    var projectPath: String = ""
     var name: String
     var cwd: String
     var agentKind: AgentKind = .unknown

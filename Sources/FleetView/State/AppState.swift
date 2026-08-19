@@ -597,6 +597,16 @@ final class AppState: ObservableObject {
         // Rows without a transcript predate the rule that stopped recording shell-only cards.
         // Dropped on the way in rather than filtered forever, so the stored file converges too.
         terminalArchive = (p.terminalArchive ?? []).filter { $0.transcriptPath != nil }
+        // Re-attach rows written before the path was recorded. Their project id may already be
+        // dead — closing and reopening a folder mints a new one — so they are matched by the
+        // deepest project their terminal's cwd sits inside, which is where that terminal ran.
+        for i in terminalArchive.indices where terminalArchive[i].projectPath.isEmpty {
+            let cwd = terminalArchive[i].cwd
+            let owner = projects
+                .filter { !$0.path.isEmpty && (cwd == $0.path || cwd.hasPrefix($0.path + "/")) }
+                .max { $0.path.count < $1.path.count }
+            if let owner { terminalArchive[i].projectPath = owner.path }
+        }
         selectedProjectId = p.selectedProjectId
         if let w = p.sidebarWidth { sidebarWidth = min(520, max(180, w)) }
         notes = p.notes ?? []
@@ -1048,7 +1058,9 @@ final class AppState: ObservableObject {
         // to resume, nothing to read. Keeping those rows would fill the drawer with entries whose
         // only possible answer is "shell only", and push out the ones you would actually reopen.
         guard let transcript = t.transcriptPath ?? lastSessionFile(for: t) else { return }
-        let entry = TerminalArchive(id: t.id, projectId: t.projectId, name: t.name, cwd: t.cwd,
+        let entry = TerminalArchive(id: t.id, projectId: t.projectId,
+                                    projectPath: project(t.projectId)?.path ?? "",
+                                    name: t.name, cwd: t.cwd,
                                     agentKind: t.agentKind,
                                     sessionId: t.sessionId,
                                     transcriptPath: transcript,
@@ -1069,7 +1081,13 @@ final class AppState: ObservableObject {
     /// transcript cannot be reopened and is never shown, so counting it made the badge disagree
     /// with the list it opens.
     func archived(inProject id: UUID) -> [TerminalArchive] {
-        terminalArchive.filter { $0.projectId == id && $0.transcriptPath != nil }
+        let path = project(id)?.path
+        return terminalArchive.filter { row in
+            guard row.transcriptPath != nil else { return false }
+            // Path first, id only for rows written before the path was recorded.
+            if !row.projectPath.isEmpty, let path { return row.projectPath == path }
+            return row.projectId == id
+        }
     }
 
     /// The node a dragged archive row resolves to: the last message of its transcript, which is
