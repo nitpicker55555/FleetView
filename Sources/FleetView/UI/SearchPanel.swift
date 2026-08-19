@@ -129,11 +129,17 @@ struct SearchPanel: View {
     @ViewBuilder private var results: some View {
         if let failure = model.failure {
             message(failure, icon: "exclamationmark.triangle", tint: Theme.amber)
-        } else if model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        } else if model.mode != .archive,
+                  model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Archive is a list, not a query: an empty box there means "everything", not "waiting
+            // for you to type". Every other mode has nothing to show until something is typed.
             message(model.indexing ? model.indexNote : "", icon: "text.magnifyingglass",
                     tint: Theme.subtext)
         } else if model.projectGroups.isEmpty {
-            message(model.indexing ? model.indexNote : "", icon: "questionmark.circle",
+            message(model.mode == .archive
+                        ? (model.indexing ? model.indexNote : "还没有已移除的终端")
+                        : (model.indexing ? model.indexNote : ""),
+                    icon: model.mode == .archive ? "clock.arrow.circlepath" : "questionmark.circle",
                     tint: Theme.subtext)
         } else {
             ScrollView {
@@ -261,7 +267,7 @@ struct SearchPanel: View {
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 7) {
                 Circle().fill(tint).frame(width: 6, height: 6)
-                Text(projectName(group.project))
+                Text(group.title ?? projectName(group.project))
                     .font(.system(size: 11.5, weight: .semibold)).foregroundColor(Theme.text)
                 Text(group.src == .claude ? "claude" : "codex")
                     .font(.system(size: 9, weight: .medium)).foregroundColor(tint)

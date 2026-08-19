@@ -53,6 +53,10 @@ final class SearchModel: ObservableObject {
         let session: String
         let when: String
         var hits: [SearchIndex.Hit]
+        /// What to call this group in the header. Normally the project name says enough; in archive
+        /// mode every row is the same project, and the thing that tells them apart is the name the
+        /// card had.
+        var title: String? = nil
     }
 
     /// The level above a session. Answers "how many projects matched, and which one do I want" —
@@ -187,11 +191,15 @@ final class SearchModel: ObservableObject {
             $0.name.lowercased().contains(needle) || $0.lastPrompt.lowercased().contains(needle)
         }
         let paths = matched.compactMap(\.transcriptPath)
+        // Transcript path → the name its card had, so a row is recognisable as the terminal it was.
+        var names: [String: String] = [:]
+        for r in matched { if let p = r.transcriptPath { names[p] = r.name } }
         failure = nil
         let started = Date()
         Task.detached(priority: .userInitiated) {
             let hits = paths.compactMap { SearchIndex.lastHit(path: $0) }
-            let sessions = Self.group(hits)
+            var sessions = Self.group(hits)
+            for i in sessions.indices { sessions[i].title = names[sessions[i].id] }
             let ms = Date().timeIntervalSince(started) * 1000
             await MainActor.run { [weak self] in
                 guard let self, self.mode == .archive else { return }
