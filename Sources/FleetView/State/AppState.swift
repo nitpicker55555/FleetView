@@ -547,9 +547,9 @@ final class AppState: ObservableObject {
     // MARK: - Persistence
 
     private struct Persisted: Codable {
-        var projects: [Project]
-        var terminals: [TerminalSession]
-        var clusters: [Cluster]
+        var projects: [Project] = []
+        var terminals: [TerminalSession] = []
+        var clusters: [Cluster] = []
         var selectedProjectId: UUID?
         var sidebarWidth: Double?
         var notes: [Note]?
@@ -561,6 +561,50 @@ final class AppState: ObservableObject {
         var collapsedProjects: [UUID]?
         var terminalFontSize: Double?
         var terminalArchive: [TerminalArchive]?
+
+        /// Every field decoded on its own, and a field that will not decode is dropped rather than
+        /// taken as a corrupt file.
+        ///
+        /// This is not defensive tidiness. Synthesised `Codable` treats a missing key as an error
+        /// even for a property with a default, so adding one non-optional field to a struct already
+        /// on disk made the whole of `Persisted` fail to decode — and `load()`, seeing no decodable
+        /// state, started from nothing and saved that over every project, terminal and note the
+        /// file held. One new field cost the entire board. The blast radius of a schema slip
+        /// belongs to the field that slipped.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            func get<T: Decodable>(_ k: CodingKeys, _ t: T.Type) -> T? {
+                (try? c.decodeIfPresent(T.self, forKey: k)) ?? nil
+            }
+            projects = get(.projects, [Project].self) ?? []
+            terminals = get(.terminals, [TerminalSession].self) ?? []
+            clusters = get(.clusters, [Cluster].self) ?? []
+            selectedProjectId = get(.selectedProjectId, UUID.self)
+            sidebarWidth = get(.sidebarWidth, Double.self)
+            notes = get(.notes, [Note].self)
+            tasksCollapsed = get(.tasksCollapsed, Bool.self)
+            notesCollapsed = get(.notesCollapsed, Bool.self)
+            treePanelWidth = get(.treePanelWidth, Double.self)
+            showOnlyMarked = get(.showOnlyMarked, Bool.self)
+            closeTerminalsOnQuit = get(.closeTerminalsOnQuit, Bool.self)
+            collapsedProjects = get(.collapsedProjects, [UUID].self)
+            terminalFontSize = get(.terminalFontSize, Double.self)
+            terminalArchive = get(.terminalArchive, [TerminalArchive].self)
+        }
+
+        init(projects: [Project], terminals: [TerminalSession], clusters: [Cluster],
+             selectedProjectId: UUID?, sidebarWidth: Double?, notes: [Note]?,
+             tasksCollapsed: Bool?, notesCollapsed: Bool?, treePanelWidth: Double?,
+             showOnlyMarked: Bool?, closeTerminalsOnQuit: Bool?, collapsedProjects: [UUID]?,
+             terminalFontSize: Double?, terminalArchive: [TerminalArchive]?) {
+            self.projects = projects; self.terminals = terminals; self.clusters = clusters
+            self.selectedProjectId = selectedProjectId; self.sidebarWidth = sidebarWidth
+            self.notes = notes; self.tasksCollapsed = tasksCollapsed
+            self.notesCollapsed = notesCollapsed; self.treePanelWidth = treePanelWidth
+            self.showOnlyMarked = showOnlyMarked; self.closeTerminalsOnQuit = closeTerminalsOnQuit
+            self.collapsedProjects = collapsedProjects; self.terminalFontSize = terminalFontSize
+            self.terminalArchive = terminalArchive
+        }
     }
 
     /// A first run — no `state.json` at all — opens the checkout this bundle was built from, so a
@@ -600,7 +644,7 @@ final class AppState: ObservableObject {
         // Re-attach rows written before the path was recorded. Their project id may already be
         // dead — closing and reopening a folder mints a new one — so they are matched by the
         // deepest project their terminal's cwd sits inside, which is where that terminal ran.
-        for i in terminalArchive.indices where terminalArchive[i].projectPath.isEmpty {
+        for i in terminalArchive.indices where (terminalArchive[i].projectPath ?? "").isEmpty {
             let cwd = terminalArchive[i].cwd
             let owner = projects
                 .filter { !$0.path.isEmpty && (cwd == $0.path || cwd.hasPrefix($0.path + "/")) }
@@ -1059,7 +1103,7 @@ final class AppState: ObservableObject {
         // only possible answer is "shell only", and push out the ones you would actually reopen.
         guard let transcript = t.transcriptPath ?? lastSessionFile(for: t) else { return }
         let entry = TerminalArchive(id: t.id, projectId: t.projectId,
-                                    projectPath: project(t.projectId)?.path ?? "",
+                                    projectPath: project(t.projectId)?.path,
                                     name: t.name, cwd: t.cwd,
                                     agentKind: t.agentKind,
                                     sessionId: t.sessionId,
@@ -1085,7 +1129,7 @@ final class AppState: ObservableObject {
         return terminalArchive.filter { row in
             guard row.transcriptPath != nil else { return false }
             // Path first, id only for rows written before the path was recorded.
-            if !row.projectPath.isEmpty, let path { return row.projectPath == path }
+            if let rowPath = row.projectPath, !rowPath.isEmpty, let path { return rowPath == path }
             return row.projectId == id
         }
     }

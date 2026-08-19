@@ -66,7 +66,10 @@ struct TerminalArchive: Identifiable, Codable, Hashable {
     /// being closed and reopened — `addProject` mints a fresh one for the same folder, and every
     /// archived row would suddenly belong to a project that no longer exists. The path is what
     /// stayed the same, so the path is what the lookup uses.
-    var projectPath: String = ""
+    /// Optional, not defaulted: a synthesised decoder treats a missing key as an error even when
+    /// the property has a default, so a non-optional here would make every row written before it
+    /// existed undecodable.
+    var projectPath: String?
     var name: String
     var cwd: String
     var agentKind: AgentKind = .unknown
