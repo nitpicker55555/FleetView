@@ -1126,12 +1126,19 @@ final class AppState: ObservableObject {
     /// with the list it opens.
     func archived(inProject id: UUID) -> [TerminalArchive] {
         let path = project(id)?.path
-        return terminalArchive.filter { row in
+        let mine = terminalArchive.filter { row in
             guard row.transcriptPath != nil else { return false }
             // Path first, id only for rows written before the path was recorded.
             if let rowPath = row.projectPath, !rowPath.isEmpty, let path { return rowPath == path }
             return row.projectId == id
         }
+        // One row per conversation, newest first. Restoring a row from the drawer resumes the same
+        // session, so removing that card archives a second row pointing at the same transcript —
+        // two entries, one conversation. Counting both made the badge promise more than the list
+        // shows, since the list collapses them.
+        var seen = Set<String>()
+        return mine.sorted { $0.removedAt > $1.removedAt }
+            .filter { seen.insert($0.transcriptPath ?? "").inserted }
     }
 
     /// The node a dragged archive row resolves to: the last message of its transcript, which is

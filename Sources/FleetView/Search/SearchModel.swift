@@ -190,16 +190,33 @@ final class SearchModel: ObservableObject {
         let matched = needle.isEmpty ? rows : rows.filter {
             $0.name.lowercased().contains(needle) || $0.lastPrompt.lowercased().contains(needle)
         }
-        let paths = matched.compactMap(\.transcriptPath)
-        // Transcript path → the name its card had, so a row is recognisable as the terminal it was.
+        // One row per transcript, newest first.
+        //
+        // Two cards can share a transcript: restoring one from here resumes the same session, and
+        // removing that card archives a second row pointing at the same file. Left alone, the same
+        // path is looked up twice and yields two hits with the *same* rowid — `group` merges them
+        // into one session holding duplicate ids, and a ForEach over duplicate ids is undefined.
+        // The name would also have been decided by whichever row happened to be last.
+        //
+        // (Two cards merely sharing a *name* need none of this: their ids and transcripts differ,
+        // so they are two rows that happen to read alike, which is what they are.)
         var names: [String: String] = [:]
-        for r in matched { if let p = r.transcriptPath { names[p] = r.name } }
+        var paths: [String] = []
+        for r in matched.sorted(by: { $0.removedAt > $1.removedAt }) {
+            guard let p = r.transcriptPath, names[p] == nil else { continue }
+            names[p] = r.name
+            paths.append(p)
+        }
         failure = nil
         let started = Date()
         Task.detached(priority: .userInitiated) {
             let hits = paths.compactMap { SearchIndex.lastHit(path: $0) }
-            var sessions = Self.group(hits)
-            for i in sessions.indices { sessions[i].title = names[sessions[i].id] }
+            // Built immutably: a `var` mutated inside a detached task is an error under Swift 6.
+            let sessions = Self.group(hits).map { g -> Group in
+                var titled = g
+                titled.title = names[g.id]
+                return titled
+            }
             let ms = Date().timeIntervalSince(started) * 1000
             await MainActor.run { [weak self] in
                 guard let self, self.mode == .archive else { return }
