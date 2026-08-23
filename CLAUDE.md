@@ -51,6 +51,14 @@ directory outside the repo when you have one.
   Test the change against a *real* `state.json` that has data in it — an empty one decodes fine and
   proves nothing. See [`docs/design/2026-08-19-state-json-wipe.md`](docs/design/2026-08-19-state-json-wipe.md),
   which also records how the audit log in `~/.fleetview/logs/` was replayed to recover.
+- **`package_app.sh` signs with a stable identity, and that is load-bearing.** TCC identifies an app
+  by its designated requirement; an ad-hoc signature's *is* the hash of the build, so every install
+  used to be a different app and every granted permission died with it. The script uses the
+  `FleetView Local Signing` keychain identity when it exists and says out loud when it falls back to
+  ad-hoc. After any change to how it is signed, every existing grant has to be **removed and
+  re-added** in System Settings — toggling it off and on updates the row but not the `csreq` it is
+  matched against, so it stays silently dead. See
+  [`docs/design/2026-08-23-tcc-permissions.md`](docs/design/2026-08-23-tcc-permissions.md).
 - **The user runs a long-lived production FleetView.** A second instance steals its hook events.
   Don't launch the app to test — build (`swift build`), and let the user deploy
   (`./scripts/package_app.sh --install`, which needs the running app quit first).
