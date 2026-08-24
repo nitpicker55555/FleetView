@@ -68,39 +68,52 @@ enum SelfUpdate {
 
     static func install(_ release: UpdateCheck.Release, updates: UpdateCheck) {
         if let blocked = precheck(release) {
-            fail(blocked.localizedDescription, updates: updates)
+            // Nothing has started yet and the alert that offered the install is still the context
+            // the user is in, so this one stays an alert. Every failure past this point is a row.
+            alert(blocked.localizedDescription)
             return
         }
         guard let assetURL = release.assetURL, let url = URL(string: assetURL) else { return }
+        // One at a time. Two installs racing for the same bundle is the one way this dance can end
+        // with no FleetView on the Mac at all.
+        guard updates.status == nil else { return }
         let target = Bundle.main.bundleURL
-        updates.status = "下载 \(release.version)…"
+        updates.status = "更新 \(release.version)"
 
-        URLSession.shared.downloadTask(with: url) { tmp, response, error in
-            guard let tmp else {
-                Task { @MainActor in
-                    fail(error?.localizedDescription ?? "下载失败", updates: updates)
+        let jobs = BackgroundJobs.shared
+        let job = jobs.start(.update, title: "更新到 FleetView \(release.version)", detail: "连接 GitHub…")
+        let download = Download(url: url, version: release.version) { fraction, detail in
+            jobs.progress(job, fraction, detail)
+        } done: { result in
+            switch result {
+            case .failure(let error):
+                // A cancel already took the row away as it happened; there is nothing to report.
+                if error is CancellationError { updates.status = nil; return }
+                fail(error.localizedDescription, job: job, updates: updates)
+            case .success(let zip):
+                // Past the download there is nothing left to stop that would not leave a
+                // half-installed app behind, so the ✕ goes; what remains is seconds of local work.
+                jobs.setCancel(job, nil)
+                jobs.progress(job, nil, "校验下载…")
+                Task.detached {
+                    do {
+                        let staged = try stage(zip: zip, expecting: release.version)
+                        await MainActor.run {
+                            handOff(staged: staged, target: target, updates: updates, job: job)
+                        }
+                    } catch {
+                        await MainActor.run {
+                            fail(error.localizedDescription, job: job, updates: updates)
+                        }
+                    }
                 }
-                return
             }
-            // The temp file is deleted when this callback returns, so it has to be moved first.
-            let zip = FileManager.default.temporaryDirectory
-                .appendingPathComponent("FleetView-\(release.version).zip")
-            try? FileManager.default.removeItem(at: zip)
-            do { try FileManager.default.moveItem(at: tmp, to: zip) } catch {
-                Task { @MainActor in fail("无法保存下载文件：\(error.localizedDescription)", updates: updates) }
-                return
-            }
-            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                Task { @MainActor in fail("下载失败：HTTP \(http.statusCode)", updates: updates) }
-                return
-            }
-            do {
-                let staged = try stage(zip: zip, expecting: release.version)
-                Task { @MainActor in handOff(staged: staged, target: target, updates: updates) }
-            } catch {
-                Task { @MainActor in fail(error.localizedDescription, updates: updates) }
-            }
-        }.resume()
+        }
+        jobs.setCancel(job) {
+            download.cancel()
+            updates.status = nil
+        }
+        download.start()
     }
 
     /// Unpack and vet the download. Runs off the main actor — everything here is subprocesses and
@@ -136,14 +149,15 @@ enum SelfUpdate {
     }
 
     /// The point of no return: write the swap script, launch it detached, and quit so it can work.
-    private static func handOff(staged: URL, target: URL, updates: UpdateCheck) {
+    private static func handOff(staged: URL, target: URL, updates: UpdateCheck, job: UUID) {
         updates.status = "安装中…"
+        BackgroundJobs.shared.progress(job, 1, "安装中，FleetView 会自动重启…")
         do {
             try FileManager.default.createDirectory(at: updateDir, withIntermediateDirectories: true)
             try swapScript.write(to: script, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         } catch {
-            fail("无法准备安装脚本：\(error.localizedDescription)", updates: updates)
+            fail("无法准备安装脚本：\(error.localizedDescription)", job: job, updates: updates)
             return
         }
         let pid = ProcessInfo.processInfo.processIdentifier
@@ -153,7 +167,7 @@ enum SelfUpdate {
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = ["-c", cmd]
         do { try p.run() } catch {
-            fail("无法启动安装脚本：\(error.localizedDescription)", updates: updates)
+            fail("无法启动安装脚本：\(error.localizedDescription)", job: job, updates: updates)
             return
         }
         // `&` detaches it: /bin/sh exits immediately and bash is reparented to launchd, so it
@@ -163,22 +177,37 @@ enum SelfUpdate {
         NSApp.terminate(nil)
     }
 
-    private static func fail(_ why: String, updates: UpdateCheck) {
+    /// Where an update failure goes now: the job row, not a modal alert. The install runs while the
+    /// user is doing something else — that is the entire point of moving it off the main path — and
+    /// a dialog seizing the keyboard mid-sentence is the behaviour being removed. The row is red, it
+    /// keeps the reason, and it stays until it is dismissed rather than vanishing with an OK button.
+    private static func fail(_ why: String, job: UUID?, updates: UpdateCheck) {
         updates.status = nil
         FV.log("self-update failed: \(why)")
+        guard let job else { alert(why); return }
+        BackgroundJobs.shared.fail(job, why + "\n详细记录见 ~/.fleetview/update.log",
+                                   recoverLabel: "打开发布页") {
+            NSWorkspace.shared.open(releasesPage)
+        }
+    }
+
+    private static let releasesPage =
+        URL(string: "https://github.com/nitpicker55555/FleetView/releases")!
+
+    /// The one failure still worth interrupting for: it lands in the same click as the alert that
+    /// offered the install, so there is no background work yet for it to be a row on.
+    private static func alert(_ why: String) {
         let a = NSAlert()
         a.messageText = "自动更新失败"
         a.informativeText = why + "\n\n详细记录见 ~/.fleetview/update.log"
         a.addButton(withTitle: "好")
         a.addButton(withTitle: "打开发布页")
-        if a.runModal() == .alertSecondButtonReturn {
-            NSWorkspace.shared.open(URL(string: "https://github.com/nitpicker55555/FleetView/releases")!)
-        }
+        if a.runModal() == .alertSecondButtonReturn { NSWorkspace.shared.open(releasesPage) }
     }
 
     // MARK: - Helpers
 
-    private struct Failure: LocalizedError {
+    fileprivate struct Failure: LocalizedError {
         let why: String
         init(_ w: String) { why = w }
         var errorDescription: String? { why }
@@ -244,6 +273,103 @@ enum SelfUpdate {
     echo "updated to $(defaults read "$TARGET/Contents/Info" CFBundleShortVersionString 2>/dev/null)"
     rm -rf "$BACKUP" "$STAGED"
     """
+}
+
+/// The download, with a delegate so that it can say how far along it is.
+///
+/// `URLSession.shared.downloadTask(with:completionHandler:)` reports nothing at all until the file
+/// has landed, which is exactly the silence this change exists to remove — `didWriteData` only
+/// arrives on the delegate form. It runs its own session because a session retains its delegate
+/// until it is invalidated, and `URLSession.shared` can never be; the cycle between the two is what
+/// keeps this object alive for the length of the download, and `finishTasksAndInvalidate` is what
+/// breaks it afterwards.
+private final class Download: NSObject, URLSessionDownloadDelegate {
+    private let url: URL
+    private let version: String
+    private let onProgress: @MainActor (Double?, String) -> Void
+    private let onDone: @MainActor (Result<URL, Error>) -> Void
+    private var session: URLSession?
+    private var task: URLSessionDownloadTask?
+    private var saved: URL?
+    private var settled = false
+
+    init(url: URL, version: String,
+         progress: @escaping @MainActor (Double?, String) -> Void,
+         done: @escaping @MainActor (Result<URL, Error>) -> Void) {
+        self.url = url
+        self.version = version
+        self.onProgress = progress
+        self.onDone = done
+        super.init()
+    }
+
+    func start() {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        self.session = session
+        let task = session.downloadTask(with: url)
+        self.task = task
+        task.resume()
+    }
+
+    func cancel() { task?.cancel() }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        // A server that sends no Content-Length reports -1 here, and a bar computed from that runs
+        // backwards — so the spinner stays and the byte counter carries the news instead.
+        let known = totalBytesExpectedToWrite > 0
+        let fraction = known ? Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) : nil
+        let detail = known ? "\(Self.mb(totalBytesWritten)) / \(Self.mb(totalBytesExpectedToWrite))"
+                           : "已下载 \(Self.mb(totalBytesWritten))"
+        Task { @MainActor [onProgress] in onProgress(fraction, detail) }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        // This file is deleted the moment the method returns, so the move happens here and not
+        // after a hop to the main actor.
+        if let http = downloadTask.response as? HTTPURLResponse, http.statusCode != 200 {
+            settle(.failure(SelfUpdate.Failure("下载失败：HTTP \(http.statusCode)")))
+            return
+        }
+        let zip = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FleetView-\(version).zip")
+        try? FileManager.default.removeItem(at: zip)
+        do {
+            try FileManager.default.moveItem(at: location, to: zip)
+            saved = zip
+        } catch {
+            settle(.failure(SelfUpdate.Failure("无法保存下载文件：\(error.localizedDescription)")))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            let ns = error as NSError
+            let cancelled = ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
+            settle(.failure(cancelled ? CancellationError() : error))
+        } else if let saved {
+            settle(.success(saved))
+        } else {
+            settle(.failure(SelfUpdate.Failure("下载结束了，但没有拿到文件")))
+        }
+        session.finishTasksAndInvalidate()
+    }
+
+    /// Exactly once: a failed move reports here and is then followed by a `didCompleteWithError`
+    /// that knows nothing about it and would otherwise report success over the top.
+    private func settle(_ result: Result<URL, Error>) {
+        guard !settled else { return }
+        settled = true
+        Task { @MainActor [onDone] in onDone(result) }
+    }
+
+    private static func mb(_ bytes: Int64) -> String {
+        String(format: "%.1f MB", Double(bytes) / 1_048_576)
+    }
 }
 
 /// The alerts for every update outcome, in one place because the two entry points — the menu item

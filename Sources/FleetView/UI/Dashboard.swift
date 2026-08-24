@@ -544,9 +544,11 @@ struct TaskRow: View {
 
 struct TopBar: View {
     @EnvironmentObject var state: AppState
+    @ObservedObject private var jobs = BackgroundJobs.shared
     @State private var showWeb = false
     @State private var webQR: NSImage?
     @State private var showPower = false
+    @State private var showJobs = false
 
     private var working: Int { state.terminals.filter { $0.status == .working }.count }
     private var needs: Int { state.terminals.filter { $0.status == .needsYou }.count }
@@ -562,6 +564,7 @@ struct TopBar: View {
             if needs > 0 { pill("\(needs) needs you", .needsYou) }
             Spacer()
             markFilterButton
+            jobsButton
             updateButton
             searchButton
             peersButton
@@ -572,19 +575,58 @@ struct TopBar: View {
         .background(Theme.panel.opacity(0.55))
     }
 
+    /// Background work — a clone, a self-update — with a bar on it and a way out of it. Present
+    /// only while something is running or has failed; the rest of the time there is nothing to say
+    /// and a permanently parked "0 tasks" chip would be one more thing in a row that is already full.
+    @ViewBuilder private var jobsButton: some View {
+        if !jobs.jobs.isEmpty {
+            let broken = !jobs.failed.isEmpty
+            Button { showJobs.toggle() } label: {
+                HStack(spacing: 5) {
+                    if broken {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                    } else if jobs.running.isEmpty {
+                        // Finished, and lingering for its three seconds. A spinner next to "Done"
+                        // would be the pill contradicting itself on its way out.
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                    } else if let fraction = jobs.overall {
+                        JobRing(fraction: fraction)
+                    } else {
+                        ProgressView().controlSize(.small).scaleEffect(0.55)
+                            .frame(width: 11, height: 11)
+                    }
+                    Text(jobs.pillLabel).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                }
+                .foregroundColor(Theme.onAccent)
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(broken ? Theme.red : Theme.accent).clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("后台任务 — 点击查看进度或取消")
+            .popover(isPresented: $showJobs, arrowEdge: .bottom) { jobsPopover }
+        }
+    }
+
+    private var jobsPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("后台任务").font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
+            ForEach(jobs.jobs) { job in JobRowView(job: job) }
+            Text("这些任务在后台跑，看板、终端和正在工作的 agent 都不受影响。")
+                .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16).frame(width: 320)
+    }
+
     /// Shown only when a newer release exists. A pill rather than a dialog: an update is worth
     /// noticing, not worth interrupting a fleet of running agents for. Clicking opens the release
     /// page; the × means "not this version" and it will not come back until the next one.
     @ViewBuilder private var updateButton: some View {
-        if let s = state.updates.status {
-            // Mid-install: the alert is gone and this is the only place left to say so.
-            HStack(spacing: 5) {
-                ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 10, height: 10)
-                Text(s).font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.onAccent)
-            }
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(Theme.accent).clipShape(Capsule())
-        } else if let r = state.updates.available {
+        // Silent while an install runs: the job pill beside it is saying so, with a bar and a way
+        // out, and two pills for one thing is how they drift into disagreeing about it.
+        if state.updates.status == nil, let r = state.updates.available {
             HStack(spacing: 5) {
                 // Same alert the menu item shows — one offer, not two that can drift apart.
                 Button { UpdateUI.present(.newer(r), updates: state.updates) } label: {
@@ -1493,5 +1535,88 @@ struct TreeDragChip: View {
             .stroke(action.label == nil ? Theme.stroke : Theme.accent, lineWidth: 1))
         .shadow(color: .black.opacity(0.5), radius: 12, y: 6)
         .animation(.easeOut(duration: 0.1), value: action.label)
+    }
+}
+
+/// One background job: what it is, how far along, and the way out of it.
+private struct JobRowView: View {
+    let job: BackgroundJobs.Job
+    @ObservedObject private var jobs = BackgroundJobs.shared
+
+    private var broken: Bool { job.failure != nil }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: broken ? "exclamationmark.triangle.fill"
+                                         : (job.done ? "checkmark.circle.fill" : job.kind.icon))
+                    .font(.system(size: 10))
+                    .foregroundColor(broken ? Theme.red : (job.done ? Theme.green : Theme.accent))
+                Text(job.title).font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Theme.text).lineLimit(1)
+                Spacer(minLength: 4)
+                if !broken, let fraction = job.fraction {
+                    Text("\(Int(fraction * 100))%")
+                        .font(.system(size: 10, weight: .medium)).monospacedDigit()
+                        .foregroundColor(Theme.subtext)
+                }
+                // ✕ means two things here and both are wanted: stop the work while it runs, clear
+                // the row once it has failed — a failed row is the only one that outlives its job.
+                if job.cancel != nil || broken {
+                    Button {
+                        if job.cancel != nil { jobs.cancel(job.id) } else { jobs.dismiss(job.id) }
+                    } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                            .foregroundColor(Theme.subtext)
+                    }
+                    .buttonStyle(.plain)
+                    .help(job.cancel != nil ? "取消" : "清除")
+                }
+            }
+            if !broken {
+                if let fraction = job.fraction {
+                    ProgressView(value: fraction).progressViewStyle(.linear).controlSize(.small)
+                } else {
+                    ProgressView().progressViewStyle(.linear).controlSize(.small)
+                }
+            }
+            // The detail line is git's own output while it runs and the failure once it stops, so
+            // it is selectable either way: the useful half of a clone failure is a URL or a repo
+            // name someone is about to paste somewhere else.
+            Text(job.failure ?? job.detail)
+                .font(.system(size: 10, design: broken ? .monospaced : .default))
+                .foregroundColor(broken ? Theme.red : Theme.subtext.opacity(0.85))
+                .lineLimit(broken ? 6 : 1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: broken)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let label = job.recoverLabel, let recover = job.recover {
+                Button { recover() } label: {
+                    Text(label).font(.system(size: 11, weight: .medium)).foregroundColor(Theme.accent)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1))
+    }
+}
+
+/// A determinate ring for the top-bar pill. `ProgressView(value:)` draws a full-width bar on macOS,
+/// which is the wrong shape for something 11 points tall inside a capsule.
+private struct JobRing: View {
+    let fraction: Double
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Theme.onAccent.opacity(0.3), lineWidth: 2)
+            Circle().trim(from: 0, to: max(0.03, fraction))
+                .stroke(Theme.onAccent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.easeOut(duration: 0.25), value: fraction)
+        }
+        .frame(width: 11, height: 11)
     }
 }

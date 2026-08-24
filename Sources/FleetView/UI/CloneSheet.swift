@@ -7,7 +7,6 @@ struct CloneSheet: View {
 
     @State private var repo = ""
     @State private var parentDir = FV.home.appendingPathComponent("PycharmProjects").path
-    @State private var cloning = false
     @State private var error: String?
 
     private var destPreview: String {
@@ -23,14 +22,14 @@ struct CloneSheet: View {
 
             field(label: "Repository") {
                 TextField("owner/repo  or  https://github.com/owner/repo", text: $repo)
-                    .textFieldStyle(.plain).disabled(cloning).onSubmit(startClone)
+                    .textFieldStyle(.plain).onSubmit(startClone)
             }
 
             field(label: "Into folder") {
                 HStack(spacing: 8) {
-                    TextField("", text: $parentDir).textFieldStyle(.plain).disabled(cloning)
+                    TextField("", text: $parentDir).textFieldStyle(.plain)
                     Button { pickParent() } label: { Image(systemName: "folder") }
-                        .buttonStyle(.plain).foregroundColor(Theme.subtext).disabled(cloning)
+                        .buttonStyle(.plain).foregroundColor(Theme.subtext)
                 }
             }
 
@@ -47,15 +46,14 @@ struct CloneSheet: View {
             }
 
             HStack {
-                if cloning {
-                    ProgressView().controlSize(.small).scaleEffect(0.8)
-                    Text("Cloning…").font(.system(size: 12)).foregroundColor(Theme.subtext)
-                }
-                Spacer()
-                Button("Cancel") { dismiss() }.disabled(cloning)
+                Label("克隆在后台进行，进度显示在顶栏，可以随时取消。", systemImage: "clock.arrow.circlepath")
+                    .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Cancel") { dismiss() }
                 Button(action: startClone) { Text("Clone").fontWeight(.medium) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(cloning || repo.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(repo.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(20)
@@ -74,19 +72,21 @@ struct CloneSheet: View {
         }
     }
 
+    /// Hands the clone to the background and gets out of the way. Only what can be answered
+    /// instantly is answered here — an empty field, a destination that already exists — because
+    /// those are the two failures worth having a dialog still open for (see `Git.precheck`).
     private func startClone() {
         let r = repo.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !r.isEmpty, !cloning else { return }
-        error = nil; cloning = true
-        let dir = parentDir
-        Task {
-            do {
-                let dest = try await Git.clone(repo: r, into: dir)
-                await MainActor.run { state.addProject(path: dest); cloning = false; dismiss() }
-            } catch {
-                await MainActor.run { self.error = error.localizedDescription; cloning = false }
-            }
+        guard !r.isEmpty else { return }
+        error = nil
+        do {
+            try Git.precheck(repo: r, into: parentDir)
+        } catch {
+            self.error = error.localizedDescription
+            return
         }
+        state.cloneRepository(r, into: parentDir)
+        dismiss()
     }
 
     private func pickParent() {

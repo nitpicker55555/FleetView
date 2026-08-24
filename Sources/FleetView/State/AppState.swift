@@ -736,6 +736,36 @@ final class AppState: ObservableObject {
         save()
     }
 
+    /// Clone a repository onto the board without holding anything up.
+    ///
+    /// The sheet closes the moment this is called. A clone is minutes of network on a machine whose
+    /// whole job is watching agents run, and behind a modal sheet those minutes were minutes of
+    /// FleetView being unusable — including the board, the terminals and the fleet the clone has
+    /// nothing to do with. Everything after the start is reported by the job row, failures included:
+    /// the sheet that used to show them is no longer on screen by the time git gets round to them.
+    func cloneRepository(_ repo: String, into parentDir: String) {
+        let jobs = BackgroundJobs.shared
+        let id = jobs.start(.clone, title: "克隆 \(Git.repoName(from: repo))", detail: "准备中…")
+        let task = Task { [weak self] in
+            do {
+                let dest = try await Git.clone(repo: repo, into: parentDir) { fraction, line in
+                    Task { @MainActor in jobs.progress(id, fraction, line) }
+                }
+                self?.addProject(path: dest)
+                jobs.finish(id, dest)
+            } catch is CancellationError {
+                // The row went the moment ✕ was pressed, and Git.clone has already swept up the
+                // half-written directory. Nothing left to say.
+            } catch {
+                jobs.fail(id, error.localizedDescription, recoverLabel: "重试") {
+                    BackgroundJobs.shared.dismiss(id)
+                    self?.cloneRepository(repo, into: parentDir)
+                }
+            }
+        }
+        jobs.setCancel(id) { task.cancel() }
+    }
+
     func project(_ id: UUID?) -> Project? { projects.first { $0.id == id } }
 
     /// The project whose section is currently being dragged on the board (nil when none is).

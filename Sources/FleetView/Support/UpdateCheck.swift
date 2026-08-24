@@ -24,8 +24,10 @@ final class UpdateCheck: ObservableObject {
 
     @Published private(set) var available: Release?
 
-    /// Non-nil while a self-update is running ("下载中…"). Drives the pill, which is the only place
-    /// left to say anything once the alert has been dismissed.
+    /// Non-nil while a self-update is running. It is no longer what *shows* the install — that is
+    /// the background-job row, which has a bar and a cancel button — but it is still what stops a
+    /// second install from starting and what hides the "there is a newer one" offer while the first
+    /// one is being carried out.
     @Published var status: String?
 
     /// What a check concluded. The pill can only ever say "there is a newer one", which is the right
