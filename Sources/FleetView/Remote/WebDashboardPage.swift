@@ -98,6 +98,10 @@ enum WebDashboardPage {
   #panel{display:none;position:relative;border-bottom:1px solid var(--stroke);background:var(--bg)}
   #panel.show{display:block}
   #panelframe{width:100%;height:240px;border:0;display:block;background:var(--bg)}
+  /* 240px is a third of an iPhone SE's screen spent before the board has drawn a single card. The
+     panel is worth less than the fleet underneath it, so where the screen is short it takes a share
+     instead of a fixed slab. Tablets are tall enough to keep the full height. */
+  @media (max-height:760px){ #panelframe{height:min(240px,26vh)} }
   #panel.min #panelframe{height:0}
   /* Collapsing zeroed the iframe, the panel box collapsed with it, and the sticky header (z-index 5)
      painted over the absolutely-positioned toggle — so "hide" could never be undone. */
@@ -106,14 +110,16 @@ enum WebDashboardPage {
     border:1px solid var(--stroke);border-radius:6px;font-size:11px;padding:2px 8px;cursor:pointer}
   header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
     padding:12px 16px;background:var(--headerBg);backdrop-filter:blur(8px);
-    border-bottom:1px solid var(--stroke);padding-top:max(12px,env(safe-area-inset-top))}
+    border-bottom:1px solid var(--stroke);padding-top:max(12px,env(safe-area-inset-top));
+    padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
   .logo{font-weight:600;font-size:15px}.logo b{color:var(--accent)}
   .muted{color:var(--sub);font-size:13px}
   .pill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px}
   .spacer{flex:1}
   .dot{width:9px;height:9px;border-radius:50%;flex:none}
   .refresh{font-size:11px;color:var(--sub)}
-  main{padding:16px;max-width:1200px;margin:0 auto;padding-bottom:120px}
+  main{padding:16px;max-width:1200px;margin:0 auto;padding-bottom:120px;
+    padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
   .proj{margin-bottom:26px}
   .projhead{display:flex;align-items:center;gap:8px;margin-bottom:10px}
   .projhead .name{font-size:15px;font-weight:600}
@@ -201,7 +207,13 @@ enum WebDashboardPage {
      overflows, and an overflowing fixed element is pannable on iOS — which showed up as the title
      bar scrolling off the top and a gap opening underneath. Only #chat should ever give, and it
      already does (flex:1 with min-height:0); everything past that is clipped rather than reachable. */
+  /* The side insets, which nothing read until now. `viewport-fit=cover` puts the page under the
+     notch and the home indicator, and the top and bottom of that were handled — but hold a notched
+     iPhone sideways and the inset moves to the left edge, where it ran through the ‹ button, the
+     transcript and the composer alike. Padding #term rather than each row keeps it in one place;
+     syncViewport only ever writes paddingTop/paddingBottom, so these survive it. */
   #term{position:fixed;top:0;left:0;right:0;height:100%;height:100dvh;
+    padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
     z-index:50;background:var(--bg);
     display:none;flex-direction:column;overflow:hidden;overscroll-behavior:none}
   /* Belt and braces for the fallback path, where the overlay can still be shorter than the screen. */
@@ -380,6 +392,14 @@ enum WebDashboardPage {
   #sinfo{display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:7px 20px;background:var(--panel);
     border-bottom:1px solid var(--stroke);font-size:10px;color:var(--sub)}
   #sinfo:empty{display:none}
+  /* Wrapped, this strip took 89px of an iPhone SE's 667 — three rows of chips above 409px of
+     conversation. One row that scrolls sideways gives the transcript that space back and loses
+     nothing, because every chip is still on it. */
+  @media (max-height:740px),(max-width:560px){
+    #sinfo{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+    #sinfo::-webkit-scrollbar{display:none}
+    #sinfo > *{flex:none}
+  }
   #sinfo .chip{background:var(--card);border:1px solid var(--stroke);border-radius:999px;padding:2px 8px;font-weight:600}
   #sinfo .chip.warn{color:var(--amber);border-color:var(--amberEdge)}
   #sinfo .chip.danger{color:var(--red);border-color:var(--redEdge)}
@@ -450,24 +470,71 @@ enum WebDashboardPage {
      Chat has none of that — it scrolls natively, answers prompts with real buttons, and stops the
      agent with the Send/Stop button — so the whole row goes away there. */
   #keys.chatview{display:none}
-  #sendrow{display:flex;gap:8px;align-items:flex-end}
+  /* --rowh is the height of a composer at rest, and all three controls are held to it so they
+     cannot drift apart. They had: the box sized itself off its own text, the two buttons off their
+     padding, and the row came out 38/42/38 — three different heights sitting on one baseline. It is
+     a floor, not a height, so the box still grows with what you type while the buttons stay put. It
+     is also what stops autoGrow from ever drawing the box shorter than the line it holds: that
+     measurement can be taken before there is anything to measure, and this is the floor under it. */
+  #sendrow{--rowh:42px;display:flex;gap:8px;align-items:flex-end}
   #inputtext{flex:1;resize:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:10px;
-    padding:10px 12px;font:14px/1.35 inherit;max-height:120px}
-  #sendbtn{flex:none;background:var(--accent);color:var(--onAccent);border:0;border-radius:10px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer}
+    padding:10px 12px;font:14px/1.35 inherit;max-height:120px;min-height:var(--rowh)}
+  #sendbtn{flex:none;background:var(--accent);color:var(--onAccent);border:0;border-radius:10px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer;min-height:var(--rowh)}
   #imgbtn{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:10px;
-    padding:10px 12px;font-size:16px;line-height:1;cursor:pointer}
+    padding:10px 12px;font-size:16px;line-height:1;cursor:pointer;min-height:var(--rowh)}
   #imgbtn:active{background:var(--accent);color:var(--onAccent)}
   #imgbtn[disabled]{opacity:.5}
+  /* Touch sizing. Two separate things, both of which only apply where the pointer is a finger — on
+     a mouse-driven browser the denser text and smaller chips are worth keeping.
+
+     The 16px floor is not a matter of taste: Safari on iOS zooms the whole page in whenever it
+     focuses a field whose text is under 16px, and it does not zoom back out afterwards. That zoom
+     is where "the terminal card doesn't fill the screen, it's slightly bigger and I have to scroll
+     to reach the top and bottom buttons" comes from — #term is still exactly `dvh` tall, the
+     viewport shrank underneath it. So tapping the composer, or the preset filter, was enough to
+     break the overlay's fit for the rest of the session. See also TA_MIN, which holds the same
+     floor against the A−/A+ buttons: an inline font-size beats this rule.
+
+     44px is Apple's minimum target. Send and 📎 were 38px tall, the preset and key chips 29px, and
+     the three grip tools 22×19 — a row of things you hit by accident and miss on purpose. */
+  @media (pointer:coarse){
+    #inputtext,#pfind{font-size:16px}
+    #sendrow{--rowh:44px}          /* Apple's minimum, and all three rise to it together */
+    #sendbtn,#imgbtn{min-width:44px}
+    #keys button,#presets button{min-height:40px}
+    #termbar > button{min-height:40px;min-width:40px}
+    #tabs button{min-height:36px}
+    /* Width only. Height is --gtoolh, because the row's own height is derived from it — and this
+       button is the one control the user is most likely to hit by accident, so it earns a
+       comfortable width rather than a bigger area in every direction. */
+    #grip .gtools button{min-width:40px}
+  }
   /* The composer can be pulled up into a proper editor. Writing anything longer than a sentence
      through a three-line slot means never seeing what you wrote, which is the whole reason the
      phone loses to the Mac for a considered prompt. */
-  #grip{position:relative;height:16px;display:flex;align-items:center;justify-content:center;
-    margin-bottom:2px;cursor:ns-resize;touch-action:none}
-  #grip .gbar{width:46px;height:4px;border-radius:999px;background:var(--stroke)}
-  #grip .gtools{position:absolute;right:0;top:-1px;display:flex;gap:5px}
+  /* Two things this row got wrong, both of which ended in the composer expanding when nobody asked.
+
+     The handle drags, not the row. The pointer handlers used to sit on the whole 16px strip, which
+     spans the full width of the bar directly above the textarea — exactly where a thumb crosses on
+     its way to type. Brushing it upward expanded the composer, and with no movement threshold one
+     pixel of travel was enough to jump the bar from its collapsed height straight to BAR_MIN. Only
+     the visible handle takes the gesture now, and only past SLOP; the rest of the strip is inert.
+
+     And the row is as tall as the tools it carries — --gtoolh is what ties the two together. They
+     are positioned absolutely so the handle stays centred on the row rather than being pushed off
+     by them, which also means the row does not grow to fit them on its own. It never did: 19px
+     buttons on a 16px row already hung over the presets underneath, and once they were sized for a
+     finger the ⤢ covered the first preset chip outright, so a tap meant for a quick command
+     expanded the composer instead. */
+  #grip{--gtoolh:22px;position:relative;min-height:calc(var(--gtoolh) + 2px);
+    display:flex;align-items:center;justify-content:center;margin-bottom:2px}
+  #grip .gbar{width:72px;align-self:stretch;display:flex;align-items:center;justify-content:center;
+    cursor:ns-resize;touch-action:none}
+  #grip .gbar::before{content:"";display:block;width:46px;height:4px;border-radius:999px;background:var(--stroke)}
+  #grip .gtools{position:absolute;right:0;top:50%;transform:translateY(-50%);display:flex;gap:5px}
   #grip .gtools button{background:var(--card);color:var(--sub);border:1px solid var(--stroke);
     border-radius:6px;font-size:11px;font-weight:700;line-height:1;padding:3px 7px;cursor:pointer;
-    font-family:inherit}
+    font-family:inherit;min-height:var(--gtoolh)}
   /* Type size is only worth adjusting once there is a box big enough for it to matter. */
   #inputbar:not(.big) #grip .fsz{display:none}
   /* Expanded. The presets move to a column beside the box because that is the only place left for
@@ -497,7 +564,30 @@ enum WebDashboardPage {
   #inputbar.big #sendbtn{grid-area:send}
   /* ＋ and ✎ are controls, not entries — full-width they read as two more quick commands. */
   #inputbar.big #presets button.meta{width:auto;align-self:flex-start;padding:6px 14px}
-  @media (max-width:520px){ #inputbar.big{grid-template-columns:minmax(0,1fr) 140px} }
+  /* On a phone the two-column expansion defeats its own purpose: 140px of presets off a 375px
+     screen leaves the writing box narrower than the collapsed bar it replaced, wrapping every few
+     words. Below this width the box takes the whole column and the presets drop back to the
+     scrolling strip they use when the bar is collapsed — still there, just not paid for in width. */
+  @media (max-width:560px){
+    #inputbar.big{grid-template-columns:minmax(0,1fr);
+      grid-template-rows:auto auto minmax(0,1fr) auto;
+      grid-template-areas:"grip" "notes" "send" "keys"}
+    #inputbar.big #prow{flex-direction:row;align-items:center;gap:6px}
+    #inputbar.big #pfind{flex:none;width:82px}
+    #inputbar.big #presets{flex-direction:row;overflow-x:auto;overflow-y:hidden}
+    #inputbar.big #presets button{width:auto}
+  }
+  /* A phone held sideways has about 390px of height, and the overlay's furniture was taking 233 of
+     it — more than it left for the conversation. Nothing is dropped here: the rows that are chips
+     and readouts rather than thumb targets simply stop being sized as though they were. */
+  @media (max-height:500px){
+    #termbar{padding-top:max(6px,env(safe-area-inset-top));padding-bottom:6px}
+    #sinfo{padding-top:4px;padding-bottom:4px}
+    #grip{--gtoolh:20px;margin-bottom:0}
+    #prow{margin-bottom:6px}
+    #inputbar{padding-top:6px}
+    #keys button,#presets button{min-height:34px}
+  }
   /* Dropping a file anywhere on the conversation should work, so the whole overlay is the target. */
   #term.dropping{outline:2px dashed var(--accent);outline-offset:-6px}
   /* Files an agent handed over. Lives in the header rather than inside a conversation: it is the
@@ -532,6 +622,7 @@ enum WebDashboardPage {
     border:1px solid var(--stroke);border-radius:7px;padding:5px 9px;cursor:pointer}
   .fbbtn:active{transform:scale(.96)}
   #fb{position:fixed;top:0;left:0;right:0;height:100%;height:100dvh;z-index:56;background:var(--bg);
+    padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);
     display:none;flex-direction:column;overflow:hidden;overscroll-behavior:none}
   #fb.show{display:flex}
   /* Same swipe-back treatment as #term — one gesture, so one look (see swipeBack). */
@@ -797,7 +888,11 @@ function openTerm(id,name){
   beaconSelect(id,'chat');
   setView('chat');          // reading history is the common remote case
   // Next frame, so the panes have their real heights and the ceiling is measured against those.
-  if(barH) requestAnimationFrame(applyBar);
+  // The collapsed bar needs the same treatment: its height is a measurement too, and until now
+  // nothing took one after the overlay became visible (see autoGrow).
+  requestAnimationFrame(()=>{
+    if(barH) applyBar(); else { autoGrow(document.getElementById('inputtext')); placeJump(); }
+  });
 }
 /* Swipe right to go back, the way the phone's own apps do. The overlay follows your finger with
    resistance, then either settles back or carries on out to the right.
@@ -884,6 +979,7 @@ function setView(v){
   // The failure panel belongs to the Terminal tab; left up it would sit on top of the conversation.
   if(v!=='term') document.getElementById('termerr').classList.remove('on');
   document.getElementById('keys').classList.toggle('chatview',v==='chat');
+  placeJump();                   // the key row just came or went, so the bar is a different height
   updateStickyPrompt();          // it belongs to the chat pane — never leave it over the terminal
   if(v==='term'){stopChatPoll();ensureTerm();}
   else{loadChat();startChatPoll();}
@@ -1054,7 +1150,7 @@ function syncViewport(){
   // The band just changed size; an expanded composer drawn against the old one can be taller than
   // what is left, and #term clips rather than scrolls — the conversation would simply be gone.
   if(barH) applyBar();
-  document.getElementById('jump').style.bottom=(96+bottom)+'px';   // it sits above the composer
+  placeJump();
   chat.scrollTop=Math.max(0,chat.scrollHeight-chat.clientHeight-gap);
   updateStickyPrompt();                          // the pane moved; the floating bar follows it
 }
@@ -1107,6 +1203,17 @@ document.addEventListener('visibilitychange',()=>{
   if(document.hidden) return;
   lastBand=''; syncViewport(); setTimeout(syncViewport,200);
 });
+
+/* The ↓ rides above the composer, and the composer is not a fixed height: it grows with the preset
+   and key rows, with a wrapped placeholder, and again when it is expanded. Its offset was the
+   literal 96px the bar happened to measure when the button was added, so every row added since had
+   pushed the button down into it — 43px in, far enough to cover the right-hand end of the preset
+   strip, where a tap meant for a quick command jumped the transcript instead. Measure the bar. */
+function placeJump(){
+  const t=document.getElementById('term'), bar=document.getElementById('inputbar');
+  const kb=parseFloat(t.style.paddingBottom)||0;   // the band syncViewport leaves for the keyboard
+  document.getElementById('jump').style.bottom=(bar.offsetHeight+12+kb)+'px';
+}
 
 /* Shell terminal: the pane's scrollback, wrapped and natively scrollable. */
 async function renderShell(){
@@ -1524,7 +1631,12 @@ renderPresets();
    a property of the thing you are typing on, not of the fleet. */
 const BAR_MIN=170;
 let barH=parseInt(localStorage.getItem('fv_barh')||'',10)||0;
-let taFontPx=parseInt(localStorage.getItem('fv_tafont')||'',10)||14;
+/* The composer's own font size, and the floor under it. On a touch device that floor is 16px for
+   the reason the stylesheet gives: below it, focusing the box zooms the whole page and the overlay
+   stops fitting the screen. It has to be applied to this number too — an inline font-size beats the
+   rule — and applied on the way in, so a 14px left in localStorage from before doesn't survive. */
+const TA_MIN=matchMedia('(pointer:coarse)').matches?16:11;
+let taFontPx=Math.min(30,Math.max(TA_MIN,parseInt(localStorage.getItem('fv_tafont')||'',10)||14));
 /* The ceiling is measured off the pane above rather than off the overlay: with the keyboard up, the
    overlay is still a full screen tall and only the pane has actually shrunk, so sizing against the
    overlay is how the composer ends up taller than the space left for it. */
@@ -1547,6 +1659,7 @@ function applyBar(){
   }
   document.getElementById('expand').textContent=barH?'⤡':'⤢';
   autoGrow(document.getElementById('inputtext'));
+  placeJump();                      // the bar just changed height; the ↓ rides on top of it
 }
 /* A new wanted height. Clamped to the ceiling here — a drag that runs off the top of the screen
    otherwise banks height you then have to drag back down through before anything moves. */
@@ -1568,30 +1681,63 @@ function toggleBig(){
    pinning the expanded editor to three lines. */
 function autoGrow(ta){
   if(document.getElementById('inputbar').classList.contains('big')){ ta.style.height='100%'; return; }
-  ta.style.height='auto'; ta.style.height=Math.min(120,ta.scrollHeight)+'px';
+  /* Clearing the height is what "one row" means here: `rows="1"` and the CSS min-height already
+     draw an empty box, and scrollHeight must not be allowed to argue with them. Two ways it did.
+     Empty, Chromium measures the *placeholder* rather than the value, and this placeholder is a
+     sentence — on a phone it wraps to three lines, so an untouched composer opened three rows tall.
+     Hidden, everything measures 0, and applyTaFont runs at load while #term is still display:none:
+     that 0 was written back as an inline height and nothing recomputed it until the first
+     keystroke, so every conversation opened with a box 22px tall and its placeholder clipped
+     through the middle. */
+  if(!ta.value){ ta.style.height=''; return; }
+  ta.style.height='auto';
+  const h=ta.scrollHeight;
+  if(!h){ ta.style.height=''; return; }
+  ta.style.height=Math.min(120,h)+'px';
 }
+/* The placeholder is a sentence, and a one-row box on a phone shows the first third of it with the
+   rest wrapped and clipped — which reads as a broken control rather than as a hint. The half that
+   goes is the half that does not apply there anyway: a touch keyboard has no Shift+Enter. Same
+   560px line the expanded composer uses, so "this is a phone" is decided in one place. */
+const NARROW=matchMedia('(max-width:560px)');
+function fitPlaceholder(){
+  document.getElementById('inputtext').placeholder=NARROW.matches
+    ? 'Type here (中文 OK)'
+    : 'Type here (中文 OK) — Enter to send, Shift+Enter for newline';
+}
+NARROW.addEventListener('change',fitPlaceholder);
+fitPlaceholder();
 function applyTaFont(){
   const ta=document.getElementById('inputtext');
   ta.style.fontSize=taFontPx+'px';
   autoGrow(ta);
 }
 function taFont(d){
-  taFontPx=Math.min(30,Math.max(11,taFontPx+d));
+  taFontPx=Math.min(30,Math.max(TA_MIN,taFontPx+d));
   localStorage.setItem('fv_tafont',String(taFontPx));
   applyTaFont(); toast(taFontPx+'px');
 }
 applyTaFont();
 (function(){
-  const g=document.getElementById('grip');
-  let y0=0,h0=0,live=false;
+  const g=document.querySelector('#grip .gbar');
+  let y0=0,h0=0,down=false,live=false;
+  /* Nothing resizes until the finger has actually travelled. Without this any contact that moved a
+     pixel was a drag, and since setBarHeight clamps up to BAR_MIN the bar jumped from 114px to
+     170px and into the expanded grid — from a brush on the way to the textarea. */
+  const SLOP=10;
   g.addEventListener('pointerdown',e=>{
-    if(e.target.closest('button'))return;
-    live=true; y0=e.clientY; h0=document.getElementById('inputbar').offsetHeight;
+    down=true; live=false; y0=e.clientY; h0=document.getElementById('inputbar').offsetHeight;
     g.setPointerCapture(e.pointerId); e.preventDefault();
   });
-  g.addEventListener('pointermove',e=>{ if(live) setBarHeight(h0+(y0-e.clientY)); });
+  g.addEventListener('pointermove',e=>{
+    if(!down)return;
+    if(!live){ if(Math.abs(e.clientY-y0)<SLOP) return; live=true; }
+    setBarHeight(h0+(y0-e.clientY));
+  });
   const end=()=>{
-    if(!live)return;
+    if(!down)return;
+    down=false;
+    if(!live)return;                 // a tap, or a brush that never passed SLOP: leave the height alone
     live=false;
     // Dragged back down onto the floor: that is a request to collapse, not to sit at the minimum.
     if(barH&&barH<=BAR_MIN+8) setBarHeight(0);
