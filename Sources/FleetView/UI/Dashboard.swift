@@ -67,6 +67,7 @@ struct DashboardView: View {
         .onPreferenceChange(BoardFrameKey.self) { state.boardFrame = $0 }
         .onPreferenceChange(CardFramesKey.self) { state.cardFrames = $0 }
         .onPreferenceChange(ClusterFramesKey.self) { state.clusterFrames = $0 }
+        .onPreferenceChange(ProjectFramesKey.self) { state.projectFrames = $0 }
         .sheet(item: $state.nameSheet) { req in
             NameSheet(request: req).environmentObject(state)
         }
@@ -137,9 +138,34 @@ struct DashboardView: View {
             let name = state.terminals.first { $0.id == state.draggingTerminalId }?
                 .clusterId.flatMap { state.cluster($0)?.name }
             return "松开：移出「\(name ?? "cluster")」"
+        case .project(let id):
+            let name = state.projects.first { $0.id == id }?.name ?? "project"
+            return "松开：移到「\(name)」"
         case nil:
             return nil
         }
+    }
+
+    /// The second line of the chip, and only for the drop that earns one. A move relocates the
+    /// conversation on disk and restarts the agent to pick it up again, which is more than the
+    /// gesture looks like — so it says so while there is still time to let go somewhere else.
+    ///
+    /// Read off the card's own fields, never from disk: this is recomputed on every frame of a
+    /// drag, and resolving a transcript walks a directory.
+    private var dropNote: String? {
+        guard case .project = state.clusterDrop,
+              let t = state.terminals.first(where: { $0.id == state.draggingTerminalId })
+        else { return nil }
+        // An agent mid-turn is the one thing worth saying ahead of everything else: the move kills
+        // the session to reopen it, and the turn in flight does not survive that.
+        if t.status == .working { return "agent 正在跑，会被打断后带着记录重开" }
+        if t.agentKind == .codex {
+            // Codex files rollouts by date, so there is no path to move — saying "the history moves
+            // too" would be describing something that never happens.
+            return "Codex 记录按日期存放，不用搬；会在新项目里重新打开"
+        }
+        guard t.transcriptPath != nil else { return "还没有对话记录，只是换个项目" }
+        return "对话记录一起搬过去，然后重新打开这段对话"
     }
 
     /// One outline around something on the board, in "fleet" coordinates.
@@ -201,7 +227,7 @@ struct DashboardView: View {
                 }
                 VStack { Spacer(); ActionDock(terminalId: dragId).environmentObject(state) }
                 if let t = state.terminals.first(where: { $0.id == dragId }) {
-                    DragPreviewChip(name: t.name, status: t.status, hint: dropHint)
+                    DragPreviewChip(name: t.name, status: t.status, hint: dropHint, note: dropNote)
                         .position(x: state.dragLocation.x, y: state.dragLocation.y - 16)
                 }
             }
@@ -1056,6 +1082,12 @@ struct ProjectSection: View {
         // The whole section is the drop target, not just its header: while you drag a project past
         // one with six cards open, the header is the smallest part of it you could be aiming at.
         .onDrop(of: [.text], delegate: ProjectReorderDrop(target: project.id, state: state))
+        // And the same area answers a dragged *card* — released here, that terminal moves into this
+        // project (see ProjectFramesKey).
+        .background(GeometryReader { g in
+            Color.clear.preference(key: ProjectFramesKey.self,
+                                   value: [project.id: [g.frame(in: .named("fleet"))]])
+        })
         .onAppear { skillCount = ProjectSkills.count(projectPath: project.path) }
     }
 
@@ -1464,6 +1496,17 @@ struct CardFramesKey: PreferenceKey {
 /// Every cluster container's frame. A dragged card landing anywhere inside one joins that task, so
 /// the box — not its member cards — is what lights up and what the drop resolves against.
 struct ClusterFramesKey: PreferenceKey {
+    static var defaultValue: [UUID: [CGRect]] = [:]
+    static func reduce(value: inout [UUID: [CGRect]], nextValue: () -> [UUID: [CGRect]]) {
+        value.merge(nextValue()) { $0 + $1 }
+    }
+}
+
+/// Every project section's frame. A card released anywhere inside one that is not its own moves
+/// into that project (see `moveTerminal(_:toProject:)`). A list per project for the same reason
+/// cards keep one — the reduce merges rather than overwrites, so a section drawn twice is still
+/// two targets rather than whichever one the traversal happened to see last.
+struct ProjectFramesKey: PreferenceKey {
     static var defaultValue: [UUID: [CGRect]] = [:]
     static func reduce(value: inout [UUID: [CGRect]], nextValue: () -> [UUID: [CGRect]]) {
         value.merge(nextValue()) { $0 + $1 }

@@ -200,6 +200,9 @@ final class AppState: ObservableObject {
     var cardFrames: [UUID: [CGRect]] = [:]
     /// Where each cluster box is on screen (see ClusterFramesKey).
     var clusterFrames: [UUID: [CGRect]] = [:]
+    /// Where each project's section is on screen (see ProjectFramesKey). A card dropped anywhere
+    /// inside another project's section moves house — see `moveTerminal(_:toProject:)`.
+    var projectFrames: [UUID: [CGRect]] = [:]
 
     /// Open the tree panel for a terminal's current session (project-dir scoped, treeflow-style).
     func openSessionTree(_ id: UUID) {
@@ -863,14 +866,16 @@ final class AppState: ObservableObject {
 
     /// Work out the resume command off the main actor (it reads transcripts and can walk the
     /// filesystem looking for the session's project folder), then type it into the fresh shell.
-    private func resumeSession(_ t: TerminalSession, transcript path: String) {
+    private func resumeSession(_ t: TerminalSession, transcript path: String,
+                               pinnedCwd: String? = nil) {
         let createdAt = Date()
         let kind = t.agentKind
         let termCwd = t.cwd
         let id = t.id
         let name = t.name
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let cmd = AppState.resumeCommand(transcript: path, kind: kind, termCwd: termCwd) else {
+            guard let cmd = AppState.resumeCommand(transcript: path, kind: kind, termCwd: termCwd,
+                                                   pinnedCwd: pinnedCwd) else {
                 FV.log("reopen: nothing resumable for \(name) (\(path))")
                 return
             }
@@ -893,24 +898,28 @@ final class AppState: ObservableObject {
     /// `rollout-<timestamp>-<uuid>.jsonl` and the CLI wants the UUID alone — handing it the whole
     /// filename opens the session picker instead, which looks like the command being ignored.
     nonisolated static func codexCommand(transcript path: String, termCwd: String,
-                                         verb: String) -> String? {
+                                         verb: String, pinnedCwd: String? = nil) -> String? {
         let base = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         let parts = base.split(separator: "-")
         guard parts.count >= 5 else { return nil }
         let sid = parts.suffix(5).joined(separator: "-")
         guard UUID(uuidString: sid) != nil else { return nil }
-        let cwd = CodexSession.rolloutCwd(path) ?? termCwd
+        // The rollout says where the session ran, which is the right answer everywhere except
+        // after a deliberate move — there the card has been told it belongs somewhere else, and
+        // `cd`-ing back into the project it just left would undo the gesture.
+        let cwd = pinnedCwd ?? CodexSession.rolloutCwd(path) ?? termCwd
         let cmd = "codex \(verb) \(sid)"
         return cwd == termCwd ? cmd : "cd \(SessionForge.shellQuote(cwd)) && \(cmd)"
     }
 
     nonisolated static func resumeCommand(transcript path: String, kind: AgentKind,
-                                          termCwd: String) -> String? {
+                                          termCwd: String, pinnedCwd: String? = nil) -> String? {
         let base = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         guard !base.isEmpty else { return nil }
 
         if kind == .codex || path.contains("/.codex/") {
-            return codexCommand(transcript: path, termCwd: termCwd, verb: "resume")
+            return codexCommand(transcript: path, termCwd: termCwd, verb: "resume",
+                                pinnedCwd: pinnedCwd)
         }
 
         // Claude resolves `--resume <sid>` against the *current* folder's project slug, so the
@@ -920,8 +929,11 @@ final class AppState: ObservableObject {
         // paths, and the reason this is worth a filesystem walk.
         let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
         let recorded = SessionForge.sessionCwd(transcriptPath: path)
-        let cwd = (recorded.map { SessionForge.slugify($0) == dir.lastPathComponent } == true)
-            ? recorded : (SessionForge.projectCwd(projectDir: dir) ?? recorded)
+        // `pinnedCwd` is only ever passed by a caller that has just filed this transcript under
+        // that folder's slug itself, so it needs none of the searching below.
+        let cwd = pinnedCwd
+            ?? ((recorded.map { SessionForge.slugify($0) == dir.lastPathComponent } == true)
+                ? recorded : (SessionForge.projectCwd(projectDir: dir) ?? recorded))
         // `skipPermissions`, like every other path that reopens an existing conversation: the flags
         // the original process ran with died with it (`inheritedFlags` reads a live process tree),
         // so without this a resumed terminal stops on its first tool call — asking permission for
@@ -929,6 +941,132 @@ final class AppState: ObservableObject {
         return SessionForge.resumeCommand(sessionId: base, inheritedFlags: [],
                                           skipPermissions: true,
                                           cwd: cwd == termCwd ? nil : cwd)
+    }
+
+    /// Move a terminal into another project — folder, conversation and all.
+    ///
+    /// Dragging a card onto a different project's section is a statement about where this work
+    /// belongs, and the folder it opens in is only half of it. Claude files a transcript under a
+    /// slug of the directory it ran in and `--resume` looks it up the same way (see
+    /// `resumeCommand`), so a card whose cwd moved while its transcript stayed behind is a card
+    /// that can never resume its own conversation again. The file moves with it.
+    ///
+    /// Codex has no such link — rollouts are filed by date, not by project — so there is nothing to
+    /// move there. What does have to be corrected is the folder `codex resume` would otherwise `cd`
+    /// back into: the rollout records where it ran, which is the project this card just left.
+    ///
+    /// The session is killed and reopened rather than carried across. A running agent holds an open
+    /// handle on the transcript and a cwd of its own, and neither of those follows a rename — the
+    /// conversation comes back because it is resumed, not because the process survived.
+    func moveTerminal(_ id: UUID, toProject target: UUID) {
+        guard let idx = terminals.firstIndex(where: { $0.id == id }),
+              let project = projects.first(where: { $0.id == target }),
+              terminals[idx].projectId != target else { return }
+        audited(AuditIntent("terminal.move_project",
+                            categories: ["configuration"],
+                            target: auditTarget(terminal: id),
+                            data: ["to": .string(project.name), "cwd": .string(project.path)],
+                            message: "moved to \(project.name)")) {
+            let was = terminals[idx]
+            // Resolved before anything is torn down: a running agent's transcript is known from the
+            // hook pointer, and the kill below is what stops that pointer being written.
+            //
+            // `lastSessionFile`, deliberately, and not `transcriptPath(for:)` — that one falls back
+            // to the newest unclaimed session in the folder, which is a reasonable guess for
+            // *reading* a live terminal and an unacceptable one here. This path moves a file; a
+            // wrong guess would carry somebody else's conversation into another project.
+            let transcript = lastSessionFile(for: was)
+            let live = controllers[id] != nil || remote.sessionExists(id)
+            let isCodex = was.agentKind == .codex || transcript?.contains("/.codex/") == true
+
+            // We own the status from here. `onClose` fires on the next main-actor turn — after the
+            // reopen below — and would mark a terminal that is on screen as closed.
+            let ctrl = controllers.removeValue(forKey: id)
+            ctrl?.onClose = nil
+            ctrl?.closeWindow()
+            remote.stop(id)
+
+            let moved = isCodex ? nil : transcript.flatMap { relocateTranscript($0, to: project.path) }
+            if let moved { rewriteSessionPointer(id, transcript: moved, cwd: project.path) }
+
+            terminals[idx].projectId = target
+            terminals[idx].cwd = project.path
+            // A cluster is a group inside one project — `clustersInProject` places a cluster by its
+            // members — so a card that leaves the project leaves the group with it.
+            terminals[idx].clusterId = nil
+            if let moved { terminals[idx].transcriptPath = moved }
+
+            let resumeFrom = moved ?? transcript
+            // Reopened even when the card was already closed: the drag said this work belongs over
+            // there, and a card that answers by staying dark gives no sign the conversation
+            // survived the trip. Nothing to reopen for a card that never ran anything.
+            let reopen = live || resumeFrom != nil
+            enterStatus(reopen ? .shell : .closed, at: idx)
+            pruneClusters()
+            save()
+            guard reopen else { return }
+
+            openWindow(for: terminals[idx], autoRun: resumeFrom == nil ? nil : false)
+            if let resumeFrom {
+                // Pin the new folder only where it is true. Codex resumes from anywhere, so the
+                // move is the newer statement of where this work belongs. Claude resolves against
+                // the current folder's slug, so pinning is honest exactly when the transcript
+                // actually landed under it — if the move failed, the conversation still lives in
+                // the old project and resuming it there beats not resuming at all.
+                resumeSession(terminals[idx], transcript: resumeFrom,
+                              pinnedCwd: (isCodex || moved != nil) ? project.path : nil)
+            }
+        }
+    }
+
+    /// Move a Claude transcript into the project its terminal just moved to; returns where it
+    /// landed, or nil when there was nothing to move or the move failed.
+    ///
+    /// The destination is the slug of the new folder because that is the only place `--resume` will
+    /// ever look. A file already sitting there is left alone rather than overwritten: the same
+    /// session id under two projects should be impossible, and if it ever happens the file already
+    /// there is somebody's conversation.
+    private func relocateTranscript(_ path: String, to projectPath: String) -> String? {
+        let src = URL(fileURLWithPath: path)
+        guard src.pathExtension == "jsonl", path.contains("/.claude/projects/") else { return nil }
+        let dir = FV.claudeProjectsDir
+            .appendingPathComponent(SessionForge.slugify(projectPath), isDirectory: true)
+        let dest = dir.appendingPathComponent(src.lastPathComponent)
+        guard dest.path != src.path else { return src.path }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            guard !FileManager.default.fileExists(atPath: dest.path) else {
+                FV.log("move: \(dest.path) already exists — transcript left where it was")
+                return nil
+            }
+            try FileManager.default.moveItem(at: src, to: dest)
+        } catch {
+            FV.log("move: could not move transcript — \(error.localizedDescription)")
+            return nil
+        }
+        // Search keys conversations by path, so without this the one conversation becomes two: a
+        // dead hit at the old path, whose file is gone, and a fresh read of the same messages at
+        // the new one.
+        SearchIndex.relocate(from: src.path, to: dest.path, project: projectPath)
+        FV.log("move: transcript \(src.lastPathComponent) → \(dir.lastPathComponent)")
+        return dest.path
+    }
+
+    /// Keep hook.sh's pointer pointing at the transcript after it moves.
+    ///
+    /// A stale pointer is survivable — `hookSessionPath` drops one whose file is gone — but it is
+    /// what every reader asks first, and the next hook event is a whole turn away.
+    private func rewriteSessionPointer(_ id: UUID, transcript: String, cwd: String) {
+        let url = FV.sessionPointer(for: id)
+        guard let data = try? Data(contentsOf: url),
+              var obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return }
+        obj["transcript_path"] = transcript
+        obj["cwd"] = cwd
+        // Edited rather than rewritten: hook.sh puts the whole event in here — permission mode,
+        // last message, background tasks — and this knows about two of those keys.
+        guard let out = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        try? out.write(to: url, options: .atomic)
     }
 
     /// Terminals with a window open right now — what "close all" would actually close.
@@ -1418,6 +1556,7 @@ final class AppState: ObservableObject {
         case card(UUID)        // another loose card → the two become a cluster
         case cluster(UUID)     // anywhere inside a cluster box → join that task
         case leaveCluster      // empty board, dragged out of the cluster it was in → standalone
+        case project(UUID)     // another project's section → the terminal moves there, history and all
     }
     /// The target under the cursor right now — nil when releasing here would do nothing.
     @Published var clusterDrop: ClusterDrop?
@@ -1474,6 +1613,13 @@ final class AppState: ObservableObject {
         case .card(let id):
             guard let r = cardFrames[id]?.first(where: { $0.contains(dragLocation) }) else { return nil }
             return DropIndicator(rect: r, radius: 12)   // TerminalCardView's
+        case .project(let id):
+            // Falls back to the section's frame when the cursor is not inside it — dropping onto a
+            // foreign card in the RUNNING NOW strip lands in that card's project, and the ring
+            // showing where it is going is worth more there than one drawn around the cursor.
+            guard let r = projectFrames[id]?.first(where: { $0.contains(dragLocation) })
+                       ?? projectFrames[id]?.first else { return nil }
+            return DropIndicator(rect: r, radius: 14)
         case .leaveCluster:
             // Ring the cluster being left, not the empty space being dropped into: the point of the
             // gesture is which task this card is walking out of. Absent when that box is scrolled
@@ -1523,17 +1669,26 @@ final class AppState: ObservableObject {
         // nothing at all. Returning here rather than falling through matters: every member card is
         // inside the box, so the card branch below would otherwise re-answer the same question.
         if let hit = clusterFrames.first(where: { $0.value.contains { $0.contains(point) } })?.key {
-            guard hit != src.clusterId,
-                  members(ofCluster: hit).first?.projectId == src.projectId else { return nil }
-            return .cluster(hit)
+            if hit == src.clusterId { return nil }
+            guard let owner = members(ofCluster: hit).first?.projectId else { return nil }
+            // Another project's cluster is not a group this card can join — a cluster lives inside
+            // one project — so what it names is that project.
+            return owner == src.projectId ? .cluster(hit) : .project(owner)
         }
 
         if let hit = cardFrames.first(where: { entry in
                entry.key != id && entry.value.contains { $0.contains(point) }
            })?.key,
-           let target = terminals.first(where: { $0.id == hit }),
-           target.projectId == src.projectId {
-            return .card(hit)
+           let target = terminals.first(where: { $0.id == hit }) {
+            return target.projectId == src.projectId ? .card(hit) : .project(target.projectId)
+        }
+
+        // Anywhere in another project's section. Below the two branches above so a drop inside your
+        // own project still means exactly what it always did, and above the board branch so the
+        // whole area of a section works rather than only the gaps between its cards.
+        if let hit = projectFrames.first(where: { $0.value.contains { $0.contains(point) } })?.key,
+           hit != src.projectId {
+            return .project(hit)
         }
 
         // Empty board. For a card that belongs to a cluster this is the other half of the phone
@@ -1549,6 +1704,7 @@ final class AppState: ObservableObject {
     func applyClusterDrop(_ dragged: UUID, _ drop: ClusterDrop) {
         // The same operation the dock's Leave Cluster zone performs, reached by the other gesture.
         if drop == .leaveCluster { removeFromCluster(dragged); return }
+        if case .project(let p) = drop { moveTerminal(dragged, toProject: p); return }
         audited(AuditIntent("terminal.group",
                             categories: ["configuration"],
                             target: auditTarget(terminal: dragged),
@@ -1557,7 +1713,8 @@ final class AppState: ObservableObject {
             switch drop {
             case .cluster(let c): cluster = c
             case .card(let t):    cluster = ensureCluster(for: t)
-            case .leaveCluster:   cluster = nil     // returned above
+            case .leaveCluster,
+                 .project:        cluster = nil     // both returned above
             }
             guard let cluster,
                   let i = terminals.firstIndex(where: { $0.id == dragged }),

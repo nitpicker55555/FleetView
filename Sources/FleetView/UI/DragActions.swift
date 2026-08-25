@@ -90,10 +90,15 @@ struct ActionZoneView: View {
 /// `hint` names what releasing HERE will do, the same job the tree drag's chip does — the ring
 /// around the target card says *where* the drop lands, and this says *what it means*. Nil when the
 /// cursor is over nothing that would act, so the chip never promises an outcome.
+///
+/// `note` is for a drop that does more than rearrange the board. Moving a card to another project
+/// also moves a file on disk and restarts an agent, and neither of those is undone by dragging the
+/// card back — so it is said before the mouse comes up, not discovered afterwards.
 struct DragPreviewChip: View {
     let name: String
     let status: TermStatus
     var hint: String? = nil
+    var note: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -104,6 +109,10 @@ struct DragPreviewChip: View {
             }
             if let hint {
                 Text(hint).font(.system(size: 10, weight: .semibold)).foregroundColor(Theme.accent)
+                    .lineLimit(1)
+            }
+            if let note {
+                Text(note).font(.system(size: 9)).foregroundColor(Theme.subtext)
                     .lineLimit(1)
             }
         }

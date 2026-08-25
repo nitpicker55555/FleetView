@@ -808,6 +808,35 @@ enum SearchIndex {
         }
     }
 
+    /// Follow a transcript that moved on disk.
+    ///
+    /// Rows here are keyed by path, so a moved file is not "the same conversation, elsewhere" to
+    /// this index — it is one dead entry pointing at a file that is gone, plus a brand-new one that
+    /// gets read from byte zero on the next sweep. The same conversation twice, and the half you
+    /// are most likely to click unopenable.
+    ///
+    /// `project` is the recorded cwd a hit is labelled with. It moves too: the folder is what the
+    /// user has just said this work belongs to, and the earlier messages saying otherwise are
+    /// describing a place the conversation no longer lives.
+    static func relocate(from old: String, to new: String, project: String) {
+        queue.async {
+            guard let db = open() else { return }
+            sqlite3_exec(db, "BEGIN", nil, nil, nil)
+            // No conflict to handle: the caller refuses to move onto an existing file, so `new` is
+            // a path this index has never seen.
+            for (sql, args) in [("UPDATE file SET path=?, project=? WHERE path=?", [new, project, old]),
+                                ("UPDATE msg SET path=? WHERE path=?", [new, old])] {
+                var stmt: OpaquePointer?
+                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { continue }
+                for (i, a) in args.enumerated() { bind(stmt, Int32(i + 1), a) }
+                sqlite3_step(stmt)
+                sqlite3_finalize(stmt)
+            }
+            sqlite3_exec(db, "COMMIT", nil, nil, nil)
+            FV.log("search: index followed \(old) → \(new)")
+        }
+    }
+
     private static func countCodexPrompts(_ path: String) -> Int {
         var n = 0
         _ = forEachLine(URL(fileURLWithPath: path), from: 0, wanted: wantCodex) { line in
