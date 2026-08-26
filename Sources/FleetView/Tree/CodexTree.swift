@@ -160,6 +160,8 @@ enum CodexTree {
         let text: String
         var answer: String
         let ts: String
+        /// A `context_compacted` event landed between the previous prompt and this one.
+        var compactedBefore: Bool = false
     }
 
     private struct TurnCache { let size: Int64; let mtime: TimeInterval; let turns: [Turn] }
@@ -192,6 +194,9 @@ enum CodexTree {
 
         var out: [Turn] = []
         var n = 0
+        // Held until the next prompt: a compaction happens between turns, and the turn that has to
+        // carry the mark is the first one that ran without what came before it.
+        var compactionPending = false
         if let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) {
             // Byte-level fast reject before any JSON. A rollout is overwhelmingly `response_item`
             // tool traffic — the same records `SearchIndex` skips for the same reason — and decoding
@@ -204,7 +209,25 @@ enum CodexTree {
                     var hi = lo
                     while hi < p.count, p[hi] != 0x0A { hi += 1 }
                     defer { lo = hi + 1 }
-                    guard hi > lo, p[lo] == UInt8(ascii: "{"), contains(p, lo, hi, Self.roleKey),
+                    // Probed on the raw bytes, ahead of the role reject that would otherwise drop
+                    // the line: a `context_compacted` event carries no role at all, so it never
+                    // survives to be parsed.
+                    //
+                    // The literal is only a filter, and the record is then decoded and checked,
+                    // because those same bytes can appear inside a prompt or a tool output — and
+                    // swallowing one of those would drop a turn, which shifts every node address
+                    // after it and opens the wrong turn (see the numbering note above). A line that
+                    // merely mentions the word falls through to the normal path.
+                    guard hi > lo, p[lo] == UInt8(ascii: "{") else { continue }
+                    if contains(p, lo, hi, Self.compactedKey),
+                       let obj = (try? JSONSerialization.jsonObject(
+                           with: Data(raw[lo..<hi]))) as? [String: Any],
+                       (obj["type"] as? String) == "event_msg",
+                       ((obj["payload"] as? [String: Any])?["type"] as? String) == "context_compacted" {
+                        compactionPending = true
+                        continue
+                    }
+                    guard contains(p, lo, hi, Self.roleKey),
                           let obj = (try? JSONSerialization.jsonObject(
                               with: Data(raw[lo..<hi]))) as? [String: Any],
                           (obj["type"] as? String) == "response_item",
@@ -221,7 +244,8 @@ enum CodexTree {
                         defer { n += 1 }
                         guard let t = cleanPrompt(raw) else { continue }
                         out.append(Turn(n: n, text: clip(t, SessionTreeBuilder.promptCap),
-                                        answer: "", ts: ts))
+                                        answer: "", ts: ts, compactedBefore: compactionPending))
+                        compactionPending = false
                     case "assistant":
                         guard !out.isEmpty, let t = trimmed(contentText(payload)) else { continue }
                         // A reply belongs to the prompt it answers — the last one seen.
@@ -243,6 +267,7 @@ enum CodexTree {
     /// reasoning and tool traffic. A better reject than the record type itself — `response_item` is
     /// the majority of the file, `"role":` is 8-12% of it.
     private static let roleKey: [UInt8] = Array(#""role":""#.utf8)
+    private static let compactedKey: [UInt8] = Array(#""context_compacted""#.utf8)
 
     /// The text of a `response_item` message, joined across its content blocks.
     /// Mirrors treeflow's `_codex_extract_text`.
@@ -382,6 +407,7 @@ enum CodexTree {
                     addr = "\(m.sid):\(t.n)"
                     canonical[chain] = addr
                     tree.nodes[addr] = TreeTurn(uuid: addr, parent: parent, text: t.text, ts: t.ts)
+                    tree.nodes[addr]?.compactedBefore = t.compactedBefore
                     if let p = parent { tree.nodes[p]?.children.append(addr) }
                 }
                 // The copy may carry a reply the original was still writing when it was forked.

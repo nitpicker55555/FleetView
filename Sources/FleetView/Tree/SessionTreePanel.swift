@@ -223,6 +223,8 @@ struct TreeRowView: View {
         switch row.kind {
         case .fold(let id, let hidden):
             foldRow(id: id, count: hidden.count)
+        case .compacted(let boundary, let turns):
+            compactedRow(boundary: boundary, turns: turns)
         case .node:
             nodeRow
         }
@@ -247,6 +249,54 @@ struct TreeRowView: View {
         .frame(height: 32)
     }
 
+    /// The top of a compacted session. The conversation did not start here — it was summarised into
+    /// the turn below and carried on — and until now the panel had no way to say so, let alone to
+    /// show what was summarised. Deliberately louder than a fold pill: a fold hides turns you
+    /// watched scroll past, this one is the rest of the conversation.
+    ///
+    /// With `turns` nil the earlier half is not on this machine any more. It still gets a row,
+    /// greyed and inert: "there is nothing behind this" is the answer to the question the
+    /// "continued from" turn below raises, and an empty space answers it the same way as a
+    /// conversation that simply started there.
+    private func compactedRow(boundary: String, turns: Int?) -> some View {
+        HStack(spacing: 0) {
+            TreeRailView(row: row, rowHeight: 34, hasChips: false, flipped: model.newestFirst)
+                .frame(width: TreeLane.railWidth, height: 34)
+            if let turns {
+                Button {
+                    withAnimation(.easeOut(duration: 0.18)) { model.expandCompaction(boundary) }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("展开压缩前的 \(turns) 轮对话")
+                            .font(.system(size: 10.5, weight: .medium))
+                    }
+                    .foregroundColor(Theme.accent)
+                    .padding(.horizontal, 11).padding(.vertical, 4)
+                    .background(Theme.accent.opacity(0.12)).clipShape(Capsule())
+                    .overlay(Capsule().stroke(Theme.accent.opacity(0.45), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .help("下面这段是从一次上下文压缩之后继续的 —— 展开压缩前的 \(turns) 轮对话")
+            } else {
+                HStack(spacing: 5) {
+                    Image(systemName: "clock.badge.xmark")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("压缩前的对话已不在这个项目里")
+                        .font(.system(size: 10.5))
+                }
+                .foregroundColor(Theme.subtext.opacity(0.8))
+                .padding(.horizontal, 11).padding(.vertical, 4)
+                .background(Theme.card).clipShape(Capsule())
+                .overlay(Capsule().stroke(Theme.stroke, lineWidth: 1))
+                .help("这段对话继续自一个已经不在 ~/.claude/projects 里的会话文件")
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(height: 34)
+    }
+
     private var nodeRow: some View {
         let chips = row.nodeUuid.flatMap { model.chips[$0] } ?? []
         let rowHeight: CGFloat = chips.isEmpty ? 54 : 70
@@ -260,6 +310,18 @@ struct TreeRowView: View {
                         let h = model.hits(n)
                         if h.prompt { hitBadge("prompt", Theme.accent) }
                         if h.answer { hitBadge("回复", Theme.lanePalette[0]) }
+                    }
+                    // Codex's half of the compaction story. Claude's is a row of its own above
+                    // the root, because there the earlier turns are somewhere else entirely; here
+                    // they are a few rows up, and all that is missing is the fact that the agent
+                    // could no longer see them from this turn onwards.
+                    if node?.compactedBefore == true {
+                        Text("⇠ 已压缩")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(Theme.amber)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Theme.amber.opacity(0.14)).clipShape(Capsule())
+                            .help("上下文在这一轮之前被压缩过 —— 更早的对话还在树上，但从这里开始 agent 看不到它们了")
                     }
                     if row.branchChildCount > 0 {
                         Text("⑂ \(row.branchChildCount + 1)")

@@ -50,6 +50,10 @@ final class SessionTreeModel: ObservableObject {
     private(set) var boundSessionId: String?
     private var sessionInfo: [String: [(name: String, status: TermStatus)]] = [:]
     private var expandedFolds: Set<String> = []
+    /// `compact_boundary` uuids the user has asked to see behind. Unlike a fold — which only hides
+    /// rows that were already built — following one of these changes the graph, so it costs a
+    /// rebuild rather than a row transform.
+    private var expandedCompactions: Set<String> = []
     private var refreshTimer: Timer?
     private var dirSignature = ""
     private var generation = 0
@@ -109,6 +113,7 @@ final class SessionTreeModel: ObservableObject {
         self.focus.hovered = nil
         self.focus.focusY = nil
         self.expandedFolds = []
+        self.expandedCompactions = []
         reload(showSpinner: true)
         startRefresh()
     }
@@ -133,11 +138,23 @@ final class SessionTreeModel: ObservableObject {
         applyRows()
     }
 
+    /// Pull the conversation from before a compaction into the tree.
+    ///
+    /// Silent — no spinner: the files are already parsed and cached by (size, mtime), so this is a
+    /// re-walk of records in memory, and flashing a loading state over a panel you are reading
+    /// would be the loudest part of an operation that costs milliseconds.
+    func expandCompaction(_ boundary: String) {
+        guard !expandedCompactions.contains(boundary) else { return }
+        expandedCompactions.insert(boundary)
+        reload(showSpinner: false)
+    }
+
     // MARK: - Loading
 
     private func reload(showSpinner: Bool) {
         guard let src = source else { return }
         let sid = boundSessionId
+        let expanded = expandedCompactions
         if showSpinner { loading = true }
         generation += 1
         let gen = generation
@@ -145,7 +162,8 @@ final class SessionTreeModel: ObservableObject {
             let built: TreeGraph
             switch src {
             case .claude(let dir):
-                built = SessionTreeBuilder.build(projectDir: dir, boundSessionId: sid)
+                built = SessionTreeBuilder.build(projectDir: dir, boundSessionId: sid,
+                                                 expandedCompactions: expanded)
             case .codex(let cwd):
                 built = CodexTree.build(cwd: cwd, boundSessionId: sid, root: CodexSession.sessionsDir)
             }

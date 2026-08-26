@@ -20,6 +20,11 @@ struct SlimRecord {
     let sidechain: Bool
     let ts: String            // ISO8601 — lexicographic order == chronological order
     let text: String          // prompt text or assistant text blocks (clipped)
+    /// Set only on a `compact_boundary` record, so its presence *means* "a compaction starts here".
+    /// That record has no `parentUuid` at all — a compacted session begins a fresh chain — and names
+    /// the conversation it continues in `logicalParentUuid` instead. Without reading it, everything
+    /// before the compaction is a separate tree in the same directory that nothing points at.
+    let logicalParent: String?
 }
 
 /// One user-prompt node of the tree.
@@ -35,11 +40,28 @@ struct TreeTurn {
     /// SwiftUI the full multi-thousand-character text just to clip it is what made scrolling stall.
     var preview: String = ""
     var answerPreview: String = ""
+    /// This turn opened on a freshly compacted context.
+    ///
+    /// Only Codex sets it, and that is the whole difference between the two backends here. Claude
+    /// compacts by starting a *new session file* whose earlier half is a separate tree — hence the
+    /// pill that goes and fetches it. Codex compacts in place: it writes one `context_compacted`
+    /// event into the same rollout and carries on, so the turns before it are already in this tree,
+    /// a few rows up. There is nothing to expand — only something to say, which is that the agent
+    /// stopped being able to see them here.
+    var compactedBefore: Bool = false
 }
 
-/// A display row: either a node or a fold pill covering a linear run.
+/// A display row: a node, a fold pill covering a linear run, or the compaction the tree starts on.
 struct TreeRow: Identifiable {
-    enum Kind { case node(String); case fold(id: String, hidden: [String]) }
+    enum Kind {
+        case node(String)
+        case fold(id: String, hidden: [String])
+        /// The top of a compacted session: release the earlier half into the tree. Distinct from a
+        /// fold because a fold hides rows that are already built, while this one has to rebuild the
+        /// graph with an edge it deliberately did not follow. `turns` is nil when that earlier half
+        /// is no longer on disk — there is still something to say, just nothing to press.
+        case compacted(boundary: String, turns: Int?)
+    }
     let kind: Kind
     let laneDepth: Int          // 0 = the active/main lane
     let colorIndex: Int         // -1 = accent (active lane); 0..n = branch palette
@@ -57,9 +79,23 @@ struct TreeRow: Identifiable {
         switch kind {
         case .node(let u): return u
         case .fold(let f, _): return f
+        case .compacted(let b, _): return "compact-\(b)"
         }
     }
     var nodeUuid: String? { if case .node(let u) = kind { return u }; return nil }
+}
+
+/// A compaction the tree stopped at: the conversation carries on above it, unread.
+///
+/// `ancestor` is nil when the earlier half is not in this project directory any more. On the machine
+/// this was written on that is 1 boundary in 47 — but it sits at the top of a chain, so it is also
+/// what you land on after expanding everything, which makes it the common ending rather than a rare
+/// case. Saying "it is not here" answers the question the continued-from turn raises; showing
+/// nothing answers it the same way as a conversation that simply started there.
+struct CompactLink {
+    let boundary: String      // the compact_boundary record's uuid — what "expanded" is keyed by
+    let ancestor: String?     // the turn the compacted session continues from
+    let turns: Int            // how many turns expanding would add, so the pill can say so
 }
 
 /// The built tree plus everything the panel renders.
@@ -75,6 +111,9 @@ struct TreeGraph {
     var sessionLeaf: [String: String] = [:]   // sid → leafUuid (per file's last `last-prompt`)
     /// sid → user-prompt node its leaf resolves to (placement for terminal chips).
     var leafNodeBySession: [String: String] = [:]
+    /// Root turn → the compaction it sits on top of, for roots whose earlier half has not been
+    /// expanded. Absent once it has been: the edge is then real and the ancestors are just parents.
+    var compactedFrom: [String: CompactLink] = [:]
 }
 
 // MARK: - Builder
@@ -136,13 +175,16 @@ enum SessionTreeBuilder {
             } else if isAssistant {
                 text = clip(userText(content), answerCap)   // same extraction: text blocks joined
             }
+            let boundary = (obj["subtype"] as? String) == "compact_boundary"
             records.append(SlimRecord(uuid: uuid,
                                       parent: obj["parentUuid"] as? String,
                                       isPrompt: isPrompt,
                                       isAssistant: isAssistant,
                                       sidechain: (obj["isSidechain"] as? Bool) ?? false,
                                       ts: (obj["timestamp"] as? String) ?? "",
-                                      text: text))
+                                      text: text,
+                                      logicalParent: boundary ? obj["logicalParentUuid"] as? String
+                                                              : nil))
         }
         cacheLock.lock()
         cache[url.path] = FileCache(size: size, mtime: mtime, records: records, leaf: leaf)
@@ -201,7 +243,13 @@ enum SessionTreeBuilder {
 
     /// Build the tree for the project directory containing `transcriptPath`, rooted at the subtree
     /// that contains `boundSessionId`'s leaf (the terminal this panel was opened from).
-    static func build(projectDir: URL, boundSessionId: String?) -> TreeGraph {
+    ///
+    /// `expandedCompactions` holds the `compact_boundary` uuids the user has asked to see behind.
+    /// The link is not followed by default and that is the whole design: `compactMetadata` on these
+    /// records routinely reports a preTokens of a million, so grafting the earlier half unasked
+    /// would replace the conversation someone opened the panel to read with one they did not.
+    static func build(projectDir: URL, boundSessionId: String?,
+                      expandedCompactions: Set<String> = []) -> TreeGraph {
         var tree = TreeGraph()
 
         let files = ((try? FileManager.default.contentsOfDirectory(
@@ -222,14 +270,54 @@ enum SessionTreeBuilder {
         }
         guard !byUuid.isEmpty else { return tree }
 
-        // Nearest user-prompt ancestor (walks through assistant/tool records).
-        func userParent(_ uuid: String) -> String? {
-            var cur = byUuid[uuid]?.parent
+        // Nearest user-prompt ancestor, walking up through assistant and tool records — and, for a
+        // compaction the user has expanded, on through the boundary into the conversation it
+        // continues. An unexpanded boundary ends the walk, which is what keeps the earlier half out
+        // of the tree until it is asked for.
+        func climb(from start: String?, throughCompactions: Bool = true) -> String? {
+            var cur = start
             var seen = Set<String>()
             while let c = cur, !seen.contains(c) {
                 seen.insert(c)
                 guard let r = byUuid[c] else { return nil }
                 if r.isPrompt { return c }
+                if let logical = r.logicalParent, r.parent == nil {
+                    cur = (throughCompactions && expandedCompactions.contains(c)) ? logical : nil
+                } else {
+                    cur = r.parent
+                }
+            }
+            return nil
+        }
+
+        /// Does this link point at the turn's own future rather than at a previous conversation?
+        ///
+        /// Two of the boundaries in this directory resolve to a record *below* themselves, so the
+        /// turn would come out its own parent. The walk is over raw `parentUuid` only — never
+        /// through another boundary — because the question is about one unbroken chain.
+        func pointsIntoOwnFuture(_ ancestor: String, of turn: String) -> Bool {
+            var cur: String? = ancestor
+            var seen = Set<String>()
+            while let c = cur, !seen.contains(c) {
+                if c == turn { return true }
+                seen.insert(c)
+                cur = byUuid[c]?.parent
+            }
+            return false
+        }
+        func userParent(_ uuid: String) -> String? { climb(from: byUuid[uuid]?.parent) }
+
+        /// The compaction directly above a turn, when there is one and it has not been stepped
+        /// through. Stops at the first real ancestor: a turn with a prompt above it continues
+        /// something in the ordinary way and is not sitting on a boundary at all.
+        func boundaryAbove(_ uuid: String) -> SlimRecord? {
+            var cur = byUuid[uuid]?.parent
+            var seen = Set<String>()
+            while let c = cur, !seen.contains(c) {
+                seen.insert(c)
+                guard let r = byUuid[c] else { return nil }
+                if r.isPrompt { return nil }
+                if r.parent == nil { return r.logicalParent != nil ? r : nil }
                 cur = r.parent
             }
             return nil
@@ -248,6 +336,18 @@ enum SessionTreeBuilder {
             if let p = n.parent { tree.nodes[p]?.children.append(u) }
         }
 
+        // What was not followed. Only for a turn that ends up a root: anywhere else the walk found
+        // a real parent, and a boundary further up is already somebody else's pill.
+        for (u, n) in tree.nodes where n.parent == nil {
+            guard let b = boundaryAbove(u), let logical = b.logicalParent else { continue }
+            let ancestor = climb(from: logical, throughCompactions: false)
+            // Validated before it is ever offered, which is also what makes following it safe:
+            // clicking a pill is the only way a uuid reaches `expandedCompactions`, so a link
+            // rejected here can never become an edge.
+            if let a = ancestor, pointsIntoOwnFuture(a, of: u) { continue }
+            tree.compactedFrom[u] = CompactLink(boundary: b.uuid, ancestor: ancestor, turns: 0)
+        }
+
         // answer_text aggregation.
         for (u, r) in byUuid where r.isAssistant && !r.text.isEmpty {
             guard let owner = userParent(u), tree.nodes[owner] != nil else { continue }
@@ -263,6 +363,17 @@ enum SessionTreeBuilder {
             guard let node = owningPrompt(leaf) else { continue }
             tree.leafNodeBySession[sid] = node
             if tree.nodes[node]?.nativeSessionId == nil { tree.nodes[node]?.nativeSessionId = sid }
+        }
+
+        // How much expanding would add: the whole tree the ancestor belongs to, which is exactly
+        // what appears once the edge is real. Counted here rather than promised vaguely — "展开压缩
+        // 前的对话" with no number gives no way to tell a handful of turns from a thousand.
+        for (u, link) in tree.compactedFrom {
+            guard var root = link.ancestor else { continue }
+            var seen = Set<String>()
+            while let p = tree.nodes[root]?.parent, !seen.contains(p) { seen.insert(p); root = p }
+            tree.compactedFrom[u] = CompactLink(boundary: link.boundary, ancestor: link.ancestor,
+                                                turns: subtreeStats(tree, root).0)
         }
 
         finish(&tree, boundSessionId: boundSessionId)
@@ -346,6 +457,19 @@ enum SessionTreeBuilder {
 
         struct Frame { let uuid: String; let depth: Int; let color: Int
                        let isFirst: Bool; let pass: [(Int, Int)] }
+        // The compaction the root sits on, if it has one: a row above the first turn, where the
+        // conversation actually carries on. It takes over `mainStartsHere` from the root so the
+        // accent lane begins at the pill and runs unbroken into the turns below it.
+        let compacted = tree.compactedFrom[root]
+        if let link = compacted {
+            rows.append(TreeRow(kind: .compacted(boundary: link.boundary,
+                                                 turns: link.ancestor == nil ? nil : link.turns),
+                                laneDepth: 0, colorIndex: -1, isBranchFirst: false,
+                                isBranchLast: false, passLanes: [], branchChildCount: 0,
+                                onActivePath: true, isCurrentLeaf: false,
+                                mainLanePasses: true, mainStartsHere: true, mainEndsHere: false))
+        }
+
         var stack: [Frame] = [Frame(uuid: root, depth: 0, color: -1, isFirst: false, pass: [])]
 
         while let f = stack.popLast() {
@@ -367,7 +491,7 @@ enum SessionTreeBuilder {
                                 onActivePath: onActive,
                                 isCurrentLeaf: isLeafRow,
                                 mainLanePasses: f.depth == 0 ? true : mainPasses,
-                                mainStartsHere: f.depth == 0 && f.uuid == root,
+                                mainStartsHere: f.depth == 0 && f.uuid == root && compacted == nil,
                                 mainEndsHere: f.depth == 0 && isLeafRow))
 
             // LIFO: push continuation FIRST so side branches are emitted before it…
@@ -392,9 +516,12 @@ enum SessionTreeBuilder {
     /// Collapse long linear runs on the main lane into fold pills (branch points, the root, the
     /// current leaf and side-branch rows never fold).
     private static func foldLinearRuns(_ rows: [TreeRow], tree: TreeGraph) -> [TreeRow] {
+        // `nodeUuid != tree.rootUuid` rather than `!mainStartsHere`: the two said the same thing
+        // until a compaction pill took that flag over, and the rule was always "never fold the
+        // root away" — not "never fold the row the lane happens to start on".
         func foldable(_ r: TreeRow) -> Bool {
             r.laneDepth == 0 && r.branchChildCount == 0 && !r.isCurrentLeaf
-                && !r.mainStartsHere && r.nodeUuid != nil
+                && r.nodeUuid != nil && r.nodeUuid != tree.rootUuid
         }
         var out: [TreeRow] = []
         var i = 0
