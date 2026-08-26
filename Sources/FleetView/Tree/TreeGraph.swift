@@ -257,15 +257,38 @@ enum SessionTreeBuilder {
             .filter { $0.pathExtension == "jsonl" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }   // treeflow: sorted glob, first uuid wins
 
-        // by_uuid across ALL files (dedup: first occurrence wins), skipping subagent sidechains —
-        // they root separate mini-trees that would pollute the panel.
+        // Every record's timestamp, ahead of the dedup below, which needs to compare a record with
+        // its parent before either is settled. `parseFile` is cached by (size, mtime), so the
+        // second pass re-reads nothing.
+        var tsOf: [String: String] = [:]
+        for f in files {
+            for r in parseFile(f).records where !r.sidechain { tsOf[r.uuid] = r.ts }
+        }
+        /// A copy whose parent was written *after* it. Compaction re-emits the tail of the
+        /// conversation it kept, re-parented onto the new summary, so those copies claim an
+        /// ancestor from minutes into their own future.
+        func reparented(_ r: SlimRecord) -> Bool {
+            guard let p = r.parent, let pts = tsOf[p], !pts.isEmpty, !r.ts.isEmpty else { return false }
+            return pts > r.ts
+        }
+
+        // by_uuid across ALL files, skipping subagent sidechains — they root separate mini-trees
+        // that would pollute the panel.
+        //
+        // Dedup was first-occurrence-wins, which is fine while the copies agree. They do not always:
+        // in one project here 18 records of 25,004 carry two different parents, and they are exactly
+        // the 18 that join a compacted session to the conversation it continued. Sorted by filename,
+        // the re-parented copy won, and the chain leaving a compacted session climbed 18 records and
+        // arrived back at its own summary. Preferring the copy whose parent predates it follows the
+        // same chain into 2,005 records of real history instead.
         var byUuid: [String: SlimRecord] = [:]
         for f in files {
             let (records, leaf, bytes) = parseFile(f)
             tree.totalBytes += bytes
             if let leaf { tree.sessionLeaf[(f.lastPathComponent as NSString).deletingPathExtension] = leaf }
             for r in records where !r.sidechain {
-                if byUuid[r.uuid] == nil { byUuid[r.uuid] = r }
+                guard let have = byUuid[r.uuid] else { byUuid[r.uuid] = r; continue }
+                if reparented(have), !reparented(r) { byUuid[r.uuid] = r }
             }
         }
         guard !byUuid.isEmpty else { return tree }
