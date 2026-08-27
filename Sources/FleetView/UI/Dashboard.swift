@@ -573,6 +573,9 @@ struct TopBar: View {
     @ObservedObject private var jobs = BackgroundJobs.shared
     @State private var showWeb = false
     @State private var webQR: NSImage?
+    /// Which address the QR is currently of. The Mac can have two and the phone is only ever on
+    /// one of them, so the code has to be able to follow.
+    @State private var webPick: String?
     @State private var showPower = false
     @State private var showJobs = false
 
@@ -840,10 +843,16 @@ struct TopBar: View {
     }
 
     private var webPopover: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let addresses = state.webDashboardAddresses
+        return VStack(alignment: .leading, spacing: 12) {
             Text("FleetView on another device")
                 .font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
-            if let url = state.webDashboardURL {
+            if addresses.isEmpty {
+                Text("Not on a network, or the server didn't start. Connect to Wi-Fi and reopen this.")
+                    .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                let picked = addresses.first { $0.url == webPick } ?? addresses[0]
                 if let qr = webQR {
                     Image(nsImage: qr).interpolation(.none).resizable()
                         .frame(width: 176, height: 176)
@@ -851,32 +860,74 @@ struct TopBar: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
-                Text("Scan on your phone, or open on any device on the same Wi-Fi. You'll see every terminal and can tap one to interact.")
+                Text("Scan on your phone, or open on any device that can reach the address below. You'll see every terminal and can tap one to interact.")
                     .font(.system(size: 11)).foregroundColor(Theme.subtext)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
-                    Text(url).font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
-                        .foregroundColor(Theme.text)
-                    Spacer(minLength: 4)
-                    Button("Copy") { copyToClipboard(url) }
-                        .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(Theme.accent)
-                    Button("Open") { NSWorkspace.shared.open(URL(string: "http://localhost:\(state.web.port)/")!) }
-                        .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(Theme.accent)
+                // One row per address, and the QR follows whichever is selected — with two of them
+                // a code that only ever encodes the first is the wrong code half the time.
+                ForEach(addresses) { address in
+                    addressRow(address, selected: address.url == picked.url,
+                               selectable: addresses.count > 1)
                 }
-                .padding(8).background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 6))
-                Label("LAN only — anyone on your network with this link can control your terminals.",
+                Label("anyone who can reach that address can control your terminals.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 10)).foregroundColor(Theme.amber)
                     .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("Not on a network, or the server didn't start. Connect to Wi-Fi and reopen this.")
-                    .font(.system(size: 11)).foregroundColor(Theme.subtext)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(16).frame(width: 250)
-        .onAppear { webQR = state.webDashboardURL.flatMap { QRCode.image(for: $0) } }
+        .padding(16).frame(width: 270)
+        .onAppear {
+            // Re-read on every open: the tailnet goes up and down, and Wi-Fi changes address.
+            let first = state.webDashboardAddresses.first?.url
+            if webPick == nil || !state.webDashboardAddresses.contains(where: { $0.url == webPick }) {
+                webPick = first
+            }
+            webQR = webPick.flatMap { QRCode.image(for: $0) }
+        }
+    }
+
+    private func addressRow(_ address: AppState.WebAddress,
+                            selected: Bool, selectable: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                if selectable {
+                    Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                        .font(.system(size: 10))
+                        .foregroundColor(selected ? Theme.accent : Theme.subtext.opacity(0.6))
+                }
+                Text(address.label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(selected ? Theme.text : Theme.subtext)
+                Spacer(minLength: 4)
+                Button("Copy") { copyToClipboard(address.url) }
+                    .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(Theme.accent)
+                // Deliberately localhost, not this row's address: opening it on the Mac that is
+                // serving it should not depend on the Mac being able to route back to itself
+                // through Tailscale or the router.
+                Button("Open") { NSWorkspace.shared.open(URL(string: "http://localhost:\(state.web.port)/")!) }
+                    .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(Theme.accent)
+            }
+            Text(address.url).font(.system(size: 11, design: .monospaced))
+                .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                .foregroundColor(Theme.text)
+            Text(address.reach)
+                .font(.system(size: 9.5)).foregroundColor(Theme.subtext.opacity(0.8))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(selected ? Theme.accent.opacity(0.10) : Theme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .stroke(selected && selectable ? Theme.accent.opacity(0.45) : Theme.stroke, lineWidth: 1))
+        // The whole row switches the QR; the buttons inside it keep their own actions.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard selectable, webPick != address.url else { return }
+            webPick = address.url
+            webQR = QRCode.image(for: address.url)
+        }
+        .help(selectable ? "点这一行，把二维码换成这个地址" : address.reach)
     }
 
     private func copyToClipboard(_ s: String) {

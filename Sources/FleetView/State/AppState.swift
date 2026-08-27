@@ -2022,11 +2022,37 @@ final class AppState: ObservableObject {
         return remote.endpoint(for: id, name: t.name)
     }
 
-    /// The web dashboard's LAN URL (for the top-bar popover / QR). nil until the server is up.
-    var webDashboardURL: String? {
-        guard web.port > 0, let ip = Tooling.preferredIP() else { return nil }
-        return "http://\(ip):\(web.port)/"
+    /// One address the web dashboard answers on.
+    struct WebAddress: Identifiable, Equatable {
+        let label: String
+        let reach: String     // who can actually open it
+        let url: String
+        var id: String { url }
     }
+
+    /// Every address the dashboard answers on, best first.
+    ///
+    /// Both, not the better one. `Tooling.preferredIP` collapses these to Tailscale whenever the
+    /// tailnet is up, which hid the LAN address on exactly the machine that has both — and on the
+    /// same Wi-Fi the LAN address is the one worth having: it needs nothing installed on the phone,
+    /// it does not leave the house, and it still works on the evening the tailnet does not.
+    var webDashboardAddresses: [WebAddress] {
+        guard web.port > 0 else { return [] }
+        var out: [WebAddress] = []
+        if let ip = Tooling.tailscaleIP() {
+            out.append(WebAddress(label: "Tailscale", reach: "任何登入同一 tailnet 的设备，出门也能开",
+                                  url: "http://\(ip):\(web.port)/"))
+        }
+        if let ip = Tooling.lanIP() {
+            out.append(WebAddress(label: "局域网", reach: "同一个 Wi-Fi，手机上不需要装任何东西",
+                                  url: "http://\(ip):\(web.port)/"))
+        }
+        return out
+    }
+
+    /// The address to lead with (for the QR and anything that can only hold one). nil until the
+    /// server is up.
+    var webDashboardURL: String? { webDashboardAddresses.first?.url }
 
     /// Route a web request to (httpStatus, contentType, body). Called on the main actor by WebServer.
     func webResponse(path: String, query: [String: String]) -> (String, String, Data) {
