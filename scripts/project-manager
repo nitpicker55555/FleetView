@@ -104,6 +104,18 @@ def proj_name(st, pid):
         if p["id"] == pid: return p["name"]
     return "?"
 
+def match_projects(st, sel):
+    """Projects matching `sel` by exact name, name substring, or id prefix (case-insensitive).
+
+    An exact name wins outright, so `-p fancy_web` means that project and not also
+    `qwen_fancy_web` — substring matching alone makes a short name unable to address itself.
+    """
+    sl = sel.lower()
+    exact = [p for p in st["projects"] if p["name"].lower() == sl]
+    if exact:
+        return exact
+    return [p for p in st["projects"] if sl in p["name"].lower() or p["id"].lower().startswith(sl)]
+
 def cluster_name(st, cid):
     if not cid: return ""
     for cl in st.get("clusters", []):
@@ -312,9 +324,45 @@ def cmd_peers(a):
     print(c("90", "\nuse:  project-manager -u <URL> ls        (or FLEETVIEW_URL=<URL>)"))
 
 
+def _ls_head(w, pw):
+    cells = ["%-8s  " % "ID", "%-1s" % "M", "%-*s" % (w, "NAME"), "%-12s" % "CLUSTER"]
+    if pw:
+        cells.append("%-*s" % (pw, "PROJECT"))
+    cells += ["%-5s" % "AGENT", "%5s" % "IDLE", "%7s" % "TOKENS", " STATUS/PROMPT"]
+    return " ".join(cells)
+
+
+def _ls_line(st, t, w, pw):
+    """One packed row. pw=0 drops the PROJECT column; otherwise it is sized to the widest name
+    actually on screen rather than a fixed 12, because a truncated project name is one you cannot
+    grep for — `Benchmark_COWORK` used to print as `Benchmark_CO`, so filtering this table by the
+    name you know silently matched nothing. `-p` exists so you need not grep it at all.
+    """
+    cells = ["%-8s" % t["id"][:8].lower(), dot(t["status"]), mark(t),
+             "%-*s" % (w, t["name"][:w]),
+             "%-12s" % (cluster_name(st, t.get("clusterId")) or "-")[:12]]
+    if pw:
+        cells.append("%-*s" % (pw, proj_name(st, t["projectId"])[:pw]))
+    cells += ["%-5s" % (t.get("agent") or "-")[:5], "%5s" % ago(t.get("idle")),
+              "%7s" % short_tokens(t.get("tokens", 0)),
+              " " + c(STATUS_COLOR.get(t["status"], "0"), t["statusLabel"]) + "  "
+              + (t.get("prompt") or "").replace("\n", " ")[:50]]
+    return " ".join(cells)
+
+
 def cmd_ls(a):
     st = state()
     rows = st["terminals"]
+    sel = getattr(a, "project", None)
+    if sel:
+        ps = match_projects(st, sel)
+        if not ps:
+            sys.exit("no project matches %r (project-manager ls -g lists them)" % sel)
+        keep = {p["id"] for p in ps}
+        rows = [t for t in rows if t.get("projectId") in keep]
+        if not rows:
+            # Not an exit: under `watch` an empty project should keep refreshing, not end the loop.
+            print("no terminals in %s" % ", ".join(p["name"] for p in ps)); return
     # `done` is the wire name of the mark flag (kept so existing saved marks still load).
     if getattr(a, "marked", False):
         rows = [t for t in rows if t.get("done")]
@@ -338,18 +386,80 @@ def cmd_ls(a):
     if not rows:
         print("no terminals"); return
     w = min(26, max((len(t["name"]) for t in rows), default=4))
-    print("%-8s   %-1s %-*s %-12s %-12s %-5s %5s %7s  %s" % (
-        "ID", "M", w, "NAME", "CLUSTER", "PROJECT", "AGENT", "IDLE", "TOKENS", "STATUS/PROMPT"))
-    for t in rows:
-        prompt = (t.get("prompt") or "").replace("\n", " ")[:50]
-        print("%-8s %s %s %-*s %-12s %-12s %-5s %5s %7s  %s" % (
-            t["id"][:8].lower(), dot(t["status"]), mark(t), w, t["name"][:w],
-            (cluster_name(st, t.get("clusterId")) or "-")[:12], proj_name(st, t["projectId"])[:12],
-            (t.get("agent") or "-")[:5], ago(t.get("idle")), short_tokens(t.get("tokens", 0)),
-            c(STATUS_COLOR.get(t["status"], "0"), t["statusLabel"]) + "  " + prompt))
+    if getattr(a, "group", False):
+        # The heading carries the project, so the column would only repeat it.
+        groups = {}
+        for t in rows:
+            groups.setdefault(proj_name(st, t["projectId"]), []).append(t)
+        print(_ls_head(w, 0))
+        for i, pn in enumerate(sorted(groups, key=str.lower)):
+            g = groups[pn]
+            live = sum(1 for t in g if t["status"] != "closed")
+            print("%s%s %s" % ("\n" if i else "", c("1", pn),
+                               c("90", "(%d, %d live)" % (len(g), live))))
+            for t in g:
+                print(_ls_line(st, t, w, 0))
+    else:
+        pw = min(20, max((len(proj_name(st, t["projectId"])) for t in rows), default=7))
+        print(_ls_head(w, pw))
+        for t in rows:
+            print(_ls_line(st, t, w, pw))
     n = sum(1 for t in st["terminals"] if t.get("done"))
     if n and not getattr(a, "marked", False):
         print(c("90", "%d marked (project-manager ls -m)" % n))
+
+def _self_term_id():
+    """The terminal this process is running inside, or None.
+
+    `FLEETVIEW_TERM_ID` is exported by FleetView when it creates the terminal
+    (TerminalWindowController) and is the same handle every status hook reports under, so it is the
+    authoritative answer. The tmux session name is the fallback for a shell started outside that
+    environment — RemoteServer names sessions `fv_<uuid without dashes>`.
+    """
+    tid = os.environ.get("FLEETVIEW_TERM_ID")
+    if tid:
+        return tid
+    try:
+        name = subprocess.check_output(["tmux", "display-message", "-p", "#{session_name}"],
+                                       stderr=subprocess.DEVNULL, text=True).strip()
+    except Exception:
+        return None
+    return name[3:] if name.startswith("fv_") else None
+
+
+def cmd_whoami(a):
+    """Which card is this agent on? Run from inside a FleetView terminal.
+
+    A live query rather than an environment variable FleetView could have exported, because a
+    terminal can be dragged into another project — that changes the answer without restarting the
+    shell, so anything baked in at launch goes stale silently.
+    """
+    tid = _self_term_id()
+    if not tid:
+        sys.exit("not inside a FleetView terminal (no FLEETVIEW_TERM_ID, no fv_* tmux session)")
+    key = tid.replace("-", "").lower()
+    st = state()
+    me = next((t for t in st["terminals"] if t["id"].replace("-", "").lower() == key), None)
+    if not me:
+        # The id is real but unknown here — almost always -u/FLEETVIEW_URL aimed at another Mac.
+        sys.exit("terminal %s is not on %s — wrong instance?" % (tid[:8].lower(), BASE))
+    p = next((q for q in st["projects"] if q["id"] == me.get("projectId")), None)
+    if a.project_only:
+        print(p["name"] if p else ""); return
+    if a.path_only:
+        print(p["path"] if p else ""); return
+    if a.id_only:
+        print(me["id"][:8].lower()); return
+    cl = cluster_name(st, me.get("clusterId"))
+    print("%s %s   [%s]  %s" % (
+        dot(me["status"]), c("1", me["name"]),
+        c(STATUS_COLOR.get(me["status"], "0"), me["statusLabel"]), c("90", me["id"][:8].lower())))
+    print("    project: %s%s" % (p["name"] if p else "?", ("   cluster: " + cl) if cl else ""))
+    if p:
+        print("    path:    %s" % p["path"])
+    print("    cwd:     %s" % me.get("cwd", "?"))
+    print("    agent=%s  tokens=%s" % (me.get("agent") or "-", short_tokens(me.get("tokens", 0))))
+
 
 def cmd_watch(a):
     try:
@@ -477,7 +587,7 @@ def cmd_log(a):
 
 def cmd_new(a):
     st = state()
-    matches = [p for p in st["projects"] if a.sel.lower() in p["name"].lower() or p["id"].startswith(a.sel)]
+    matches = match_projects(st, a.sel)
     if len(matches) != 1:
         sys.exit("specify one project (matched %d)" % len(matches))
     r = api_json("/new?projectId=" + matches[0]["id"])
@@ -545,11 +655,22 @@ def main():
     s.add_argument("--timeout", type=float, default=1.5)
     s.add_argument("--jobs", type=int, default=128)
     s.set_defaults(fn=cmd_peers)
+    s = sub.add_parser("whoami", help="which terminal/project this agent is running in")
+    s.add_argument("-p", "--project", dest="project_only", action="store_true",
+                   help="print only the project name")
+    s.add_argument("--path", dest="path_only", action="store_true",
+                   help="print only the project's directory")
+    s.add_argument("--id", dest="id_only", action="store_true", help="print only this terminal's id")
+    s.set_defaults(fn=cmd_whoami)
     s = sub.add_parser("ls", help="list terminals")
     s.add_argument("-m", "--marked", action="store_true", help="only terminals you marked")
+    s.add_argument("-p", "--project", help="only this project (name substring or id prefix)")
+    s.add_argument("-g", "--group", action="store_true", help="group by project")
     s.set_defaults(fn=cmd_ls)
     w = sub.add_parser("watch", help="live list"); w.add_argument("-n", type=float, default=2.0)
     w.add_argument("-m", "--marked", action="store_true", help="only terminals you marked")
+    w.add_argument("-p", "--project", help="only this project (name substring or id prefix)")
+    w.add_argument("-g", "--group", action="store_true", help="group by project")
     w.set_defaults(fn=cmd_watch)
     for name, fn in (("show", cmd_show), ("tail", cmd_tail)):
         s = sub.add_parser(name); s.add_argument("sel"); s.add_argument("-l", "--lines", type=int, default=200); s.set_defaults(fn=fn)

@@ -40,8 +40,9 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 
 | Command | What it does |
 |---|---|
-| `project-manager ls` | Table of all terminals: id, name, cluster, project, agent, idle, tokens, status, last prompt |
-| `project-manager watch [-n SEC]` | Live-refreshing `ls` (Ctrl-C to stop) |
+| `project-manager whoami` | Which card *this* agent is on: terminal, project, project path, cwd. `-p`/`--path`/`--id` print one value for scripts |
+| `project-manager ls [-p PROJ] [-g]` | Table of all terminals: id, name, cluster, project, agent, idle, tokens, status, last prompt. `-p` narrows to one project, `-g` groups by project |
+| `project-manager watch [-n SEC] [-p PROJ] [-g]` | Live-refreshing `ls` (Ctrl-C to stop) |
 | `project-manager show <id> [-l N]` | One terminal: status, cwd, transcript path, and the last N lines of output |
 | `project-manager tail <id> [-l N]` | Just the recent output (default 200 lines) |
 | `project-manager send <id> <text…>` | Inject a prompt and submit it (Enter). `-N` sends the text without Enter |
@@ -56,6 +57,70 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager notes add <text…>` | Append a note (newlines and quotes survive; use single quotes in zsh) |
 | `project-manager notes rm <note>` | Delete a note, selected by its number, id prefix, or a text substring. It prints the note back — that's the only undo |
 | `project-manager peers` | Scan the LAN and list every FleetView instance with its URL (for `-u`) |
+
+## Knowing which project you are in
+
+An agent inside a FleetView terminal can ask which card it is running on:
+
+```bash
+$ project-manager whoami
+● FleetView-2   [running]  8632f30a
+    project: FleetView
+    path:    /Users/puzhen/PycharmProjects/FleetView
+    cwd:     /Users/puzhen/PycharmProjects/FleetView
+    agent=claude  tokens=314.8k
+```
+
+`-p` prints just the project name, `--path` just its directory, `--id` just your own terminal id —
+one bare value each, so they compose:
+
+```bash
+project-manager ls -p "$(project-manager whoami -p)"     # my siblings in this project
+project-manager show "$(project-manager whoami --id)"    # my own card, as others see it
+```
+
+It identifies itself from `FLEETVIEW_TERM_ID`, exported into every terminal FleetView creates (the
+same handle the status hooks report under), falling back to the `fv_<uuid>` tmux session name if that
+variable was lost. Outside a FleetView terminal it exits non-zero and says so.
+
+**Ask, don't cache.** A terminal can be dragged into another project, which changes the answer with
+no shell restart — a project name captured once goes stale with nothing to signal it.
+
+**`cwd` is not the project.** `whoami` prints both because they diverge: agents `cd` around, while a
+terminal's project is whichever card holds it. Anything that should be per-project keys off
+`project`, not `pwd`.
+
+## Listing one project's terminals
+
+```bash
+project-manager ls -p FleetView       # only that project
+project-manager ls -g                 # every project, grouped
+project-manager watch -p FleetView    # ...the same, live
+```
+
+`-p` resolves a project by **exact name first**, then name substring, then id prefix, all
+case-insensitive — so `-p fancy_web` is that project alone, while `-p fancy` also brings in
+`qwen_fancy_web`. It composes with `-m`, and `watch` takes both flags too. `new` resolves its
+project argument the same way.
+
+`-g` groups by project, dropping the now-redundant PROJECT column and heading each group with
+`(total, n live)`. That is the view that puts a project's **closed** cards next to its live ones —
+the flat list interleaves them with every other project.
+
+Ids printed by either view are exactly the selectors `show`/`send`/`choose` take, so the normal way
+in is `ls -p FleetView` → pick an id → `project-manager show <id>`.
+
+**Don't grep the table for a project.** It used to be quietly wrong: the PROJECT column was
+hard-truncated to 12 characters, so `ls | grep Benchmark_COWORK` matched nothing against a row that
+read `Benchmark_CO`. The column is now sized to what is actually on screen, but `-p` is still the
+answer — it filters on the real `projectId`, not on rendered text.
+
+Two field behaviours behind all of this:
+
+- **`projectId` is the grouping key, not `cwd`.** A terminal's `cwd` can be anywhere (agents `cd`
+  around); its project is whichever card it lives on.
+- **A terminal's `name` drifts.** FleetView renames cards from the conversation, so today's
+  `VC-SPEC-CH` was `⌕ 核查通过，版本号已改并提` an hour ago. Match on the id, never on a remembered name.
 
 ## How to answer an agent's prompt
 
