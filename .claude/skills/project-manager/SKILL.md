@@ -51,7 +51,8 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager check [<id>]` | Flag sessions that look error-terminated (API errors, tracebacks, exited, …) |
 | `project-manager ask <id> <q…>` | **"BTW" side-query**: ask the agent a question using its current context **without** touching/interrupting its live session (forked print-mode query; the answer is thrown away after printing). Takes ~10-40s |
 | `project-manager log <id> [-p\|-c\|-f]` | Locate the agent's transcript file; `-p` path only, `-c` cat, `-f` follow (tail -f) |
-| `project-manager new <project>` | Open a new terminal in a project (matched by name) |
+| `project-manager new <project> [label]` | Open a terminal in a project. `--claude` starts a permission-bypassed Claude session in it, `-c CMD` runs any other command |
+| `project-manager rename <id> <name…>` | Relabel a terminal |
 | `project-manager rm <id>` | Remove a terminal (kills its session) |
 | `project-manager notes [-f Q] [-p]` | The sidebar Notes list — also the web dashboard's quick-command chips. `-f` filters, `-p` prints raw text for copying |
 | `project-manager notes add <text…>` | Append a note (newlines and quotes survive; use single quotes in zsh) |
@@ -121,6 +122,30 @@ Two field behaviours behind all of this:
   around); its project is whichever card it lives on.
 - **A terminal's `name` drifts.** FleetView renames cards from the conversation, so today's
   `VC-SPEC-CH` was `⌕ 核查通过，版本号已改并提` an hour ago. Match on the id, never on a remembered name.
+
+## Opening a terminal, and starting an agent in it
+
+```bash
+project-manager new FleetView                         # empty shell in that project
+project-manager new FleetView "audit pass"            # ...labelled
+project-manager new FleetView "audit pass" --claude   # ...running Claude, permissions bypassed
+project-manager new FleetView -c codex                # ...running something else
+project-manager rename 3bb1633d "a better name"       # relabel any terminal, new or old
+```
+
+The label is a positional argument or `-n`, whichever reads better at the call site. `--claude`
+expands to `claude --dangerously-skip-permissions` — the fleet runs that way by convention, so it is
+one flag rather than a string every caller retypes. `-c` takes any other command; the two are
+mutually exclusive.
+
+**`new` waits for the tmux session before it types.** `/new` returns as soon as the *card* exists,
+but keystrokes go to the session, which comes up a moment later — type into that gap and the command
+vanishes with no error. It polls `canOpen` (the snapshot's authoritative "this instance has the
+session" flag) and then leaves a beat for the shell to draw its first prompt. If the session never
+arrives it reports that the card was created and nothing was typed, rather than implying both.
+
+Renaming is safe to do at any time: `name` is display-only, and every selector that matters (`show`,
+`send`, `choose`) also takes the id, which does not change.
 
 ## How to answer an agent's prompt
 

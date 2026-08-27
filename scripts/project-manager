@@ -46,6 +46,9 @@ BASE = base_url()          # rebound by --url before any command runs
 # Identify ourselves so the audit log attributes these calls to the CLI rather than to an
 # anonymous browser on the LAN.
 UA = "fleetctl/project-manager/1.0"
+# The fleet runs permission-bypassed by convention; `new --claude` exists so that is one
+# explicit flag rather than a string every caller retypes (and sometimes mistypes).
+CLAUDE_CMD = "claude --dangerously-skip-permissions"
 
 
 def _get(path):
@@ -585,13 +588,64 @@ def cmd_log(a):
     elif a.follow and exists:
         os.execvp("tail", ["tail", "-f", tp])
 
+def _rename(tid, name):
+    # quote_via=quote for the same reason cmd_send does it: "+" would come back as a literal plus.
+    api_json("/action?" + urllib.parse.urlencode({"id": tid, "do": "rename", "name": name},
+                                                 quote_via=urllib.parse.quote))
+
+
+def _wait_session(tid, timeout=20.0):
+    """Block until the new terminal's tmux session exists.
+
+    `/new` returns as soon as the card does, but keystrokes go to the tmux session, which comes up
+    a moment later — typing in between is silently dropped. `canOpen` is the authoritative flag:
+    the snapshot computes it from a live list-sessions on this instance.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if any(t["id"] == tid and t.get("canOpen") for t in state()["terminals"]):
+            # The session exists; the shell inside it may still be drawing its first prompt, and a
+            # command typed into that gap lands in the raw tty and is eaten by zsh's line editor.
+            time.sleep(0.6)
+            return True
+        time.sleep(0.4)
+    return False
+
+
 def cmd_new(a):
     st = state()
     matches = match_projects(st, a.sel)
     if len(matches) != 1:
         sys.exit("specify one project (matched %d)" % len(matches))
     r = api_json("/new?projectId=" + matches[0]["id"])
-    print("opened terminal %s in %s" % (r.get("id", "?")[:8], matches[0]["name"]))
+    tid = r.get("id") or ""
+    if not tid:
+        sys.exit("FleetView returned no terminal id")
+    done = ["opened %s in %s" % (c("1", tid[:8].lower()), matches[0]["name"])]
+    # `new <project> <label>` and `-n <label>` are the same thing; the flag wins if both are given.
+    label = a.name or a.label
+    if label:
+        _rename(tid, label)
+        done.append("named %r" % label)
+    cmd = CLAUDE_CMD if a.claude else a.cmd
+    if cmd:
+        if not _wait_session(tid):
+            # The card is real and stays; only the typing failed, so say which half happened.
+            print(", ".join(done))
+            sys.exit("session did not come up within 20s — nothing typed")
+        api_json("/type?" + urllib.parse.urlencode(
+            {"id": tid, "text": cmd, "enter": "1"}, quote_via=urllib.parse.quote))
+        done.append("running %s" % c("1", cmd))
+    print(", ".join(done))
+
+
+def cmd_rename(a):
+    t = resolve(state(), a.sel)
+    name = " ".join(a.text).strip()
+    if not name:
+        sys.exit("empty name")
+    _rename(t["id"], name)
+    print("%s  %s -> %s" % (t["id"][:8].lower(), t["name"], c("1", name)))
 
 def cmd_rm(a):
     t = resolve(state(), a.sel)
@@ -682,7 +736,16 @@ def main():
     s = sub.add_parser("log", help="locate the agent transcript file"); s.add_argument("sel")
     s.add_argument("-f", "--follow", action="store_true"); s.add_argument("-c", "--cat", action="store_true")
     s.add_argument("-p", "--path", dest="path_only", action="store_true", help="print only the path"); s.set_defaults(fn=cmd_log)
-    s = sub.add_parser("new"); s.add_argument("sel", help="project"); s.set_defaults(fn=cmd_new)
+    s = sub.add_parser("new", help="open a terminal in a project")
+    s.add_argument("sel", help="project")
+    s.add_argument("label", nargs="?", help="label the new terminal (same as -n)")
+    s.add_argument("-n", "--name", help="label the new terminal")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--claude", action="store_true", help="start `%s` in it" % CLAUDE_CMD)
+    g.add_argument("-c", "--cmd", help="run this command in it instead")
+    s.set_defaults(fn=cmd_new)
+    s = sub.add_parser("rename", help="relabel a terminal")
+    s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_rename)
     s = sub.add_parser("rm"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
     s = sub.add_parser("notes", help="the shared Notes list / web quick-commands")
     s.add_argument("action", nargs="?", choices=("ls", "add", "rm"), help="default: ls")
