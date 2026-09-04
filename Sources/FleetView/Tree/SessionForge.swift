@@ -34,10 +34,31 @@ enum SessionForge {
             return ForkResult(sessionId: sid, wroteFile: nil, chainLength: 0)
         }
 
-        let files = ((try? FileManager.default.contentsOfDirectory(
-            at: projectDir, includingPropertiesForKeys: nil)) ?? [])
-            .filter { $0.pathExtension == "jsonl" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        // Every layout `claudeProjectDir` accepts, in the order the dedup below needs: top level
+        // (`<sid>.jsonl`) first, then `<sid>/*.jsonl`, then `<sid>/subagents/agent-*.jsonl`. The
+        // scan used to stop at the top level, so a hit inside a subagent transcript — which the
+        // search index does record — matched no file at all and surfaced as "node not found in
+        // project directory" about a file sitting right there.
+        //
+        // Top level stays first because dedup is first-occurrence-wins: every uuid the old scan
+        // resolved still resolves to the same record, and the nested files only add uuids nothing
+        // else could answer for.
+        let fm = FileManager.default
+        func jsonls(in dir: URL) -> [URL] {
+            ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension == "jsonl" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
+        func subdirectories(of dir: URL) -> [URL] {
+            ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey])) ?? [])
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
+        var files = jsonls(in: projectDir)
+        for sub in subdirectories(of: projectDir) {
+            files += jsonls(in: sub)
+            for deeper in subdirectories(of: sub) { files += jsonls(in: deeper) }
+        }
 
         // Slim graph (cache-warm via SessionTreeBuilder) with file provenance: uuid → first file.
         var slim: [String: SlimRecord] = [:]
