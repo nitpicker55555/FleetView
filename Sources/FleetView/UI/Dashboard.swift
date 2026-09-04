@@ -578,7 +578,6 @@ struct TopBar: View {
     @State private var webPick: String?
     @State private var showPower = false
     @State private var showJobs = false
-    @State private var showRecent = false
 
     private var working: Int { state.terminals.filter { $0.status == .working }.count }
     private var needs: Int { state.terminals.filter { $0.status == .needsYou }.count }
@@ -594,7 +593,6 @@ struct TopBar: View {
             if needs > 0 { pill("\(needs) needs you", .needsYou) }
             Spacer()
             markFilterButton
-            recentButton
             jobsButton
             updateButton
             searchButton
@@ -609,61 +607,6 @@ struct TopBar: View {
     /// Background work — a clone, a self-update — with a bar on it and a way out of it. Present
     /// only while something is running or has failed; the rest of the time there is nothing to say
     /// and a permanently parked "0 tasks" chip would be one more thing in a row that is already full.
-    /// Every card on the board, most recently used first.
-    ///
-    /// The board is laid out by project, which is the right shape for finding work and the wrong
-    /// one for "the terminal I was just in" — that card can be under any project, and on a fleet
-    /// this size it is usually off screen. This answers that question without moving anything: the
-    /// board keeps its own order, so the card stays where you last saw it.
-    @ViewBuilder private var recentButton: some View {
-        if !state.terminals.isEmpty {
-            Button { showRecent.toggle() } label: {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(showRecent ? Theme.accent : Theme.text)
-                    .padding(.horizontal, 9).padding(.vertical, 4)
-                    .background(Theme.card)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.stroke, lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .help("最近使用过的终端 — 点一行就是点那张卡")
-            .popover(isPresented: $showRecent, arrowEdge: .bottom) { recentPopover }
-        }
-    }
-
-    /// Ties break on the id: `sort` is not stable, and the cards that tie are exactly the ones that
-    /// have never reported activity, so without it the tail of this list would shuffle each time it
-    /// opened.
-    private var recentTerminals: [TerminalSession] {
-        state.terminals.sorted {
-            let (a, b) = ($0.lastActivity ?? .distantPast, $1.lastActivity ?? .distantPast)
-            return a == b ? $0.id.uuidString < $1.id.uuidString : a > b
-        }
-    }
-
-    private var recentPopover: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("最近使用").font(.system(size: 13, weight: .semibold)).foregroundColor(Theme.text)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 1) {
-                    // `now` is captured once per opening rather than ticking: a popover is read and
-                    // dismissed in a few seconds, and a list that re-sorts under the pointer is a
-                    // list you cannot click.
-                    let now = Date()
-                    ForEach(recentTerminals) { t in
-                        RecentTerminalRow(terminal: t, now: now) {
-                            showRecent = false
-                            state.raiseTerminal(t.id)
-                        }
-                    }
-                }
-            }
-            .frame(maxHeight: 380)
-        }
-        .padding(14).frame(width: 340)
-    }
-
     @ViewBuilder private var jobsButton: some View {
         if !jobs.jobs.isEmpty {
             let broken = !jobs.failed.isEmpty
@@ -998,45 +941,6 @@ struct TopBar: View {
             .background(Theme.statusColor(status).opacity(0.18))
             .foregroundColor(Theme.statusColor(status))
             .clipShape(Capsule())
-    }
-}
-
-/// One row of the recent list.
-///
-/// Clicking is `raiseTerminal` — exactly what clicking the card does, which raises the window when
-/// it is open and reopens the session when it is not. That is the point: this is a second way to
-/// the same place, not a second behaviour with its own rules about closed cards.
-private struct RecentTerminalRow: View {
-    @EnvironmentObject var state: AppState
-    let terminal: TerminalSession
-    let now: Date
-    let tap: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: tap) {
-            HStack(spacing: 8) {
-                Circle().fill(Theme.statusColor(terminal.status)).frame(width: 7, height: 7)
-                Text(terminal.name)
-                    .font(.system(size: 12)).foregroundColor(Theme.text).lineLimit(1)
-                Spacer(minLength: 6)
-                if let p = state.project(terminal.projectId)?.name {
-                    Text(p)
-                        .font(.system(size: 10)).foregroundColor(Theme.subtext.opacity(0.7))
-                        .lineLimit(1).layoutPriority(-1)
-                }
-                Text(RelativeTime.short(terminal.lastActivity, now: now) ?? "—")
-                    .font(.system(size: 10)).foregroundColor(Theme.subtext)
-                    .frame(width: 54, alignment: .trailing)
-            }
-            .padding(.horizontal, 6).padding(.vertical, 5)
-            .background(hovering ? Theme.cardHover : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 5))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(terminal.cwd)
     }
 }
 
