@@ -967,6 +967,7 @@ struct MainArea: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 28) {
                         RunningStrip()
+                        RecentStrip()
                         ForEach(state.visibleProjects) { p in
                             ProjectSection(project: p).id(p.id)
                         }
@@ -1019,7 +1020,7 @@ struct RunningStrip: View {
                           alignment: .leading, spacing: 14) {
                     ForEach(running) { t in
                         VStack(alignment: .leading, spacing: 5) {
-                            projectTag(for: t)
+                            ProjectTag(terminal: t)
                             TerminalCardView(terminal: t)
                         }
                     }
@@ -1033,14 +1034,23 @@ struct RunningStrip: View {
         }
     }
 
-    /// Where this card lives when it is not here. Double-click opens that folder, the same gesture
-    /// the project header answers to — this label says "project" and so it should behave like one.
-    ///
-    /// lineLimit(1) for the same reason every other label on a card has it: a name that wraps
-    /// changes the row's height, and this row is rebuilt every time an agent starts or stops.
-    private func projectTag(for t: TerminalSession) -> some View {
-        let name = state.projects.first { $0.id == t.projectId }?.name ?? "—"
-        return HStack(spacing: 4) {
+}
+
+/// Where a card lives when it is not here. Double-click opens that folder, the same gesture the
+/// project header answers to — this label says "project" and so it should behave like one.
+///
+/// Shared by both strips: each one lifts cards out of the grouping that would otherwise say which
+/// project they belong to, so each one owes the reader this line.
+///
+/// lineLimit(1) for the same reason every other label on a card has it: a name that wraps changes
+/// the row's height, and these rows are rebuilt every time an agent starts or stops.
+struct ProjectTag: View {
+    @EnvironmentObject var state: AppState
+    let terminal: TerminalSession
+
+    var body: some View {
+        let name = state.projects.first { $0.id == terminal.projectId }?.name ?? "—"
+        HStack(spacing: 4) {
             Image(systemName: "folder.fill")
                 .font(.system(size: 8)).foregroundColor(Theme.subtext.opacity(0.55))
             Text(name)
@@ -1052,8 +1062,69 @@ struct RunningStrip: View {
         // The whole tag, not just the text: it is two small glyphs and a 10pt label, and hitting
         // only the characters would be a worse target than the thing looks.
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { state.openInFinder(t.projectId) }
+        .onTapGesture(count: 2) { state.openInFinder(terminal.projectId) }
         .help("双击在 Finder 中打开 \(name)")
+    }
+}
+
+/// The cards you used most recently, lifted to the top the same way RUNNING NOW lifts the busy ones.
+/// Same cards again, so a terminal reached from here drags, marks and opens exactly like the one in
+/// its project section — this is a second place to find a terminal, not a second kind of terminal.
+///
+/// Working terminals are left out: they are in the strip immediately above, and the same card drawn
+/// twice within one screen of itself reads as two terminals. So does a card that has never been
+/// used, which is why a terminal with no activity at all never appears here.
+///
+/// Capped, because this is a shortcut and not a second board. Uncapped it would restate the whole
+/// fleet above the fleet, and past a handful the question is better answered by search.
+///
+/// Absent rather than empty, for the same reason the running strip is: a permanent "nothing here"
+/// header is furniture that is wrong most of the time.
+struct RecentStrip: View {
+    @EnvironmentObject var state: AppState
+
+    private static let limit = 6
+
+    private var recent: [TerminalSession] {
+        state.visible(state.terminals.filter { $0.status != .working && $0.lastActivity != nil })
+            .sorted {
+                let (a, b) = ($0.lastActivity ?? .distantPast, $1.lastActivity ?? .distantPast)
+                // `sort` is not stable, and this list is rebuilt on every activity tick.
+                return a == b ? $0.id.uuidString < $1.id.uuidString : a > b
+            }
+            .prefix(Self.limit)
+            .map { $0 }
+    }
+
+    var body: some View {
+        if !recent.isEmpty {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack(spacing: 8) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 11)).foregroundColor(Theme.subtext)
+                    Text("RECENTLY USED")
+                        .font(.system(size: 10, weight: .bold)).foregroundColor(Theme.subtext)
+                    Text("\(recent.count)")
+                        .font(.system(size: 11, weight: .medium)).foregroundColor(Theme.subtext)
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(Theme.card).clipShape(Capsule())
+                    Spacer()
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 14)],
+                          alignment: .leading, spacing: 14) {
+                    ForEach(recent) { t in
+                        VStack(alignment: .leading, spacing: 5) {
+                            ProjectTag(terminal: t)
+                            TerminalCardView(terminal: t)
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .background(Theme.subtext.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.stroke, lineWidth: 1))
+        }
     }
 }
 
