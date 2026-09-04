@@ -593,6 +593,7 @@ struct TopBar: View {
             if needs > 0 { pill("\(needs) needs you", .needsYou) }
             Spacer()
             markFilterButton
+            recentStripButton
             jobsButton
             updateButton
             searchButton
@@ -607,6 +608,28 @@ struct TopBar: View {
     /// Background work — a clone, a self-update — with a bar on it and a way out of it. Present
     /// only while something is running or has failed; the rest of the time there is nothing to say
     /// and a permanently parked "0 tasks" chip would be one more thing in a row that is already full.
+    /// Show or hide the RECENTLY USED strip.
+    ///
+    /// It lives up here, not on the strip: a control inside the thing it hides disappears with it,
+    /// and then there is no way back. Only shown once there is something for the strip to hold, so
+    /// it stays off a board that has just been opened.
+    @ViewBuilder private var recentStripButton: some View {
+        if state.terminals.contains(where: { $0.status != .working && $0.lastActivity != nil }) {
+            Button { state.showRecentStrip.toggle(); state.save() } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(state.showRecentStrip ? Theme.onAccent : Theme.text)
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .background(state.showRecentStrip ? Theme.accent : Theme.card)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .stroke(state.showRecentStrip ? Color.clear : Theme.stroke, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .help(state.showRecentStrip ? "隐藏「最近使用」" : "显示「最近使用」")
+        }
+    }
+
     @ViewBuilder private var jobsButton: some View {
         if !jobs.jobs.isEmpty {
             let broken = !jobs.failed.isEmpty
@@ -1097,7 +1120,7 @@ struct RecentStrip: View {
     }
 
     var body: some View {
-        if !recent.isEmpty {
+        if state.showRecentStrip && !recent.isEmpty {
             VStack(alignment: .leading, spacing: 13) {
                 HStack(spacing: 8) {
                     Image(systemName: "clock.arrow.circlepath")
@@ -1110,14 +1133,21 @@ struct RecentStrip: View {
                         .background(Theme.card).clipShape(Capsule())
                     Spacer()
                 }
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 14)],
-                          alignment: .leading, spacing: 14) {
-                    ForEach(recent) { t in
-                        VStack(alignment: .leading, spacing: 5) {
-                            ProjectTag(terminal: t)
-                            TerminalCardView(terminal: t)
+                // One row, scrolled sideways rather than wrapped: this strip is a shortcut, and a
+                // shortcut that grows a second row pushes the board itself off screen. A fixed card
+                // width because an HStack would otherwise stretch six cards to whatever is left.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 14) {
+                        ForEach(recent) { t in
+                            VStack(alignment: .leading, spacing: 5) {
+                                ProjectTag(terminal: t)
+                                TerminalCardView(terminal: t)
+                            }
+                            .frame(width: 340)
                         }
                     }
+                    // The cards carry a drop-shadow and a focus ring that a tight clip would cut.
+                    .padding(.vertical, 2)
                 }
             }
             .padding(14)

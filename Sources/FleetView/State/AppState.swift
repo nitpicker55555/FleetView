@@ -24,6 +24,11 @@ final class AppState: ObservableObject {
     /// speaks for the whole fleet — a fleet that is quietly half-hidden is worse than no filter.
     @Published var showOnlyMarked: Bool = false
 
+    /// Whether the RECENTLY USED strip is on. Defaults to on, and the toggle for it lives in the
+    /// toolbar rather than on the strip itself — a control inside the thing it hides leaves no way
+    /// back once it has hidden it.
+    @Published var showRecentStrip: Bool = true
+
     /// Projects whose section is folded shut on the board.
     ///
     /// Held here as a set of ids rather than as a field on `Project`, because `Project` is decoded
@@ -564,6 +569,7 @@ final class AppState: ObservableObject {
         var collapsedProjects: [UUID]?
         var terminalFontSize: Double?
         var terminalArchive: [TerminalArchive]?
+        var showRecentStrip: Bool?
 
         /// Every field decoded on its own, and a field that will not decode is dropped rather than
         /// taken as a corrupt file.
@@ -593,20 +599,22 @@ final class AppState: ObservableObject {
             collapsedProjects = get(.collapsedProjects, [UUID].self)
             terminalFontSize = get(.terminalFontSize, Double.self)
             terminalArchive = get(.terminalArchive, [TerminalArchive].self)
+            showRecentStrip = get(.showRecentStrip, Bool.self)
         }
 
         init(projects: [Project], terminals: [TerminalSession], clusters: [Cluster],
              selectedProjectId: UUID?, sidebarWidth: Double?, notes: [Note]?,
              tasksCollapsed: Bool?, notesCollapsed: Bool?, treePanelWidth: Double?,
              showOnlyMarked: Bool?, closeTerminalsOnQuit: Bool?, collapsedProjects: [UUID]?,
-             terminalFontSize: Double?, terminalArchive: [TerminalArchive]?) {
+             terminalFontSize: Double?, terminalArchive: [TerminalArchive]?,
+             showRecentStrip: Bool?) {
             self.projects = projects; self.terminals = terminals; self.clusters = clusters
             self.selectedProjectId = selectedProjectId; self.sidebarWidth = sidebarWidth
             self.notes = notes; self.tasksCollapsed = tasksCollapsed
             self.notesCollapsed = notesCollapsed; self.treePanelWidth = treePanelWidth
             self.showOnlyMarked = showOnlyMarked; self.closeTerminalsOnQuit = closeTerminalsOnQuit
             self.collapsedProjects = collapsedProjects; self.terminalFontSize = terminalFontSize
-            self.terminalArchive = terminalArchive
+            self.terminalArchive = terminalArchive; self.showRecentStrip = showRecentStrip
         }
     }
 
@@ -660,6 +668,7 @@ final class AppState: ObservableObject {
         tasksCollapsed = p.tasksCollapsed ?? false
         notesCollapsed = p.notesCollapsed ?? false
         showOnlyMarked = p.showOnlyMarked ?? false
+        showRecentStrip = p.showRecentStrip ?? true
         closeTerminalsOnQuit = p.closeTerminalsOnQuit ?? false
         // Clamped on the way in as well as on the way out: state.json is a file on disk that people
         // do edit, and a 400pt terminal is a window with one character in it.
@@ -707,7 +716,8 @@ final class AppState: ObservableObject {
                           closeTerminalsOnQuit: closeTerminalsOnQuit,
                           collapsedProjects: Array(collapsedProjects),
                           terminalFontSize: terminalFontSize,
-                          terminalArchive: terminalArchive)
+                          terminalArchive: terminalArchive,
+                          showRecentStrip: showRecentStrip)
         // .atomic: without it a crash or a full disk mid-write leaves a truncated state.json, and
         // that file IS the board — every project, terminal and cluster.
         if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile, options: .atomic) }
