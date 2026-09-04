@@ -593,7 +593,6 @@ struct TopBar: View {
             if needs > 0 { pill("\(needs) needs you", .needsYou) }
             Spacer()
             markFilterButton
-            sortButton
             jobsButton
             updateButton
             searchButton
@@ -705,34 +704,6 @@ struct TopBar: View {
             .buttonStyle(.plain)
             .help(state.showOnlyMarked ? "显示全部终端" : "只显示被 Mark 的终端")
         }
-    }
-
-    /// Order the board by activity, newest first — projects reordered too, not just the cards
-    /// inside them.
-    ///
-    /// It says "最近使用" while it is on rather than staying icon-only: a reordered board looks
-    /// exactly like a normal board, so an ordering you cannot see a cause for reads as the cards
-    /// having moved on their own. Same chrome as the mark filter because it is the same kind of
-    /// thing — a view over the fleet, not a change to it — but tinted with the plain accent, since
-    /// the mark tint means one specific thing already.
-    private var sortButton: some View {
-        Button { state.sortByRecent.toggle(); state.save() } label: {
-            HStack(spacing: 5) {
-                Image(systemName: state.sortByRecent ? "clock.fill" : "clock")
-                    .font(.system(size: 11, weight: .semibold))
-                if state.sortByRecent {
-                    Text("最近使用").font(.system(size: 11, weight: .medium))
-                }
-            }
-            .foregroundColor(state.sortByRecent ? Theme.onAccent : Theme.text)
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(state.sortByRecent ? Theme.accent : Theme.card)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6)
-                .stroke(state.sortByRecent ? Color.clear : Theme.stroke, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .help(state.sortByRecent ? "恢复默认顺序" : "按最近使用时间排序（最新在前）")
     }
 
     /// The only on-screen way in to conversation search (⌘K also opens it). Icon-only, matching

@@ -24,11 +24,6 @@ final class AppState: ObservableObject {
     /// speaks for the whole fleet — a fleet that is quietly half-hidden is worse than no filter.
     @Published var showOnlyMarked: Bool = false
 
-    /// Order the board by activity instead of by the order things were created: newest first,
-    /// projects included. Off by default, because the default board is a stable place — a card that
-    /// moves whenever its agent says something is hard to point at.
-    @Published var sortByRecent: Bool = false
-
     /// Projects whose section is folded shut on the board.
     ///
     /// Held here as a set of ids rather than as a field on `Project`, because `Project` is decoded
@@ -569,7 +564,6 @@ final class AppState: ObservableObject {
         var collapsedProjects: [UUID]?
         var terminalFontSize: Double?
         var terminalArchive: [TerminalArchive]?
-        var sortByRecent: Bool?
 
         /// Every field decoded on its own, and a field that will not decode is dropped rather than
         /// taken as a corrupt file.
@@ -599,22 +593,20 @@ final class AppState: ObservableObject {
             collapsedProjects = get(.collapsedProjects, [UUID].self)
             terminalFontSize = get(.terminalFontSize, Double.self)
             terminalArchive = get(.terminalArchive, [TerminalArchive].self)
-            sortByRecent = get(.sortByRecent, Bool.self)
         }
 
         init(projects: [Project], terminals: [TerminalSession], clusters: [Cluster],
              selectedProjectId: UUID?, sidebarWidth: Double?, notes: [Note]?,
              tasksCollapsed: Bool?, notesCollapsed: Bool?, treePanelWidth: Double?,
              showOnlyMarked: Bool?, closeTerminalsOnQuit: Bool?, collapsedProjects: [UUID]?,
-             terminalFontSize: Double?, terminalArchive: [TerminalArchive]?,
-             sortByRecent: Bool?) {
+             terminalFontSize: Double?, terminalArchive: [TerminalArchive]?) {
             self.projects = projects; self.terminals = terminals; self.clusters = clusters
             self.selectedProjectId = selectedProjectId; self.sidebarWidth = sidebarWidth
             self.notes = notes; self.tasksCollapsed = tasksCollapsed
             self.notesCollapsed = notesCollapsed; self.treePanelWidth = treePanelWidth
             self.showOnlyMarked = showOnlyMarked; self.closeTerminalsOnQuit = closeTerminalsOnQuit
             self.collapsedProjects = collapsedProjects; self.terminalFontSize = terminalFontSize
-            self.terminalArchive = terminalArchive; self.sortByRecent = sortByRecent
+            self.terminalArchive = terminalArchive
         }
     }
 
@@ -668,7 +660,6 @@ final class AppState: ObservableObject {
         tasksCollapsed = p.tasksCollapsed ?? false
         notesCollapsed = p.notesCollapsed ?? false
         showOnlyMarked = p.showOnlyMarked ?? false
-        sortByRecent = p.sortByRecent ?? false
         closeTerminalsOnQuit = p.closeTerminalsOnQuit ?? false
         // Clamped on the way in as well as on the way out: state.json is a file on disk that people
         // do edit, and a 400pt terminal is a window with one character in it.
@@ -716,8 +707,7 @@ final class AppState: ObservableObject {
                           closeTerminalsOnQuit: closeTerminalsOnQuit,
                           collapsedProjects: Array(collapsedProjects),
                           terminalFontSize: terminalFontSize,
-                          terminalArchive: terminalArchive,
-                          sortByRecent: sortByRecent)
+                          terminalArchive: terminalArchive)
         // .atomic: without it a crash or a full disk mid-write leaves a truncated state.json, and
         // that file IS the board — every project, terminal and cluster.
         if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile, options: .atomic) }
@@ -1419,50 +1409,15 @@ final class AppState: ObservableObject {
         taskGroups.flatMap(\.tasks)
     }
 
-    /// The most recent activity behind a task. A cluster answers with its liveliest member, so a
-    /// cluster does not sink to the bottom because one card in it has been quiet.
-    ///
-    /// A terminal that has never reported activity has no date at all; `.distantPast` files those
-    /// together at the end rather than letting them claim "now".
-    func lastActivity(of task: TaskItem) -> Date {
-        switch task {
-        case .terminal(let id):
-            return terminals.first { $0.id == id }?.lastActivity ?? .distantPast
-        case .cluster(let id):
-            return members(ofCluster: id).compactMap(\.lastActivity).max() ?? .distantPast
-        }
-    }
-
     /// Tasks grouped by project (only projects that have at least one task).
-    ///
-    /// With `sortByRecent` on, both levels are ordered by activity. Sorting within a project is not
-    /// enough for "newest first" to be true on screen: the board draws project by project, so the
-    /// newest card in the fleet would still sit below every card of whatever project came first.
-    ///
-    /// Ties break on the item's own id — `sort` is not stable, and the cards that tie are exactly
-    /// the ones that have never reported activity, so without a tiebreak a board full of fresh
-    /// terminals would reshuffle itself on every redraw.
     var taskGroups: [TaskGroup] {
-        let groups: [TaskGroup] = projects.compactMap { p in
+        projects.compactMap { p in
             var items: [TaskItem] = []
             for c in clustersInProject(p.id) where !visible(members(ofCluster: c.id)).isEmpty {
                 items.append(.cluster(c.id))
             }
             for t in visible(standaloneTerminals(inProject: p.id)) { items.append(.terminal(t.id)) }
-            if items.isEmpty { return nil }
-            if sortByRecent {
-                items.sort {
-                    let (a, b) = (lastActivity(of: $0), lastActivity(of: $1))
-                    return a == b ? $0.id < $1.id : a > b
-                }
-            }
-            return TaskGroup(project: p, tasks: items)
-        }
-        guard sortByRecent else { return groups }
-        return groups.sorted {
-            let a = $0.tasks.map(lastActivity(of:)).max() ?? .distantPast
-            let b = $1.tasks.map(lastActivity(of:)).max() ?? .distantPast
-            return a == b ? $0.id.uuidString < $1.id.uuidString : a > b
+            return items.isEmpty ? nil : TaskGroup(project: p, tasks: items)
         }
     }
 
