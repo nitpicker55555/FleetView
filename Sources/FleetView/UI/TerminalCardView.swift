@@ -305,11 +305,13 @@ struct TerminalCardView: View {
 
     /// The terminal's id, shown short and click-to-copy (full UUID) — use it to target `fleetctl`.
     ///
-    /// Four characters, and `fixedSize` so it is never the thing that gives way: a prefix clipped
-    /// by the layout ("2…") addresses nothing, while four characters still resolve a terminal for
-    /// `project-manager`, and clicking still copies the whole UUID.
+    /// Four characters plus an ellipsis, and `fixedSize` so it is never the thing that gives way.
+    /// The "…" is written here rather than left to the layout: a prefix the *layout* clipped ("2…")
+    /// is a truncation you cannot trust the length of, while "8632…" says four characters is all
+    /// this label ever shows. Four still resolve a terminal for `project-manager`, and clicking
+    /// copies the whole UUID.
     private var idChip: some View {
-        let short = String(terminal.id.uuidString.prefix(4)).lowercased()
+        let short = String(terminal.id.uuidString.prefix(4)).lowercased() + "…"
         return Button {
             copyToClipboard(terminal.id.uuidString.lowercased())
             withAnimation(.easeOut(duration: 0.12)) { copiedId = true }
