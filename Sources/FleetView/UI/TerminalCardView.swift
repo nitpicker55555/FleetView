@@ -154,7 +154,7 @@ struct TerminalCardView: View {
                 }
                 .opacity(terminal.status == .working ? 0 : 1)
                 .allowsHitTesting(terminal.status != .working)   // no tooltip on an invisible label
-                .layoutPriority(1)                               // gives way after the clock, before the id
+                .fixedSize()                                     // the room the four icons freed is for this
             }
             Spacer(minLength: 4)
             controls
@@ -194,31 +194,33 @@ struct TerminalCardView: View {
         .clipShape(Capsule())
     }
 
+    /// Two buttons, not six. The four that were here — mark, raise, duplicate, session tree — were
+    /// each one glyph wide and together they took about 100pt out of a row that was already short
+    /// of it: at the grid's smaller columns the footer wants ~301pt and gets 272, and the id was
+    /// what paid, rendering as "2…". They all moved into the menu, which loses no action and gives
+    /// the id and the two clocks room to be read.
     private var controls: some View {
         HStack(spacing: 13) {
-            iconButton(done ? "bookmark.fill" : "bookmark",
-                       active: done, help: done ? "Unmark" : "Mark") {
-                state.toggleSubtaskDone(terminal.id)
-            }
-            if terminal.status.isOpen {
-                iconButton("arrow.up.left.square", help: "Raise to front") { state.raiseTerminal(terminal.id) }
-            } else {
-                iconButton("play.circle", help: "Reopen terminal") { state.reopenTerminal(terminal.id) }
-            }
-            iconButton("plus.square.on.square", help: "Duplicate (fork session)") { state.duplicateTerminal(terminal.id) }
-            iconButton("arrow.triangle.branch", active: state.treePanelTerminalId == terminal.id,
-                       help: "会话树 — 查看/fork 任意历史节点") {
-                if state.treePanelTerminalId == terminal.id { state.closeSessionTree() }
-                else { state.openSessionTree(terminal.id) }
-            }
             iconButton("globe", active: showRemote, help: "Open on another device (web)") {
                 showRemote.toggle()
             }
             .popover(isPresented: $showRemote, arrowEdge: .bottom) { remotePopover }
             Menu {
-                Button("Rename…") { state.requestRename(terminal.id) }
-                Button("Show Session Tree") { state.openSessionTree(terminal.id) }
+                Button(done ? "Unmark" : "Mark") { state.toggleSubtaskDone(terminal.id) }
+                if terminal.status.isOpen {
+                    Button("Raise to Front") { state.raiseTerminal(terminal.id) }
+                } else {
+                    Button("Reopen Terminal") { state.reopenTerminal(terminal.id) }
+                }
+                Divider()
+                Button(state.treePanelTerminalId == terminal.id ? "Hide Session Tree"
+                                                                : "Show Session Tree") {
+                    if state.treePanelTerminalId == terminal.id { state.closeSessionTree() }
+                    else { state.openSessionTree(terminal.id) }
+                }
+                Button("Duplicate (fork session)") { state.duplicateTerminal(terminal.id) }
                 Button("Duplicate blank") { state.duplicateTerminal(terminal.id, blank: true) }
+                Button("Rename…") { state.requestRename(terminal.id) }
                 if terminal.clusterId != nil {
                     Button("Remove from Cluster") { state.removeFromCluster(terminal.id) }
                 }
@@ -302,8 +304,12 @@ struct TerminalCardView: View {
     }
 
     /// The terminal's id, shown short and click-to-copy (full UUID) — use it to target `fleetctl`.
+    ///
+    /// Four characters, and `fixedSize` so it is never the thing that gives way: a prefix clipped
+    /// by the layout ("2…") addresses nothing, while four characters still resolve a terminal for
+    /// `project-manager`, and clicking still copies the whole UUID.
     private var idChip: some View {
-        let short = String(terminal.id.uuidString.prefix(8)).lowercased()
+        let short = String(terminal.id.uuidString.prefix(4)).lowercased()
         return Button {
             copyToClipboard(terminal.id.uuidString.lowercased())
             withAnimation(.easeOut(duration: 0.12)) { copiedId = true }
@@ -317,6 +323,7 @@ struct TerminalCardView: View {
                 .foregroundColor(copiedId ? Theme.green : Theme.subtext.opacity(0.55))
         }
         .buttonStyle(.plain)
+        .fixedSize()
         .help("Click to copy this terminal's ID (for fleetctl)")
     }
 
