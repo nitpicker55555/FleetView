@@ -214,6 +214,17 @@ struct TerminalCardView: View {
                     Button("Reopen Terminal") { state.reopenTerminal(terminal.id) }
                 }
                 Divider()
+                // Also on double-click of the id chip. Kept here as well because a gesture is
+                // discoverable only if you already know it exists, and this is the one action on
+                // the card you would otherwise go to the CLI for.
+                Button("Copy Conversation Path") {
+                    if let path = state.transcriptPath(for: terminal.id) {
+                        copyToClipboard(path)
+                        flashId("path")
+                    } else {
+                        flashId("no log")
+                    }
+                }
                 Button(state.treePanelTerminalId == terminal.id ? "Hide Session Tree"
                                                                 : "Show Session Tree") {
                     if state.treePanelTerminalId == terminal.id { state.closeSessionTree() }
@@ -320,26 +331,34 @@ struct TerminalCardView: View {
             // The whole chip, not just its glyphs: it is five 9pt characters, and hitting only the
             // ink would be a far worse target than the label looks.
             .contentShape(Rectangle())
-            // count: 2 is declared first on purpose. SwiftUI offers a tap to the handlers in order,
-            // and a single-tap handler declared ahead of it consumes the first click of a double —
-            // the double-tap would then never fire.
-            .onTapGesture(count: 2) {
-                // `transcriptPath(for:)`, not the stored `transcriptPath`: it resolves Codex from
-                // its rollouts ahead of the hook pointer, which is the case where the stored value
-                // is silently frozen on a file from days ago.
-                if let path = state.transcriptPath(for: terminal.id) {
-                    copyToClipboard(path)
-                    flashId("path")
-                } else {
-                    // Said out loud rather than copying an empty string: a card that only ever held
-                    // a shell has no conversation, and a silent no-op looks like a failed copy.
-                    flashId("no log")
+            // One exclusive gesture, not two `onTapGesture`s, and high-priority so it beats the
+            // card.
+            //
+            // Two stacked `onTapGesture`s did not work here: the single-tap handler is satisfied by
+            // the first click and fires immediately, so the double never formed. Ordering them the
+            // other way does not help — and the whole card already carries `.onTapGesture { raise }`
+            // (see `body`), which competes for the same click from above. `exclusively(before:)`
+            // makes the double-tap the one that has to fail before the single is offered, and
+            // `highPriorityGesture` is what stops the card's own tap from taking it first.
+            .highPriorityGesture(
+                TapGesture(count: 2).onEnded {
+                    // `transcriptPath(for:)`, not the stored `transcriptPath`: it resolves Codex
+                    // from its rollouts ahead of the hook pointer, which is the case where the
+                    // stored value is silently frozen on a file from days ago.
+                    if let path = state.transcriptPath(for: terminal.id) {
+                        copyToClipboard(path)
+                        flashId("path")
+                    } else {
+                        // Said out loud rather than copying an empty string: a card that only ever
+                        // held a shell has no conversation, and silence looks like a failed copy.
+                        flashId("no log")
+                    }
                 }
-            }
-            .onTapGesture {
-                copyToClipboard(terminal.id.uuidString.lowercased())
-                flashId("copied")
-            }
+                .exclusively(before: TapGesture().onEnded {
+                    copyToClipboard(terminal.id.uuidString.lowercased())
+                    flashId("copied")
+                })
+            )
             .fixedSize()
             .help("单击复制终端 ID（给 project-manager 用），双击复制对话文件路径")
     }
