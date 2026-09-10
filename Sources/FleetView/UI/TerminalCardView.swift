@@ -9,7 +9,8 @@ struct TerminalCardView: View {
     @State private var showRemote = false
     @State private var remoteEndpoint: RemoteServer.Endpoint?
     @State private var remoteQR: NSImage?
-    @State private var copiedId = false
+    /// Non-nil while the id chip is showing feedback instead of the id itself.
+    @State private var idFlash: String?
 
     private var cluster: Cluster? { state.cluster(terminal.clusterId) }
     private var done: Bool { terminal.subtaskDone }
@@ -312,21 +313,42 @@ struct TerminalCardView: View {
     /// copies the whole UUID.
     private var idChip: some View {
         let short = String(terminal.id.uuidString.prefix(4)).lowercased() + "…"
-        return Button {
-            copyToClipboard(terminal.id.uuidString.lowercased())
-            withAnimation(.easeOut(duration: 0.12)) { copiedId = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                withAnimation(.easeOut(duration: 0.25)) { copiedId = false }
+        return Text(idFlash ?? short)
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .lineLimit(1)
+            .foregroundColor(idFlash != nil ? Theme.green : Theme.subtext.opacity(0.55))
+            // The whole chip, not just its glyphs: it is five 9pt characters, and hitting only the
+            // ink would be a far worse target than the label looks.
+            .contentShape(Rectangle())
+            // count: 2 is declared first on purpose. SwiftUI offers a tap to the handlers in order,
+            // and a single-tap handler declared ahead of it consumes the first click of a double —
+            // the double-tap would then never fire.
+            .onTapGesture(count: 2) {
+                // `transcriptPath(for:)`, not the stored `transcriptPath`: it resolves Codex from
+                // its rollouts ahead of the hook pointer, which is the case where the stored value
+                // is silently frozen on a file from days ago.
+                if let path = state.transcriptPath(for: terminal.id) {
+                    copyToClipboard(path)
+                    flashId("path")
+                } else {
+                    // Said out loud rather than copying an empty string: a card that only ever held
+                    // a shell has no conversation, and a silent no-op looks like a failed copy.
+                    flashId("no log")
+                }
             }
-        } label: {
-            Text(copiedId ? "copied" : short)
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .lineLimit(1)
-                .foregroundColor(copiedId ? Theme.green : Theme.subtext.opacity(0.55))
+            .onTapGesture {
+                copyToClipboard(terminal.id.uuidString.lowercased())
+                flashId("copied")
+            }
+            .fixedSize()
+            .help("单击复制终端 ID（给 project-manager 用），双击复制对话文件路径")
+    }
+
+    private func flashId(_ text: String) {
+        withAnimation(.easeOut(duration: 0.12)) { idFlash = text }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            withAnimation(.easeOut(duration: 0.25)) { idFlash = nil }
         }
-        .buttonStyle(.plain)
-        .fixedSize()
-        .help("Click to copy this terminal's ID (for fleetctl)")
     }
 
     private func iconButton(_ name: String, active: Bool = false, help: String,
