@@ -76,16 +76,11 @@ final class RemoteServer {
         if now.timeIntervalSince(sessionCacheAt) < 2.0 { return sessionCache }
         sessionCacheAt = now
         guard let tmuxPath else { sessionCache = []; return [] }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: tmuxPath)
-        p.arguments = ["-L", RemoteServer.socket, "list-sessions", "-F", "#{session_name}"]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { sessionCache = []; return [] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        let names = String(data: data, encoding: .utf8)?.split(separator: "\n").map(String.init) ?? []
+        // Capped like every other tmux call: this one is on the `/state` path, so a tmux that
+        // stops answering would otherwise freeze the dashboard as well as the board.
+        let out = Self.spawnTmux(tmuxPath, ["list-sessions", "-F", "#{session_name}"],
+                                 timeout: Self.tmuxTimeout, capture: true)
+        let names = out.split(separator: "\n").map(String.init)
         sessionCache = Set(names)
         return sessionCache
     }
@@ -198,16 +193,9 @@ final class RemoteServer {
     /// Read one tmux format string for a session (e.g. "#{mouse_any_flag}").
     private func displayFlag(_ session: String, _ fmt: String) -> String {
         guard let tmuxPath else { return "" }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: tmuxPath)
-        p.arguments = ["-L", RemoteServer.socket, "display-message", "-p", "-t", session, fmt]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return "" }
-        let d = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        return String(data: d, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return Self.spawnTmux(tmuxPath, ["display-message", "-p", "-t", session, fmt],
+                              timeout: Self.tmuxTimeout, capture: true)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Send a named key (Escape, Enter, arrows, C-c…) — the web quick-keys for driving an agent.
@@ -281,7 +269,7 @@ final class RemoteServer {
                                          target: AuditTarget(kind: "terminal", id: id.uuidString),
                                          data: ["port": .int(inst.port)])
         }
-        runTmux(["kill-session", "-t", RemoteServer.sessionName(for: id)])
+        runTmuxSync(["kill-session", "-t", RemoteServer.sessionName(for: id)])
     }
 
     /// On quit, stop the web servers (free the ports) but LEAVE the tmux sessions running, so an
@@ -301,7 +289,7 @@ final class RemoteServer {
     /// which is exactly what "close everything" has to mean after a relaunch left some behind.
     func killAllSessions() {
         stopAll()                       // the ttyd processes that were serving those sessions
-        runTmux(["kill-server"])
+        runTmuxSync(["kill-server"])
         sessionCache = []
         sessionCacheAt = .distantPast   // the 2s cache would otherwise report the dead as live
     }
@@ -356,16 +344,60 @@ final class RemoteServer {
 
     // MARK: - Private
 
+    /// Fire-and-forget tmux writes, off the caller's thread.
+    ///
+    /// `/type`, `/key` and `/scroll` are answered on the main actor, and a tmux write is not
+    /// reliably fast: `send-keys` writes into the pane's pty, and a pane whose process has stopped
+    /// reading — a TUI that crashed without exiting, which leaves the panel filling with raw escape
+    /// bytes — lets that write block. Run inline with `waitUntilExit()` that froze the whole app,
+    /// which is what "messaging another terminal hung FleetView" was.
+    ///
+    /// Serial, so `send-keys <text>` still lands before the `Enter` that submits it.
     private func runTmux(_ args: [String]) {
         guard let tmuxPath else { return }
+        writeQueue.async { Self.spawnTmux(tmuxPath, args, timeout: Self.tmuxTimeout) }
+    }
+
+    /// For the callers that must not return before tmux has acted — closing a terminal, Close All.
+    /// Still capped: a wedged tmux may cost seconds, never the session.
+    private func runTmuxSync(_ args: [String]) {
+        guard let tmuxPath else { return }
+        Self.spawnTmux(tmuxPath, args, timeout: Self.tmuxTimeout)
+    }
+
+    /// Run a tmux command under a hard time limit, optionally capturing stdout.
+    ///
+    /// `Process.waitUntilExit()` has no timed variant, so this arms a terminate ahead of the wait.
+    /// The order matters when capturing: `readDataToEndOfFile` blocks until EOF, which a wedged
+    /// tmux never sends, so a limit applied after the read would never be reached.
+    @discardableResult
+    private static func spawnTmux(_ tmuxPath: String, _ args: [String],
+                                  timeout: TimeInterval, capture: Bool = false) -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: tmuxPath)
         p.arguments = ["-L", RemoteServer.socket] + args
-        p.standardOutput = FileHandle.nullDevice
+        let pipe = capture ? Pipe() : nil
+        p.standardOutput = pipe ?? FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return }
+        do { try p.run() } catch { return "" }
+        let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
+        var out = ""
+        if let pipe {
+            let d = pipe.fileHandleForReading.readDataToEndOfFile()
+            out = String(data: d, encoding: .utf8) ?? ""
+        }
         p.waitUntilExit()
+        killer.cancel()
+        return out
     }
+
+    /// Serial: ordering within one terminal is the whole contract of `send-keys` + `Enter`.
+    private let writeQueue = DispatchQueue(label: "ai.eigent.fleetview.tmux-write")
+
+    /// Long enough that a busy tmux still completes, short enough that a wedged one is an
+    /// inconvenience rather than a hang.
+    private static let tmuxTimeout: TimeInterval = 5
 
     private func prepareLog() -> URL {
         let url = FV.remoteLog
