@@ -2,157 +2,147 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-Mission control for a fleet of coding-agent terminals on macOS.
+A macOS app for managing Claude Code and Codex terminals.
 
-You end up running more than one Claude Code or Codex session at a time, and then you lose track of
-them: which one is waiting on you, which one is still working, what you asked the one you started an
-hour ago — and, once a conversation has branched a few times, which version of it you are even
-looking at. FleetView puts every session on a board, gives you the whole tree behind each one, lets
-the terminals work together, and serves the lot to your phone.
+FleetView puts your agent sessions on a board, grouped by project. You can see which agents are
+working, which are waiting for input, and what you last asked each one to do. It also lets you
+browse and resume conversation branches, create custom Generative UI panels, and access your
+sessions from a phone.
 
-<!-- SCREENSHOT 1 — the board: several project sections, a card mid-run with its clock ticking,
-     one card showing "needs you". This is the hero image; everything else is a detail of it. -->
+![FleetView desktop board showing running and recently used agent terminals](docs/screenshots/desktop-board.png)
 
----
+*Project names, terminal names, and paths in the screenshots are anonymized.*
 
-## 1. Every session, as a tree you can walk
+## Conversation history and branches
 
-This is the part the official CLIs do not give you. A conversation is not a line — rewinding a
-prompt, editing one, or forking a session starts a new branch, and the old one stays on disk with no
-way back to it. `claude --resume` can only address a whole session by id, and `codex fork` only
-branches from the tip. Everything in between is on disk and unreachable.
+The session tree shows the prompts and branches in your Claude Code and Codex conversations,
+including earlier branches you have moved on from. Select a node to read it, or open it in a new
+terminal to continue from that point. You can also duplicate a running session and take it in a
+different direction with the same context.
 
-**Read the whole history.** The session tree panel shows every node of a conversation, including the
-branches you abandoned, for both Claude Code and Codex. Claude's tree comes from `parentUuid` links,
-Codex's from `forked_from_id` — two different formats, one panel.
+![Session tree with conversation branches and a preview of the selected node](docs/screenshots/session-tree.png)
 
-**Restart from any point.** Open any node in a fresh terminal. The original session is never
-modified: a node that some session already resolves to resumes natively, and anything else gets a
-synthesised session file containing that node's ancestry, so Claude picks up exactly there. This is
-[treeflow](https://github.com/nitpicker55555/Agent-Treeflow)'s algorithm, ported to Swift for Claude
-and shelled out to for Codex.
+Opening a past node leaves the original transcript intact. FleetView resumes an existing session
+where possible, or creates a new session file with the history leading up to that node. Claude
+support is built in, using a Swift port of
+[treeflow](https://github.com/nitpicker55555/Agent-Treeflow)'s branching logic. Opening past Codex
+nodes requires treeflow to be installed.
 
-**Duplicate a running session.** Fork a live terminal into a second one that shares its context and
-diverges from there — native `--fork-session` where the CLI supports it, a synthesised branch where
-it does not.
+Press **⌘K** to search local Claude Code and Codex history. **Tab** switches the scope between
+terminals on the board, the current conversation, and all history. Drag a search result onto the
+board to continue the conversation from that point.
 
-**Search everything you have ever said.** ⌘K searches all local Claude Code and Codex transcripts —
-12.9 GB of them on this machine, indexed to 249 MB and answered in single-digit milliseconds. Tab
-widens the scope in three steps: the terminals on the board, the conversation you have open, then all
-of history. Drag a result onto the board and that conversation opens *at that point*, ready to
-continue.
+The search index retains indexed conversations even after their source transcripts have been
+deleted. Those conversations remain searchable and readable, and can be rebuilt into sessions.
 
-The index also outlives the files. Claude Code deletes transcripts after 30 days by default; the
-index here still holds 5,857 files' worth of conversation while only 3,153 remain on disk. A
-conversation the CLI has already cleaned up is still searchable, still readable, and can still be
-rebuilt into a session you can resume.
+## Managing terminals
 
-<!-- SCREENSHOT 2 — the session tree panel next to a card, with a branch point visible, and
-     ideally the ⌘K search overlay in a second shot. -->
+Each terminal has a card showing its status, last prompt, token usage, and run time. Cards are
+grouped by project. Drag one card onto another to group related terminals into a cluster, or move
+a card to another project with its conversation.
 
----
-
-## 2. Terminals that work together
-
-**A board, not a tab bar.** One card per terminal, grouped by project, each showing whether it is
-working, idle, or waiting for you, plus its last prompt and token burn. Drag a card onto another to
-cluster them; clusters are how a group of terminals on one task stays together as a unit. Drag a
-card into another project and its conversation goes with it.
-
-**Agents can drive each other.** `project-manager` speaks to a running FleetView over HTTP, so an
-agent inside one terminal can list the fleet, read another terminal's output, answer a permission
-prompt for it, or hand it a new instruction — by terminal, by project, or by what it was last doing.
-It ships as a skill in `.claude/skills/`, so an agent finds it without being told.
+The included `project-manager` CLI uses FleetView's HTTP API to list terminals, read their output,
+and send input. An agent can use it to check another agent's progress, respond to a permission
+prompt, or pass on the next task. The repository includes skills for these workflows in
+`.claude/skills/`.
 
 ```bash
-project-manager ls                  # every terminal, status, tokens, last prompt
-project-manager ls -p FleetView     # just one project
-project-manager show <sel> -l 60    # what a terminal is doing right now
-project-manager send <sel> "继续"    # give it an instruction
-project-manager whoami              # which card am I running on?
-project-manager check               # sessions that ended in an error
+project-manager ls                   # List terminals, status, tokens, and last prompts
+project-manager ls -p FleetView       # Filter by project
+project-manager show <sel> -l 60      # Read a terminal's recent output
+project-manager send <sel> "continue" # Send an instruction
+project-manager whoami               # Identify the current terminal
+project-manager check                # Find sessions that ended in an error
 ```
 
-**Across machines.** Every FleetView serves its API on all interfaces, so the same CLI drives an
-instance on another Mac. `project-manager peers` scans the LAN and hands you the URL; `-u <url>`
-points any command at it. Nothing to install on the other side — a fleet on your laptop is readable
-and drivable from your desktop, and vice versa.
+You can use the same commands with FleetView on another Mac. `project-manager peers` discovers
+instances on the network; `-u <url>` selects the instance a command should use.
 
-<!-- SCREENSHOT 3 — a cluster on the board (two or three cards boxed together), or the
-     `project-manager peers` output next to a board showing another machine's terminals. -->
+## Generative UI panels
 
----
+An agent can build a custom panel for the task at hand: a progress board, a chart, a test summary,
+or an overview of running agents. It writes a self-contained HTML page to
+`~/.fleetview/ui/panel.html`, and FleetView displays it above the board on both desktop and mobile.
+Changes to the page are picked up automatically.
 
-## 3. The whole fleet, from your phone
+Panels can update as the work runs, using either task data or live data from FleetView's API:
 
-**A dashboard on your LAN** (and over Tailscale), served by the app itself — no account, no cloud,
-nothing leaves the machine.
+- **Task data:** the agent writes progress or results to `~/.fleetview/ui/panel.json`. The panel
+  polls `GET /panel-data` and updates the relevant parts of the page.
+- **Agent activity:** the panel calls `GET /state` to fetch current terminal states, last prompts,
+  token usage, time since last activity, and run durations. It can show how many agents are working,
+  idle, or waiting for input, with breakdowns by project.
 
-**Conversations render as chat**, with native scrolling, rather than a mirrored terminal. That is
-what makes them readable on a small screen: you can follow what an agent did, answer a permission
-prompt with real buttons, and type a reply.
+The panel is served by FleetView itself, so its JavaScript can call these endpoints directly with
+`fetch('/state')` or `fetch('/panel-data')`. The included
+[example panel](examples/fleet-panel.html) polls `/state` every 1.5 seconds to refresh its status
+counts and token charts. You can use it as a starting point for your own panel.
 
-**The raw terminal is there too.** When you want the actual TUI — a full-screen picker, a diff, a
-progress bar — the card opens the live terminal itself, scrollable and typeable from the phone.
+There is one shared panel per FleetView instance. Writing a new `panel.html` replaces the current
+view; removing the file hides it.
 
-**Files move both ways.** Attach a photo or a file from your phone straight into a prompt, and
-`fleetview-send report.pdf` on the Mac puts a file in the dashboard's tray, one tap from opening on
-the phone. Useful for exactly the thing that is otherwise awkward: an agent produced a chart, a CSV
-or a build, and you are not at the desk.
+![Generative UI panel with live agent status counts and token usage by project](docs/screenshots/generative-ui.png)
 
-**A panel your agents can draw on.** An agent can publish a self-contained web page to the top of
-the dashboard — a progress board, a live chart, a countdown — and it shows up on both the desktop
-board and the phone.
+*The example panel reading live FleetView data through `/state`.*
 
-<!-- SCREENSHOT 4 — the phone view: a conversation rendered as chat, and ideally a second shot of
-     the file tray or the raw terminal view. Portrait, real device frame if you have one. -->
+## Access from your phone
 
----
+FleetView serves a web dashboard from your Mac, accessible over your LAN or Tailscale without an
+account or a separate server.
+
+Conversations appear as chat, so you can read an agent's work, respond to permission prompts, and
+send replies from a small screen. You can also open the live terminal to use a CLI picker, inspect
+a diff, or type directly into the TUI.
+
+Files can be sent in both directions. Attach a photo or file from your phone to a prompt, or run
+`fleetview-send report.pdf` on the Mac to make an agent's output available in the dashboard's
+file tray.
+
+<p>
+  <img src="docs/screenshots/mobile-board.png" width="320" alt="FleetView web dashboard showing agent status on a mobile viewport">
+  <img src="docs/screenshots/mobile-chat.png" width="320" alt="FleetView chat view with conversation history and a reply field on a mobile viewport">
+</p>
+
+*The web dashboard and a conversation excerpt, captured at a phone-sized viewport.*
 
 ## Requirements
 
 - macOS 14+
-- `tmux` and `ttyd` for remote access (`brew install tmux ttyd`) — without them terminals still run,
-  they just can't be served to other devices
 - Claude Code and/or Codex CLI
-- [treeflow](https://github.com/nitpicker55555/Agent-Treeflow) for opening Codex sessions at a past
-  node (`pip install`; the installer offers it). Claude's side is built in.
+- `tmux` and `ttyd` for remote terminal access (`brew install tmux ttyd`). Local terminals work
+  without them.
+- [treeflow](https://github.com/nitpicker55555/Agent-Treeflow) for opening Codex conversations at a
+  past node. The build script offers to install it; Claude support is built in.
 
 ## Install
 
-Download the latest `FleetView.app` from [Releases](../../releases), or build it:
+Download `FleetView.app` from [Releases](../../releases), or build it from source:
 
 ```bash
 git clone https://github.com/nitpicker55555/FleetView.git
 cd FleetView
-./scripts/package_app.sh --install     # builds and copies to /Applications
+./scripts/package_app.sh --install  # Build and copy to /Applications
 ```
 
-## On disk
+## Local data and sessions
 
-Nothing runtime lives in this repo. FleetView keeps its state in `~/.fleetview/`: `state.json`, the
-search index, logs, uploads, and the panel an agent published. Your conversations stay where the
-agents already put them (`~/.claude/projects/`, `~/.codex/sessions/`) — FleetView reads them and
-never rewrites them, including when it forks one.
+FleetView stores its state, search index, logs, transferred files, and custom panel in
+`~/.fleetview/`. It reads conversation history from `~/.claude/projects/` and `~/.codex/sessions/`.
+Forking a conversation creates a separate session without modifying the original transcript.
 
-Quitting FleetView does not stop your agents: the tmux sessions keep running and reattach when you
-open it again. Closing a terminal is the only thing that ends one.
+By default, tmux sessions keep running when you quit FleetView and reconnect when you open it
+again. Closing a terminal stops its running session. You can also enable the option to close all
+terminals when quitting.
 
-Status comes from hooks FleetView installs into Claude Code and Codex, fenced by sentinel comments
-and removed cleanly on uninstall (**FleetView → Uninstall Status Hooks**).
+FleetView installs status hooks for Claude Code and Codex. To remove them, use
+**FleetView → Uninstall Status Hooks**.
 
-## A note on the network
+## Network access
 
-The dashboard is served over plain HTTP with no authentication, so anything that can reach the port
-can read your conversations and type into your agents. That is fine on a home network or a Tailscale
-tailnet, and it is not fine on a café Wi-Fi. The same applies to the cross-machine CLI: there is no
-token, and an instance you can reach is an instance you can drive.
+The dashboard and API listen on all network interfaces and use plain HTTP without authentication.
+Anyone who can reach the port can read conversations and send input to terminals. Use them on a
+trusted network or through Tailscale, and keep the port off public networks. This also applies to
+access through `project-manager`.
 
-There is one outbound call — an update check against GitHub's releases endpoint, at most every six
-hours — which you can turn off with `"updates": false` in `~/.fleetview/logging.json`.
-
-## Status
-
-0.4, used daily to run a real fleet. The parts that touch Codex are newer than the parts that touch
-Claude: both trees work, but Codex branches are read through treeflow rather than natively, and
-opening a Codex node needs it installed.
+FleetView checks GitHub Releases for updates at most once every six hours. Set `"updates": false`
+in `~/.fleetview/logging.json` to disable the check.
