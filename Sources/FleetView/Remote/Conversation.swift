@@ -521,15 +521,27 @@ enum Conversation {
         let ts = obj["timestamp"] as? String
         let outer = obj["type"] as? String
         switch p["type"] as? String {
-        case "user_message":
-            if let t = p["message"] as? String, !trim(t).isEmpty {
-                append(&msgs, ConvMsg(role: "user", kind: "text", text: trim(t), tool: nil, cat: nil,
-                                      detail: nil, output: nil, ok: nil, ts: ts, sub: false))
-            }
-        case "agent_message":
-            // Both event_msg and response_item carry these; keep one copy (event_msg is the clean one).
-            guard outer == "event_msg", let t = p["message"] as? String, !trim(t).isEmpty else { return }
-            append(&msgs, ConvMsg(role: "assistant", kind: "text", text: trim(t), tool: nil, cat: nil,
+        // Messages come from `response_item`, not from the `event_msg` stream that used to carry a
+        // copy of each one. Codex 0.147 stopped emitting that stream, so reading it meant a newer
+        // session rendered empty — no prompts, no replies, only tool calls. Across the rollouts
+        // here: 1,983 carry both (identical text, same count), 106 carry only `response_item`, and
+        // exactly 1 carries only `event_msg`. Reading both would double every message in the 1,983,
+        // since `append` merges adjacent same-role text rather than de-duplicating it — so this
+        // reads the one stream that covers all but that single file.
+        //
+        // Matches what `SearchIndex` and `CodexTree` already do, which is why search could find
+        // messages the conversation view could not show.
+        case "message":
+            guard outer == "response_item" else { return }
+            let role = (p["role"] as? String) ?? ""
+            // "developer" is the system prompt — it is not part of the conversation.
+            guard role == "assistant" || role == "user" else { return }
+            let t = trim(flatten(p["content"]))
+            guard !t.isEmpty else { return }
+            // Codex injects these into the same stream; they never appeared before because the
+            // `event_msg` copy did not include them.
+            guard !t.hasPrefix("<environment_context>") else { return }
+            append(&msgs, ConvMsg(role: role, kind: "text", text: t, tool: nil, cat: nil,
                                   detail: nil, output: nil, ok: nil, ts: ts, sub: false))
         case "agent_reasoning":
             if let t = (p["text"] as? String) ?? (p["reasoning"] as? String), !trim(t).isEmpty {
