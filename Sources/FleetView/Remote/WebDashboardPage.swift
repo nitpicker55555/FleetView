@@ -1815,26 +1815,100 @@ function toggleTray(){
    putting the bytes on the Mac and typing the path. The upload answers with the absolute path it
    wrote, which is inserted at the cursor — the same thing you would do by hand after AirDropping
    the file, minus the AirDrop. */
+function fmtBytes(n){
+  if(n<1024) return Math.round(n)+' B';
+  if(n<1048576) return (n/1024).toFixed(0)+' KB';
+  return (n/1048576).toFixed(1)+' MB';
+}
+
+/* The upload readout. Sits above the toast rather than replacing it: a toast is a thing that
+   happened, this is a thing still happening, and a phone upload over a slow link is long enough
+   that "did it freeze?" is a real question. */
+function uprogBox(){
+  let p=document.getElementById('uprog');
+  if(p) return p;
+  p=document.createElement('div');p.id='uprog';
+  p.style.cssText='position:fixed;left:50%;bottom:112px;transform:translateX(-50%);z-index:71;'+
+    'pointer-events:none;background:var(--card);border:1px solid var(--stroke);color:var(--text);'+
+    'padding:9px 12px;border-radius:10px;font-size:12px;box-shadow:0 6px 20px rgba(0,0,0,.5);'+
+    'min-width:200px;max-width:78vw;opacity:0;transition:opacity .15s';
+  p.innerHTML='<div id="uprogtext" style="margin-bottom:6px;white-space:nowrap;overflow:hidden;'+
+    'text-overflow:ellipsis"></div>'+
+    '<div style="height:4px;background:var(--stroke);border-radius:2px;overflow:hidden">'+
+    '<div id="uprogbar" style="height:100%;width:0;background:var(--accent);transition:width .12s">'+
+    '</div></div>';
+  document.body.appendChild(p);
+  return p;
+}
+function uprogHide(){ const p=document.getElementById('uprog'); if(p) p.style.opacity='0'; }
+
+/* XHR, not fetch: fetch has no hook for request-body progress, so the percentage and the rate can
+   only come from XMLHttpRequest's upload events. The server reads the whole body before it writes
+   anything, so this is the only place a progress figure exists at all. */
+function uploadOne(f,label){
+  return new Promise((resolve,reject)=>{
+    const box=uprogBox();
+    const txt=document.getElementById('uprogtext'), bar=document.getElementById('uprogbar');
+    const name=f.name||'file';
+    bar.style.width='0';
+    txt.textContent=label+name;
+    box.style.opacity='1';
+    const t0=Date.now(); let lastT=t0, lastL=0, rate=0;
+    const x=new XMLHttpRequest();
+    x.open('POST','/upload?name='+encodeURIComponent(f.name||''));
+    x.setRequestHeader('Content-Type',f.type||'application/octet-stream');
+    x.upload.onprogress=e=>{
+      if(!e.lengthComputable) return;
+      const now=Date.now();
+      /* Rate from the last ~300ms, smoothed, rather than an average since the start: an average
+         goes on reporting the speed of a stall long after the stall has cleared. */
+      if(now-lastT>300){
+        const inst=(e.loaded-lastL)*1000/(now-lastT);
+        rate=rate?rate*0.6+inst*0.4:inst;
+        lastT=now; lastL=e.loaded;
+      }else if(!rate && now>t0){
+        /* Before the first window closes there is no sample to smooth, so fall back to the average
+           since the start. Without this a transfer that finishes inside 300ms — which on a LAN is
+           most of them — never shows a rate at all. */
+        rate=e.loaded*1000/(now-t0);
+      }
+      const pct=Math.round(e.loaded/e.total*100);
+      bar.style.width=pct+'%';
+      txt.textContent=label+name+' · '+pct+'% · '+fmtBytes(e.loaded)+'/'+fmtBytes(e.total)+
+                      (rate>0?' · '+fmtBytes(rate)+'/s':'');
+    };
+    x.onload=()=>{
+      let j=null; try{ j=JSON.parse(x.responseText); }catch(_){}
+      if(j&&j.path){ bar.style.width='100%'; resolve(j.path); }
+      else reject(new Error((j&&j.error)||('HTTP '+x.status)));
+    };
+    x.onerror=()=>reject(new Error('network error'));
+    x.onabort=()=>reject(new Error('aborted'));
+    x.send(f);
+  });
+}
+
 async function attachFiles(files){
   const list=[...files];
   if(!list.length)return;
   const btn=document.getElementById('imgbtn');
   const was=btn.textContent; btn.disabled=true; btn.textContent='…';
   const paths=[];
-  for(const f of list){
+  for(let i=0;i<list.length;i++){
+    const f=list[i];
+    /* Only worth saying which one when there is more than one. */
+    const label=list.length>1?('('+(i+1)+'/'+list.length+') '):'';
     try{
       /* The name rides along in the query so the server can keep the extension — an agent keys off
          .csv or .pdf, and the basename it writes is still its own uuid. */
-      const r=await fetch('/upload?name='+encodeURIComponent(f.name||''),
-        {method:'POST',headers:{'Content-Type':f.type||'application/octet-stream'},body:f});
-      const j=await r.json();
-      if(j.path) paths.push(j.path); else throw new Error(j.error||('HTTP '+r.status));
+      paths.push(await uploadOne(f,label));
     }catch(e){
       btn.textContent='✕';
       setTimeout(()=>{btn.textContent=was;},1400);
       toast('upload failed: '+e.message);
     }
   }
+  uprogHide();
   btn.disabled=false;
   if(btn.textContent==='…') btn.textContent=was;
   if(paths.length) insertAtCursor(document.getElementById('inputtext'), paths.join(' ')+' ');
