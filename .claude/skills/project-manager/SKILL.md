@@ -52,6 +52,7 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager ask <id> <q…>` | **"BTW" side-query**: ask the agent a question using its current context **without** touching/interrupting its live session (forked print-mode query; the answer is thrown away after printing). Takes ~10-40s |
 | `project-manager log <id> [-p\|-c\|-f]` | Locate the agent's transcript file; `-p` path only, `-c` cat, `-f` follow (tail -f) |
 | `project-manager new <project> [label]` | Open a terminal in a project. `--claude` starts a permission-bypassed Claude session in it, `-c CMD` runs any other command |
+| `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project |
 | `project-manager rename <id> <name…>` | Relabel a terminal |
 | `project-manager rm <id>` | Remove a terminal (kills its session) |
 | `project-manager notes [-f Q] [-p]` | The sidebar Notes list — also the web dashboard's quick-command chips. `-f` filters, `-p` prints raw text for copying |
@@ -146,6 +147,36 @@ arrives it reports that the card was created and nothing was typed, rather than 
 
 Renaming is safe to do at any time: `name` is display-only, and every selector that matters (`show`,
 `send`, `choose`) also takes the id, which does not change.
+
+## Handing work to a subagent
+
+```bash
+project-manager subagent "重跑 07 号任务的评分并汇报差异"      # in your own project, Claude
+project-manager subagent --codex "把这个目录的 CSV 合并"        # Codex instead
+project-manager subagent -p FleetView "..." -n "scoring"      # elsewhere, named
+```
+
+It opens a card, starts the agent, waits for it, and delivers the task. The project defaults to
+**your own** — a subagent belongs to the work that spawned it — and the card is named after the task,
+because a board of `FleetView-7` says nothing about which subagent is which.
+
+**Delivery is verified, not assumed**, and that is the whole difficulty. Three things go wrong
+between "opened a terminal" and "the agent is working on it", all of them silent:
+
+- **The readiness signal fires too early.** FleetView flips a card off `shell` when the agent's
+  SessionStart hook arrives (~2.7s for Claude), but the TUI is still drawing its banner then and
+  drops keystrokes. A task sent on that signal alone vanishes — measured: the prompt never appeared.
+- **Codex never leaves `shell` at all.** It skips hooks it has not been told to trust, so waiting for
+  a status change hangs for the full timeout while Codex sits visibly idle at its prompt.
+- **`/type` can lose the Return.** Codex mid-banner takes the text and drops the Enter, leaving the
+  task typed in the composer and never run — which on the board looks like an agent ignoring you.
+
+So the command types the task, reads the pane back to confirm it arrived, retypes it if not, and
+presses Enter again if it is sitting unsent. It checks before each retry, so a slow start does not
+become the same task queued five times — a delivered task appears exactly once in the transcript.
+
+If it still cannot land it, it says so and gives you the command to finish by hand rather than
+leaving a card that looks like it was briefed.
 
 ## How to answer an agent's prompt
 

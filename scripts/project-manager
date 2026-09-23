@@ -49,6 +49,9 @@ UA = "fleetctl/project-manager/1.0"
 # The fleet runs permission-bypassed by convention; `new --claude` exists so that is one
 # explicit flag rather than a string every caller retypes (and sometimes mistypes).
 CLAUDE_CMD = "claude --dangerously-skip-permissions"
+# Codex's equivalent. Separate constant rather than a flag on the Claude one: the two CLIs spell
+# "skip the prompts" differently and neither accepts the other's wording.
+CODEX_CMD = "codex --dangerously-bypass-approvals-and-sandbox"
 
 
 def _get(path):
@@ -639,6 +642,163 @@ def cmd_new(a):
     print(", ".join(done))
 
 
+def _wait_agent_ready(tid, timeout=120):
+    """Wait until the agent in a freshly opened terminal can actually take a prompt.
+
+    The tmux session exists well before the CLI does — `claude` spends seconds loading MCP servers
+    and skills — and a prompt typed into that gap is swallowed by a half-built TUI without a trace,
+    which for a subagent means it sits there forever having never been told what to do.
+
+    Only `agent` is waited on, deliberately. Claude also flips `status` off `shell` when its
+    SessionStart hook fires, but Codex does not — it skips hooks it has not been told to trust, so
+    its cards sit on `shell` for the life of the session. Requiring both hung here for the full
+    timeout while Codex was visibly up and idle at its prompt.
+    
+    Even for Claude this is only the cheap first gate: the hook fires early in startup, while the
+    TUI is still drawing its banner and dropping keystrokes. `_send_task` is what actually confirms
+    the task arrived.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for t in state()["terminals"]:
+            if t["id"].lower().startswith(tid.lower()):
+                if t.get("agent") or "":
+                    return True
+                break
+        time.sleep(0.5)
+    return False
+
+
+def _send_task(tid, task, attempts=20):
+    """Type the task, then confirm it actually arrived — and retype it if it did not.
+
+    "Sent" and "arrived" are different things here. A TUI still building itself accepts keystrokes
+    into a buffer it then clears, so the send succeeds, the card looks started, and the subagent
+    sits forever having never been told what to do. There is no readiness signal that covers this:
+    the hook fires too early and the banner keeps redrawing after it.
+
+    So: send, look for the text on the pane, and try again if it is not there. Checking before each
+    retry is what keeps a slow start from turning into the same task queued five times — verified,
+    a delivered task appears exactly once in the transcript.
+
+    ~20 attempts because this now carries the whole readiness question: a cold Codex with its
+    banners, or a Claude loading many MCP servers, can take most of a minute.
+    """
+    probe = task[:16]
+    q = urllib.parse.urlencode({"id": tid, "text": task, "enter": "1"},
+                               quote_via=urllib.parse.quote)
+    for _ in range(attempts):
+        pane = api_text("/capture?id=%s&lines=40" % tid)
+        # Already landed — either sitting in the composer or already being worked on.
+        if probe in pane or "esc to interrupt" in pane:
+            return True
+        api_json("/type?" + q)
+        for _ in range(6):
+            time.sleep(0.5)
+            pane = api_text("/capture?id=%s&lines=40" % tid)
+            if probe in pane or "esc to interrupt" in pane:
+                return True
+    return False
+
+
+def _submit_if_pending(tid, task, tries=8):
+    """Press Enter again if the task is sitting typed-but-unsent.
+
+    `/type` sends the text and the Return together, and Codex during its banner phase takes the
+    text and drops the Return — the task then sits in the composer forever, which reads on the board
+    as a subagent that was given work and ignored it. Measured: the text arrived, `› <task>` stayed
+    on screen, nothing ran.
+
+    Only the LAST prompt line counts. Codex keeps a submitted prompt on screen, still prefixed with
+    its marker, so "some prompt line contains the task" is true long after it ran — that read it as
+    forever-pending, pressed Enter eight more times, and reported failure on a task that had already
+    been answered. The live composer is the last such line, and once the task is in, it holds the
+    placeholder instead.
+    """
+    probe = task[:16]
+    marks = ("\u203a", "\u276f", ">")
+    for _ in range(tries):
+        pane = api_text("/capture?id=%s&lines=40" % tid)
+        last = None
+        for ln in reversed(pane.splitlines()):
+            t = ln.strip()
+            if t[:1] in marks:
+                last = t
+                break
+        if last is None or probe not in last:
+            return True
+        api_json("/key?" + urllib.parse.urlencode({"id": tid, "k": "Enter"}))
+        time.sleep(1.0)
+    return False
+
+
+def cmd_subagent(a):
+    """Open a new agent terminal and hand it a task.
+
+    Defaults to the caller's own project, because a subagent belongs to the work that spawned it —
+    an agent asking for one rarely means "somewhere else".
+    """
+    st = state()
+    if a.project:
+        ps = match_projects(st, a.project)
+        if len(ps) != 1:
+            sys.exit("specify one project (matched %d)" % len(ps))
+        proj = ps[0]
+    else:
+        tid = _self_term_id()
+        me = None
+        if tid:
+            key = tid.replace("-", "").lower()
+            me = next((t for t in st["terminals"]
+                       if t["id"].replace("-", "").lower() == key), None)
+        if me is None:
+            sys.exit("not inside a FleetView terminal — name the project with -p")
+        proj = next((p for p in st["projects"] if p["id"] == me.get("projectId")), None)
+        if proj is None:
+            sys.exit("could not resolve your own project — name it with -p")
+
+    task = " ".join(a.text).strip()
+    if not task:
+        sys.exit("empty task")
+
+    r = api_json("/new?projectId=" + proj["id"])
+    tid = r.get("id") or ""
+    if not tid:
+        sys.exit("FleetView returned no terminal id")
+    short = tid[:8].lower()
+    # The card is named after the task by default: a board of "FleetView-7" tells you nothing about
+    # which subagent is which.
+    _rename(tid, a.name or ("⚙ " + task[:24]))
+
+    if not _wait_session(tid):
+        print("opened %s in %s" % (short, proj["name"]))
+        sys.exit("session did not come up within 20s — nothing typed")
+    cmd = CODEX_CMD if a.codex else CLAUDE_CMD
+    api_json("/type?" + urllib.parse.urlencode({"id": tid, "text": cmd, "enter": "1"},
+                                               quote_via=urllib.parse.quote))
+    if a.no_wait:
+        print("opened %s in %s, starting %s (task NOT sent: --no-wait)"
+              % (c("1", short), proj["name"], "codex" if a.codex else "claude"))
+        return
+    if not _wait_agent_ready(tid):
+        # The terminal is real and the CLI may still come up; say what did and did not happen rather
+        # than leaving a card that looks like it was given a task.
+        print("opened %s in %s" % (short, proj["name"]))
+        sys.exit("agent did not report ready within 120s — task NOT sent; "
+                 "send it yourself with: project-manager send %s '<task>'" % short)
+    if not _send_task(tid, task):
+        print("opened %s in %s" % (short, proj["name"]))
+        sys.exit("agent started but the task would not stick — send it yourself with: "
+                 "project-manager send %s '<task>'" % short)
+    if not _submit_if_pending(tid, task):
+        print("subagent %s in %s (%s) — task typed but NOT submitted; press Enter with: "
+              "project-manager key %s enter" % (c("1", short), proj["name"],
+                                                "codex" if a.codex else "claude", short))
+        return
+    print("subagent %s in %s (%s) — task delivered"
+          % (c("1", short), proj["name"], "codex" if a.codex else "claude"))
+
+
 def cmd_rename(a):
     t = resolve(state(), a.sel)
     name = " ".join(a.text).strip()
@@ -744,6 +904,14 @@ def main():
     g.add_argument("--claude", action="store_true", help="start `%s` in it" % CLAUDE_CMD)
     g.add_argument("-c", "--cmd", help="run this command in it instead")
     s.set_defaults(fn=cmd_new)
+    s = sub.add_parser("subagent", help="open a new agent terminal and give it a task")
+    s.add_argument("text", nargs="+", help="the task to hand it")
+    s.add_argument("-p", "--project", help="project to open it in (default: your own)")
+    s.add_argument("-n", "--name", help="label the card (default: the task)")
+    s.add_argument("--codex", action="store_true", help="use codex instead of claude")
+    s.add_argument("--no-wait", action="store_true",
+                   help="open the agent but do not wait for it or send the task")
+    s.set_defaults(fn=cmd_subagent)
     s = sub.add_parser("rename", help="relabel a terminal")
     s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_rename)
     s = sub.add_parser("rm"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
