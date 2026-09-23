@@ -765,38 +765,51 @@ def cmd_subagent(a):
     tid = r.get("id") or ""
     if not tid:
         sys.exit("FleetView returned no terminal id")
-    short = tid[:8].lower()
+    full = tid.lower()
+    kind = "codex" if a.codex else "claude"
+    # The caller is usually an agent that now has to address this terminal, so the full uuid is the
+    # answer — it is what `show`/`send`/`check` and the HTTP API all take, and it is printed on every
+    # path, success or not: the card exists either way, and one that cannot be named is one nobody
+    # can finish by hand.
+    #
+    # With --id it is the only thing on stdout, so `$(project-manager subagent --id …)` captures it
+    # cleanly; everything else moves to stderr.
+    def say(msg):
+        print(msg, file=sys.stderr if a.id_only else sys.stdout)
+
+    def done(msg, code=0):
+        if a.id_only:
+            say(msg)
+            print(full)
+        else:
+            say(msg)
+        sys.exit(code)
+
     # The card is named after the task by default: a board of "FleetView-7" tells you nothing about
     # which subagent is which.
     _rename(tid, a.name or ("⚙ " + task[:24]))
 
     if not _wait_session(tid):
-        print("opened %s in %s" % (short, proj["name"]))
-        sys.exit("session did not come up within 20s — nothing typed")
+        done("opened %s in %s — session did not come up within 20s, nothing typed"
+             % (full, proj["name"]), 1)
     cmd = CODEX_CMD if a.codex else CLAUDE_CMD
     api_json("/type?" + urllib.parse.urlencode({"id": tid, "text": cmd, "enter": "1"},
                                                quote_via=urllib.parse.quote))
     if a.no_wait:
-        print("opened %s in %s, starting %s (task NOT sent: --no-wait)"
-              % (c("1", short), proj["name"], "codex" if a.codex else "claude"))
-        return
+        done("opened %s in %s, starting %s (task NOT sent: --no-wait)"
+             % (c("1", full), proj["name"], kind))
     if not _wait_agent_ready(tid):
         # The terminal is real and the CLI may still come up; say what did and did not happen rather
         # than leaving a card that looks like it was given a task.
-        print("opened %s in %s" % (short, proj["name"]))
-        sys.exit("agent did not report ready within 120s — task NOT sent; "
-                 "send it yourself with: project-manager send %s '<task>'" % short)
+        done("opened %s in %s — agent did not report ready within 120s, task NOT sent; "
+             "send it with: project-manager send %s '<task>'" % (full, proj["name"], full[:8]), 1)
     if not _send_task(tid, task):
-        print("opened %s in %s" % (short, proj["name"]))
-        sys.exit("agent started but the task would not stick — send it yourself with: "
-                 "project-manager send %s '<task>'" % short)
+        done("opened %s in %s — agent started but the task would not stick; "
+             "send it with: project-manager send %s '<task>'" % (full, proj["name"], full[:8]), 1)
     if not _submit_if_pending(tid, task):
-        print("subagent %s in %s (%s) — task typed but NOT submitted; press Enter with: "
-              "project-manager key %s enter" % (c("1", short), proj["name"],
-                                                "codex" if a.codex else "claude", short))
-        return
-    print("subagent %s in %s (%s) — task delivered"
-          % (c("1", short), proj["name"], "codex" if a.codex else "claude"))
+        done("subagent %s in %s (%s) — task typed but NOT submitted; press Enter with: "
+             "project-manager key %s enter" % (c("1", full), proj["name"], kind, full[:8]), 1)
+    done("subagent %s in %s (%s) — task delivered" % (c("1", full), proj["name"], kind))
 
 
 def cmd_rename(a):
@@ -911,6 +924,8 @@ def main():
     s.add_argument("--codex", action="store_true", help="use codex instead of claude")
     s.add_argument("--no-wait", action="store_true",
                    help="open the agent but do not wait for it or send the task")
+    s.add_argument("--id", dest="id_only", action="store_true",
+                   help="print only the new terminal's uuid on stdout (status goes to stderr)")
     s.set_defaults(fn=cmd_subagent)
     s = sub.add_parser("rename", help="relabel a terminal")
     s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_rename)

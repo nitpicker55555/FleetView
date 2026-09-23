@@ -160,6 +160,19 @@ It opens a card, starts the agent, waits for it, and delivers the task. The proj
 **your own** — a subagent belongs to the work that spawned it — and the card is named after the task,
 because a board of `FleetView-7` says nothing about which subagent is which.
 
+**It prints the new terminal's full uuid**, on every path including the failures — the card exists
+either way, and one you cannot name is one nobody can finish by hand. That uuid is what `show`,
+`send`, `check` and the HTTP API all take, so a subagent is addressable the moment it is made:
+
+```bash
+SUB=$(project-manager subagent --id "重跑 07 号任务的评分")   # uuid alone on stdout
+project-manager show "$SUB" -l 40                            # watch it
+project-manager send "$SUB" "改用 v2 的 rubric"               # steer it
+```
+
+With `--id` the uuid is the only thing on stdout and the status line moves to stderr, so `$(...)`
+captures it cleanly. Without it, the uuid is in the status line.
+
 **Delivery is verified, not assumed**, and that is the whole difficulty. Three things go wrong
 between "opened a terminal" and "the agent is working on it", all of them silent:
 
