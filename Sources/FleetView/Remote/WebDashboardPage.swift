@@ -88,7 +88,12 @@ enum WebDashboardPage {
   :root{color-scheme:dark}
   html.light{color-scheme:light}
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%}
+  /* min-height, not height, on body. Pinned to exactly one screen, the body was the box the sticky
+     header could stick inside — so the header scrolled away with the board after the first screen
+     and was "sticky" only in the stylesheet. */
+  html{height:100%}
+  body{margin:0;min-height:100%}
+  html{margin:0}
   /* Stops the rubber-band at the root, so a flick that the overlay did not consume cannot drag the
      page itself — the same class of movement the overlay's own overflow now prevents. */
   html{overscroll-behavior:none}
@@ -647,7 +652,28 @@ enum WebDashboardPage {
   #term.dropping{outline:2px dashed var(--accent);outline-offset:-6px}
   /* Files an agent handed over. Lives in the header rather than inside a conversation: it is the
      one thing you want to reach without first knowing which terminal produced it. */
-  #traybtn,#markbtn,#schemebtn{position:relative;background:var(--card);color:var(--text);border:1px solid var(--stroke);
+  /* Open a project: the folders in ~/PycharmProjects, under the header like the files tray. */
+  #projs{display:none;position:sticky;top:0;z-index:6;background:var(--panel);
+    border-bottom:1px solid var(--stroke);padding:10px 12px 6px}
+  #projs.on{display:block}
+  #projs .nsearch{margin-bottom:8px}
+  #pquery{flex:1;min-width:0;background:transparent;border:0;outline:none;color:var(--text);
+    padding:9px 0;font-family:inherit;font-size:13px;-webkit-appearance:none;appearance:none}
+  #projlist{max-height:min(55vh,420px);overflow-y:auto;overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch}
+  .prow{display:flex;align-items:center;gap:10px;padding:9px 10px;margin-bottom:6px;
+    background:var(--card);border:1px solid var(--stroke);border-radius:10px}
+  .prow .pn{flex:1;min-width:0}
+  .prow .pn b{display:block;font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prow .pn span{font-size:11px;color:var(--sub)}
+  .prow button{flex:none;font-size:12px;font-weight:600;border-radius:8px;padding:6px 10px;cursor:pointer;
+    border:1px solid var(--accentEdge);background:var(--accentSoft);color:var(--accent)}
+  .prow button.go{background:var(--accent);color:var(--onAccent);border-color:transparent}
+  .prow .onb{font-size:10.5px;font-weight:700;color:var(--green);background:var(--greenSoft);
+    border-radius:999px;padding:1px 7px;margin-left:6px;vertical-align:1px}
+  @media (pointer:coarse){ #pquery{font-size:16px} .prow button{min-height:38px} }
+  #projbtn.on{border-color:var(--accent)}
+  #traybtn,#markbtn,#schemebtn,#projbtn{position:relative;background:var(--card);color:var(--text);border:1px solid var(--stroke);
     border-radius:8px;padding:5px 9px;font-size:14px;line-height:1;cursor:pointer}
   #traybtn.has{border-color:var(--accent)}
   /* Filled tint while it is filtering: a board hiding most of itself has to say so somewhere that
@@ -732,10 +758,16 @@ enum WebDashboardPage {
   <span class="spacer"></span>
   <button id="markbtn" onclick="toggleOnlyMarked()" title="Only show marked terminals">🔖<span id="markcount"></span></button>
   <button id="schemebtn" onclick="cycleScheme()">🖥</button>
+  <button id="projbtn" onclick="toggleProjects()" title="Open a project from ~/PycharmProjects">📂</button>
   <button id="traybtn" onclick="toggleTray()" title="Files agents have sent you">📥<span id="traybadge"></span></button>
   <span class="refresh" id="refresh"></span>
 </header>
 <div id="tray"><div id="traylist"></div></div>
+<div id="projs">
+  <label class="nsearch"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+    <input id="pquery" type="search" enterkeyhint="go" autocomplete="off" placeholder="Search ~/PycharmProjects" oninput="renderProjects()"></label>
+  <div id="projlist"></div>
+</div>
 <main id="root"><div class="empty">Loading…</div></main>
 
 <div id="chip"></div>
@@ -1789,8 +1821,14 @@ function autoHide(scroller,target,cls,limit,skip){
      jump landed half a second later by the poll or jumpLatest does not. A flat second after touchend
      was long enough to let those through, and the bar hid itself on "take me to the latest". */
   const mine=()=>{ userUntil=performance.now()+150; };
-  for(const ev of ['touchstart','touchmove','touchend','wheel'])
-    scroller.addEventListener(ev,mine,{passive:true});
+  /* A tap is not a scroll. Counting touchend on its own let a tapped button's consequence — "Open"
+     jumping the board to the project it just added — pass for the finger's own scroll and hide the
+     header you were about to use. Only a finger that moved, and the glide after it, count. */
+  let moved=false;
+  scroller.addEventListener('touchstart',()=>{ moved=false; },{passive:true});
+  scroller.addEventListener('touchmove',()=>{ moved=true; mine(); },{passive:true});
+  scroller.addEventListener('touchend',()=>{ if(moved) mine(); },{passive:true});
+  scroller.addEventListener('wheel',mine,{passive:true});
   const set=hide=>{
     if(target.classList.contains(cls)===hide) return;
     target.classList.toggle(cls,hide);
@@ -1818,7 +1856,8 @@ const showBoardHead=autoHide(window,document.querySelector('body > header'),'hid
   ()=>document.getElementById('panel').offsetHeight+document.querySelector('body > header').offsetHeight,
   // Parked behind the overlay, dragging a card, or with the files tray open under it: stay put.
   ()=>document.body.classList.contains('locked')||dragging||
-      document.getElementById('tray').classList.contains('on'));
+      document.getElementById('tray').classList.contains('on')||
+      document.getElementById('projs').classList.contains('on'));
 /* The transcript starts below the bar, however tall the bar is today — a notch, a wrapped title. */
 if(window.ResizeObserver){
   new ResizeObserver(()=>{
@@ -2021,7 +2060,69 @@ function renderTray(){
 function toggleTray(){
   const t=document.getElementById('tray');
   t.classList.toggle('on');
-  if(t.classList.contains('on')){ renderTray(); loadFiles(); }
+  if(t.classList.contains('on')){ closeProjects(); renderTray(); loadFiles(); }
+}
+
+/* ---------- open a project ----------
+   The phone could only make terminals in projects already on the board; this adds any folder in
+   ~/PycharmProjects to it — the server refuses anything else (AppState+Workspace). */
+let wsFolders=[];
+async function toggleProjects(){
+  const el=document.getElementById('projs');
+  if(el.classList.contains('on')){ closeProjects(); return; }
+  document.getElementById('tray').classList.remove('on');
+  el.classList.add('on'); document.getElementById('projbtn').classList.add('on');
+  const q=document.getElementById('pquery'); q.value='';
+  q.focus();                                   // inside the tap, so a phone raises its keyboard
+  document.getElementById('projlist').innerHTML='<div class="tnone">loading…</div>';
+  try{ wsFolders=(await(await fetch('/workspace',{cache:'no-store'})).json()).folders||[]; }
+  catch(e){ wsFolders=[]; }
+  renderProjects();
+}
+function closeProjects(){
+  document.getElementById('projs').classList.remove('on');
+  document.getElementById('projbtn').classList.remove('on');
+  const q=document.getElementById('pquery'); if(document.activeElement===q) q.blur();
+}
+function renderProjects(){
+  const q=(document.getElementById('pquery').value||'').trim().toLowerCase();
+  const list=q?wsFolders.filter(f=>f.name.toLowerCase().includes(q)):wsFolders;
+  const el=document.getElementById('projlist');
+  if(!list.length){ el.innerHTML='<div class="tnone">'+(q?'no folder matches':'no folders in ~/PycharmProjects')+'</div>'; return; }
+  el.innerHTML=list.map((f,i)=>{
+    const when=f.modified?ago(Math.round(Date.now()/1000-f.modified)):'';
+    const meta=[f.git?'git':'', when].filter(Boolean).join(' · ');
+    return '<div class="prow"><span class="pn"><b>'+esc(f.name)+(f.projectId?'<span class="onb">on board</span>':'')+
+      '</b><span>'+esc(meta)+'</span></span>'+
+      (f.projectId?'<button onclick="openProject('+i+',false)">Go to</button>'
+                  :'<button onclick="openProject('+i+',false)">Open</button>')+
+      '<button class="go" onclick="openProject('+i+',true)">+ Terminal</button></div>';
+  }).join('');
+}
+/* Open it (a no-op if it is already on the board), then take the board there — and with the second
+   button, start a terminal in it and go straight into that. */
+async function openProject(i,withTerm){
+  const q=(document.getElementById('pquery').value||'').trim().toLowerCase();
+  const f=(q?wsFolders.filter(x=>x.name.toLowerCase().includes(q)):wsFolders)[i]; if(!f)return;
+  let pid=f.projectId;
+  try{
+    if(!pid){
+      const r=await fetch('/project/open?path='+encodeURIComponent(f.path));
+      if(!r.ok){ toast('could not open '+f.name); return; }
+      pid=(await r.json()).id;
+    }
+    closeProjects();
+    if(withTerm&&pid){
+      const t=await(await fetch('/new?projectId='+encodeURIComponent(pid))).json();
+      await tick();
+      if(t.id){ openTerm(t.id,f.name); return; }
+    }
+    await tick();
+    const sec=document.querySelector('.proj[data-pid="'+pid+'"]');
+    if(sec) sec.scrollIntoView({block:'start',behavior:'smooth'});
+    showBoardHead();
+    toast(f.projectId?f.name:'opened '+f.name);
+  }catch(e){ toast('could not open '+f.name); }
 }
 
 /* Files: an agent reads a file by opening it, so getting one out of a phone and into a prompt means
@@ -2597,7 +2698,7 @@ function render(s){
     // of the filter is a board with only the work you are tracking on it.
     if(!terms.length&&onlyMarked) continue;
     const tot=all.reduce((a,t)=>a+t.tokens,0);
-    html+=`<div class="proj"><div class="projhead"><span class="name">${esc(p.name)}</span>`+
+    html+=`<div class="proj" data-pid="${p.id}"><div class="projhead"><span class="name">${esc(p.name)}</span>`+
       // Same rule as the cluster header: the project's real size, and what is on screen of it.
       `<span class="count">${terms.length===all.length?all.length:terms.length+' / '+all.length}</span>`+
       (tot>0?`<span class="tok">Σ ${short(tot)}</span>`:'')+

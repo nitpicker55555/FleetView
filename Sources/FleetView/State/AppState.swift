@@ -2088,6 +2088,18 @@ final class AppState: ObservableObject {
             let t = newTerminal(projectId: pid)
             let body = try? JSONEncoder().encode(["id": t?.id.uuidString ?? ""])
             return ("200 OK", "application/json", body ?? Data("{}".utf8))
+        case "/workspace":
+            // Folders the web may open as projects (see AppState+Workspace).
+            return ("200 OK", "application/json", workspaceListing())
+        case "/project/open":
+            guard let raw = query["path"], let path = workspaceFolder(raw) else {
+                return ("400 Bad Request", "application/json",
+                        Data(#"{"error":"only folders directly inside ~/PycharmProjects"}"#.utf8))
+            }
+            addProject(path: path)                 // dedupes by path: opening twice is a no-op
+            let id = projects.first(where: { $0.path == path })?.id.uuidString ?? ""
+            let body = try? JSONEncoder().encode(["id": id])
+            return ("200 OK", "application/json", body ?? Data("{}".utf8))
         case "/action":
             guard let s = query["id"], let id = UUID(uuidString: s), let act = query["do"] else {
                 return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
