@@ -54,6 +54,15 @@ final class WebServer {
     /// Bind the first free port at/after `preferredPort` and start listening on all interfaces.
     func start(preferredPort: Int = 8080) {
         var p = preferredPort, tries = 0
+        // A relaunch — a deploy, or the self-update handing off — can come up while the instance it
+        // replaces is still letting go of its listener. The port reads busy for a moment, and the
+        // dashboard used to move to 8081 for good, stranding every phone bookmarked on 8080. So if
+        // the busy port is the one this app was on last time, give it a few seconds first.
+        let lastPort = (try? String(contentsOf: FV.webPortFile, encoding: .utf8))
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        if lastPort == p, !Tooling.isPortFree(p) {
+            for _ in 0..<12 where !Tooling.isPortFree(p) { usleep(250_000) }
+        }
         while !Tooling.isPortFree(p) && tries < 100 { p += 1; tries += 1 }
         guard let nwPort = NWEndpoint.Port(rawValue: UInt16(p)) else { return }
         let params = NWParameters.tcp
