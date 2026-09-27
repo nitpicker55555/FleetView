@@ -30,6 +30,9 @@ History of this Mac's conversations (Claude + Codex), one level at a time:
   project-manager session <id>             L2  one conversation, one line per turn
   project-manager session <id> -t N        L3  one turn in full
   project-manager search <words…>          which conversations mention something
+  project-manager session <id> --files     the files a conversation wrote/edited/read
+  project-manager memory [<project>]       notes earlier agents left about a project
+  project-manager open <folder> [--claude] put a ~/PycharmProjects folder on the board
 
 <sel> matches a terminal by name substring (case-insensitive) or id prefix.
 <note-sel> matches a note by its number in `notes`, its id prefix, or a text substring.
@@ -697,6 +700,9 @@ def _wait_session(tid, timeout=20.0):
 def cmd_new(a):
     st = state()
     matches = match_projects(st, a.sel)
+    if not matches:
+        sys.exit("no project %r on the board — a folder in ~/PycharmProjects can be opened with: "
+                 "project-manager open %s --terminal" % (a.sel, a.sel))
     if len(matches) != 1:
         sys.exit("specify one project (matched %d)" % len(matches))
     r = api_json("/new?projectId=" + matches[0]["id"])
@@ -719,6 +725,66 @@ def cmd_new(a):
             {"id": tid, "text": cmd, "enter": "1"}, quote_via=urllib.parse.quote))
         done.append("running %s" % c("1", cmd))
     print(", ".join(done))
+
+
+def cmd_open(a):
+    """Put a folder from ~/PycharmProjects on the board, optionally with a terminal running in it.
+
+    The same act as the web dashboard's 📂 — and, like it, fenced to folders directly inside
+    ~/PycharmProjects; the server refuses anything else. Goes through the API, so -u works.
+    """
+    try:
+        ws = json.loads(_get("/workspace"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            sys.exit("this FleetView predates `open` (no /workspace) — update the app")
+        raise
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach FleetView at %s (%s)" % (BASE, e))
+    folders = ws.get("folders") or []
+    sl, sn = a.sel.lower().strip(), _norm(a.sel)
+    hit = None
+    for test in (lambda f: f["name"].lower() == sl or f["path"] == os.path.expanduser(a.sel).rstrip("/"),
+                 lambda f: _norm(f["name"]) == sn,
+                 lambda f: sl in f["name"].lower(),
+                 lambda f: sn and sn in _norm(f["name"])):
+        hits = [f for f in folders if test(f)]
+        if len(hits) == 1:
+            hit = hits[0]; break
+        if len(hits) > 1:
+            print("%r matches several folders:" % a.sel, file=sys.stderr)
+            for f in hits[:12]:
+                print("  " + f["name"], file=sys.stderr)
+            sys.exit(2)
+    if hit is None:
+        import difflib
+        close = difflib.get_close_matches(a.sel, [f["name"] for f in folders], n=4, cutoff=0.5)
+        sys.exit("no folder %r in %s%s" % (a.sel, _tilde(ws.get("root") or "~/PycharmProjects"),
+                                             " — closest: " + ", ".join(close) if close else ""))
+    pid = hit.get("projectId")
+    if pid:
+        said = "%s is already on the board" % hit["name"]
+    else:
+        r = api_json("/project/open?" + urllib.parse.urlencode({"path": hit["path"]}, quote_via=urllib.parse.quote))
+        pid = r.get("id") or ""
+        said = "opened %s as a project" % c("1", hit["name"])
+    cmd = CLAUDE_CMD if a.claude else (CODEX_CMD if a.codex else None)
+    if not (a.terminal or cmd):
+        print(said); return
+    r = api_json("/new?projectId=" + pid)
+    tid = r.get("id") or ""
+    if not tid:
+        sys.exit(said + ", but FleetView returned no terminal id")
+    if a.name:
+        _rename(tid, a.name)
+    said += ", terminal %s" % c("1", tid[:8].lower())
+    if cmd:
+        if not _wait_session(tid):
+            print(said); sys.exit("session did not come up within 20s — nothing typed")
+        api_json("/type?" + urllib.parse.urlencode({"id": tid, "text": cmd, "enter": "1"},
+                                                   quote_via=urllib.parse.quote))
+        said += " running %s" % cmd.split()[0]
+    print(said)
 
 
 def _wait_agent_ready(tid, timeout=120):
@@ -1567,6 +1633,10 @@ def cmd_history(a):
     print("%s — %s · %d conversations (%s)%s" % (
         c("1", h.name(root)), _tilde(root), len(mine), mix,
         c("90", " · %d subagent threads folded in" % subs) if subs else ""))
+    mem = sum(len(_memory_notes(d)) for d in _memory_dirs(h, root))
+    if mem:
+        print(c("33", "  %s left by earlier agents — project-manager memory %s"
+                % (_n(mem, "memory note"), h.name(root) if " " not in h.name(root) else '"%s"' % h.name(root))))
     briefs = {}
     for e in mine[:a.n]:
         s = _session_summary(h, e, stats)
@@ -1668,6 +1738,8 @@ def _session_head(h, e, turns):
 def cmd_session(a):
     h = _History()
     e = _resolve_session(h, a.sel)
+    if a.files:
+        return _show_files(h, e)
     turns = _turns(h.rows(e))
     if a.turn:
         return _show_turns(h, e, turns, a)
@@ -1703,7 +1775,8 @@ def cmd_session(a):
     final = next((t for t in reversed(turns) if t["replies"]), None)
     if final:
         print("last reply (turn %d): %s" % (final["n"], _clip(final["replies"][-1], 300)))
-    print(c("90", "next: project-manager session %s -t <N>   (one turn in full)" % _short_sid(e)))
+    print(c("90", "next: project-manager session %s -t <N>   (one turn in full)   · --files (what it wrote)"
+            % _short_sid(e)))
 
 
 def _show_turns(h, e, turns, a):
@@ -1753,6 +1826,205 @@ def _show_turns(h, e, turns, a):
     if hi < len(turns):
         nav.append("-t %d" % (hi + 1))
     print(c("90", "\nnext: project-manager session %s %s" % (_short_sid(e), " | ".join(nav) or "")))
+
+
+# Where a shell command put things: redirects, tee, -o/--output/--local-dir, and the last argument
+# of cp/mv/rsync/ditto. Best effort by construction — it is reading shell, not running it — which is
+# why its findings are listed apart and only when the path exists now.
+_TOKEN = r"('[^']*'|\"[^\"]*\"|[^\s;|&<>()]+)"
+_SHELL_DEST = [re.compile(r"(?:^|[^<>&0-9])>>?\s*" + _TOKEN),
+               re.compile(r"\btee\s+(?:-a\s+)?" + _TOKEN),
+               re.compile(r"(?:\s-o|--output(?:-dir)?|--local-dir|--out(?:put)?[_-]?dir)[=\s]+" + _TOKEN)]
+_SHELL_COPY = re.compile(r"\b(?:cp|mv|rsync|ditto)\s+(?:-\S+\s+)*" + r"(?:" + _TOKEN + r"\s+)+" + _TOKEN)
+
+
+def _shell_targets(cmd):
+    out = []
+    for rx in _SHELL_DEST:
+        out += [m.group(1) for m in rx.finditer(cmd)]
+    out += [m.group(m.lastindex) for m in _SHELL_COPY.finditer(cmd)]
+    return [t.strip("'\"") for t in out]
+
+
+def _usable_path(fp):
+    # Template placeholders and globs are not files: a Codex patch built in JS carries `${p}`.
+    return (fp and not any(ch in fp for ch in "$`*?{}") and not fp.startswith(("/dev/", "&"))
+            and fp.rstrip("/") not in ("", "~", HOME, "/tmp", "/private/tmp", "."))
+
+
+def _touched(path, src, cwd):
+    """(written, read) paths from one transcript's tool calls — the index keeps what was said, not
+    what was done, so this reads the file itself.
+
+    Claude: Write / Edit / MultiEdit / NotebookEdit are writes, Read is a read. Codex 0.15x wraps
+    every tool in one JS `exec` call, and its edits show up as apply_patch headers inside it —
+    `*** Update File: <path>` — so those are matched on the raw line, which also catches older
+    Codex versions that called apply_patch directly. Codex reads go through shell commands and are
+    not attributed.
+    """
+    written, read, shell = {}, {}, {}
+    def add(d, fp):
+        fp = (fp or "").strip()
+        if not _usable_path(fp):
+            return
+        fp = os.path.expanduser(fp)
+        if not fp.startswith("/"):
+            fp = os.path.normpath(os.path.join(cwd or "/", fp))
+        d[fp] = d.get(fp, 0) + 1
+    def add_cmd(cmd):
+        for t in _shell_targets(cmd or ""):
+            add(shell, t)
+    try:
+        f = open(path, "rb")
+    except OSError:
+        return written, read, shell
+    with f:
+        for line in f:
+            if src == 0:
+                if b'"tool_use"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                for b in (o.get("message") or {}).get("content") or []:
+                    if not isinstance(b, dict) or b.get("type") != "tool_use":
+                        continue
+                    inp = b.get("input") or {}
+                    name = b.get("name")
+                    if name in ("Write", "Edit", "MultiEdit"):
+                        add(written, inp.get("file_path"))
+                    elif name == "NotebookEdit":
+                        add(written, inp.get("notebook_path"))
+                    elif name == "Read":
+                        add(read, inp.get("file_path"))
+                    elif name == "Bash":
+                        add_cmd(inp.get("command"))
+            else:
+                if b"File: " in line:
+                    txt = line.decode("utf-8", "replace")
+                    for m in re.finditer(r"\*\*\* (?:Add|Update) File: ([^\n\\\"]+)", txt):
+                        add(written, m.group(1))
+                if b"exec_command" in line or b'"shell"' in line:
+                    try:
+                        p = json.loads(line).get("payload") or {}
+                    except ValueError:
+                        continue
+                    body = p.get("input") or p.get("arguments") or ""
+                    # exec_command({cmd:"…"}) inside the JS the exec tool runs, or {"command":[…]}.
+                    for m in re.finditer(r'cmd:\s*"((?:[^"\\]|\\.)*)"', body if isinstance(body, str) else ""):
+                        try:
+                            add_cmd(json.loads('"%s"' % m.group(1)))
+                        except ValueError:
+                            add_cmd(m.group(1))
+    return written, read, shell
+
+
+def _by_dir(paths, dirs=12, per=5):
+    """Paths grouped under their directory, busiest first — a list of 300 files is not an answer,
+    the four folders they went into is."""
+    groups = {}
+    for fp, n in paths.items():
+        groups.setdefault(os.path.dirname(fp), []).append((n, os.path.basename(fp)))
+    # Scratch folders last: a session's throwaway probes outnumber its deliverables, and the
+    # deliverables are what someone coming back to the work is looking for.
+    order = sorted(groups.items(), key=lambda kv: ((kv[0] + "/").startswith(SCRATCH_PREFIXES),
+                                                   -sum(n for n, _ in kv[1])))
+    out = []
+    for d, files in order[:dirs]:
+        files.sort(reverse=True)
+        names = ", ".join(b for _, b in files[:per]) + (" …+%d" % (len(files) - per) if len(files) > per else "")
+        out.append("  %s  %s" % (_tilde(d) + "/", c("90", "(%d) %s" % (len(files), names))))
+    if len(order) > dirs:
+        out.append(c("90", "  … %d more folders" % (len(order) - dirs)))
+    return out
+
+
+def _show_files(h, e):
+    paths = [e] + [x for x in h.files.values() if x.get("parent_path") == e["path"]]
+    written, read, shell = {}, {}, {}
+    for x in paths:
+        if x["size"] is None:
+            continue
+        w, r, sh = _touched(x["path"], x["src"], x["cwd"] or e["cwd"])
+        for acc, got in ((written, w), (read, r), (shell, sh)):
+            for fp, n in got.items():
+                acc[fp] = acc.get(fp, 0) + n
+    subs = len(paths) - 1
+    print("%s %s · %s · %s" % (c("1", "files"), e["sid"], _agent(e),
+                               "incl. %s" % _n(subs, "subagent thread") if subs else "no subagent threads"))
+    if e["size"] is None:
+        print(c("33", "  the transcript is deleted — only what was said survives, not what was done"))
+        return
+    gone = sum(1 for fp in written if not os.path.exists(fp))
+    print("written or edited: %s%s" % (_n(len(written), "file"),
+                                       c("90", " (%d no longer exist)" % gone) if gone else ""))
+    for ln in _by_dir(written):
+        print(ln)
+    shell = {fp: n for fp, n in shell.items() if fp not in written and os.path.exists(fp)}
+    if shell:
+        print("put there by shell commands (best effort, existing paths only): %s" % _n(len(shell), "path"))
+        for ln in _by_dir(shell, dirs=8, per=4):
+            print(ln)
+    if read:
+        print("read: %s" % _n(len(read), "file"))
+        for ln in _by_dir(read, dirs=8, per=4):
+            print(ln)
+    elif e["src"] == 1:
+        print(c("90", "read: not tracked for Codex (it reads through shell commands)"))
+    print(c("90", "next: open a file directly, or project-manager session %s -t <N> for why"
+            % _short_sid(e)))
+
+
+def _memory_dirs(h, root):
+    """Claude's per-project memory folders for a project: one per transcript folder (slug) that its
+    conversations live in. Notes a previous agent left about the project — often the fastest way
+    back into it."""
+    dirs = []
+    for e in h.sessions.values():
+        if e["root"] != root or e["src"] != 0:
+            continue
+        m = os.path.join(os.path.dirname(e["path"]), "memory")
+        if m not in dirs and os.path.isdir(m):
+            dirs.append(m)
+    return dirs
+
+
+def _memory_notes(d):
+    notes = []
+    for n in sorted(os.listdir(d)):
+        if not n.endswith(".md") or n == "MEMORY.md":
+            continue
+        try:
+            with open(os.path.join(d, n), errors="replace") as f:
+                head = f.read(4000)
+        except OSError:
+            continue
+        name = re.search(r"^name:\s*(.+)$", head, re.M)
+        desc = re.search(r"^description:\s*(.+)$", head, re.M)
+        notes.append((n, (name.group(1) if name else n[:-3]).strip().strip('"'),
+                      (desc.group(1) if desc else "").strip().strip('"').replace('\\"', '"')))
+    return notes
+
+
+def cmd_memory(a):
+    h = _History()
+    roots = {e["root"] for e in h.sessions.values()}
+    if a.project:
+        root, note = _resolve_project(h, a.project, roots)
+        if note:
+            print(c("33", note))
+    else:
+        root = _own_root(h)
+    dirs = _memory_dirs(h, root)
+    if not dirs:
+        print("no memory notes for %s" % h.name(root)); return
+    for d in dirs:
+        notes = _memory_notes(d)
+        print("%s — %s" % (c("1", h.name(root)), _tilde(d) + "/"))
+        for fn, name, desc in notes:
+            print("  %-26s %s" % (_clip(name, 26), _clip(desc, 110)))
+    print(c("90", "next: read one — cat <folder>/<name>.md (they are short)"))
 
 
 def _is_cjk(ch):
@@ -1939,7 +2211,20 @@ def main():
     s.add_argument("--first", type=int, default=3, help=argparse.SUPPRESS)
     s.add_argument("--last", type=int, default=12, help=argparse.SUPPRESS)
     s.add_argument("--full", action="store_true", help="with -t: no length limits")
+    s.add_argument("--files", action="store_true",
+                   help="the files it wrote/edited (and, for Claude, read), grouped by folder")
     s.set_defaults(fn=cmd_session)
+    s = sub.add_parser("memory", help="notes earlier agents left about a project (Claude memory)")
+    s.add_argument("project", nargs="?", help="project name/path (default: your own)")
+    s.set_defaults(fn=cmd_memory)
+    s = sub.add_parser("open", help="put a ~/PycharmProjects folder on the board (like the web's 📂)")
+    s.add_argument("sel", help="folder name (fuzzy) or path")
+    s.add_argument("-t", "--terminal", action="store_true", help="also open a terminal in it")
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--claude", action="store_true", help="…and start `%s` in it" % CLAUDE_CMD)
+    g.add_argument("--codex", action="store_true", help="…and start `%s` in it" % CODEX_CMD)
+    s.add_argument("-n", "--name", help="label the terminal")
+    s.set_defaults(fn=cmd_open)
     s = sub.add_parser("search", help="find conversations that mention something (this Mac)")
     s.add_argument("words", nargs="+", help='words to find (AND-ed; "quote a phrase")')
     s.add_argument("-p", "--project", help="only this project")

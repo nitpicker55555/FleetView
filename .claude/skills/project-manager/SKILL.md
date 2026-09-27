@@ -68,6 +68,9 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager session <id> [--all]` | **History L2**: one conversation, one line per turn, plus how it ended and how to resume it |
 | `project-manager session <id> -t N[-M] [--full]` | **History L3**: one turn (up to 5) in full — your prompt and the agent's answer |
 | `project-manager search <words…> [-p PROJ]` | Which conversations mention something, grouped by conversation, with turn numbers |
+| `project-manager session <id> --files` | The files a conversation **wrote/edited** (and, for Claude, read), grouped by folder; plus paths its shell commands created |
+| `project-manager memory [<project>]` | Notes earlier agents left about a project (Claude's per-project memory) — read these first |
+| `project-manager open <folder> [-t\|--claude\|--codex]` | Put a folder from `~/PycharmProjects` on the board (the web's 📂), optionally with a terminal/agent in it |
 
 ## Knowing which project you are in
 
@@ -289,6 +292,40 @@ project-manager search rubric 权重 -p qwen   # or jump straight to where somet
 - **Local only**: this reads the transcripts and FleetView's search index on *this* Mac, so it refuses
   `-u`. For another Mac's history, run it there.
 - Transcripts hold whatever the user typed, secrets included. Quote only what the task needs.
+
+### Coming back to earlier work: finding the actual files
+
+"The files are in some old project" is the usual shape of the request, and the conversation is the
+map to them. What worked, in order, when asked to compare two past projects' task sets:
+
+```bash
+project-manager projects                                # spot both projects
+project-manager history "agent last exam"               # its conversations — and whether it has memory notes
+project-manager memory "agent last exam"                # notes a previous agent left: data locations, known gaps
+project-manager session be0758e9                        # the outline; the last reply is often the conclusion
+project-manager session be0758e9 -t 1-4                 # the turns that matter, in full
+project-manager session 6d837b28 --files                # where its deliverables were written
+project-manager search 30 交付 -p qwen_fancy_web --prompts   # where the final set ended up
+```
+
+- **`--files` beats reading replies for "where is it".** Deliverables are what a session wrote, and
+  the tool calls say exactly where; replies paraphrase. It covers subagent threads too. Paths put
+  there by shell commands (downloads, `cp`, redirects) are best-effort and listed separately.
+- **Later wins.** When several sessions touched the same set, the newest one's `--files` and last turns
+  say where the final version is — earlier copies (`stable_tasks/`, `fix1/`…) are usually superseded.
+- **Codex reads are not tracked** (it reads through shell commands); Codex writes are.
+- Point subagents at concrete paths once found, rather than at the project — history is for finding,
+  the files themselves are for reading.
+
+### Opening a project from ~/PycharmProjects
+
+```bash
+project-manager open codesense                  # on the board (no-op if it already is)
+project-manager open codesense --claude -n "audit"   # …with a Claude terminal running in it
+```
+
+`new <project>` only knows projects already on the board; `open` takes any folder directly inside
+`~/PycharmProjects` (fuzzy name), which the server enforces. It goes through the API, so `-u` works.
 
 ## Reaching a terminal on another machine (LAN)
 
