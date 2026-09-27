@@ -109,9 +109,12 @@ enum WebDashboardPage {
   #panel .pcollapse{position:absolute;right:8px;top:6px;z-index:6;background:var(--card);color:var(--sub);
     border:1px solid var(--stroke);border-radius:6px;font-size:11px;padding:2px 8px;cursor:pointer}
   header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    transition:transform .24s cubic-bezier(.2,.8,.3,1);
     padding:12px 16px;background:var(--headerBg);backdrop-filter:blur(8px);
     border-bottom:1px solid var(--stroke);padding-top:max(12px,env(safe-area-inset-top));
     padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
+  /* Slides up while you read down the board and comes back on the way up (see autoHide). */
+  header.hide{transform:translateY(calc(-100% - 1px))}
   .logo{font-weight:600;font-size:15px}.logo b{color:var(--accent)}
   .muted{color:var(--sub);font-size:13px}
   .pill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px}
@@ -222,10 +225,31 @@ enum WebDashboardPage {
   /* inset:0 rather than width alone: a body left at its scrolled offset is another way the page
      underneath ends up visible at an edge. overscroll-behavior kills the rubber-band with it. */
   body.locked{overflow:hidden;position:fixed;inset:0;width:100%;overscroll-behavior:none}
-  #termbar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--panel);
-    border-bottom:1px solid var(--stroke);padding-top:max(10px,env(safe-area-inset-top))}
-  #termbar button{background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer}
-  #termbar .tname{font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* The header lies OVER the transcript instead of above it, so hiding it is a transform on one
+     layer — the text underneath does not move. Taking it out of the flow the other way (collapsing
+     its height) reflowed the pane on every frame of the slide and shoved the line under your finger
+     up by the bar's height. #chat is padded by the bar's measured height (--headh) so nothing starts
+     under it. `--padtop` is the band syncViewport leaves when the keyboard pans the page. */
+  #thead{position:absolute;left:0;right:0;top:var(--padtop,0px);z-index:7;
+    padding-top:env(safe-area-inset-top);padding-left:env(safe-area-inset-left);
+    padding-right:env(safe-area-inset-right);
+    background:var(--headerBg);-webkit-backdrop-filter:blur(18px) saturate(150%);
+    backdrop-filter:blur(18px) saturate(150%);border-bottom:1px solid var(--stroke);
+    transition:transform .24s cubic-bezier(.2,.8,.3,1)}
+  #term.headhide #thead{transform:translateY(calc(-100% - 1px))}
+  #termbar{display:flex;align-items:center;gap:4px;min-height:54px;padding:5px 8px;
+    max-width:980px;margin:0 auto}
+  /* Icon buttons: no box until pressed. Five bordered boxes in one row was most of what made the
+     bar look heavy. */
+  .ib{flex:none;width:40px;height:40px;display:grid;place-items:center;background:transparent;
+    border:0;border-radius:12px;color:var(--text);cursor:pointer;padding:0}
+  .ib:active{background:var(--card)}
+  .ib svg,.rb svg,.nsearch svg,.tile svg{width:22px;height:22px;fill:none;stroke:currentColor;
+    stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .rb svg circle[r="1.2"]{fill:currentColor;stroke:none}
+  .ttl{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:1px;padding:0 4px}
+  #termbar .tname{font-weight:650;font-size:15px;line-height:1.25;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis}
   #termframe{flex:1;border:0;width:100%;background:#000;display:none}
   #termframe.on{display:block}
   /* Shown instead of the blank iframe when its port doesn't answer. A white rectangle is the one
@@ -238,15 +262,19 @@ enum WebDashboardPage {
   #termerr .te button{align-self:center;background:var(--accent);color:var(--onAccent);border:0;
     border-radius:9px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer}
   /* view switch */
-  #tabs{display:flex;gap:2px;background:var(--card);border:1px solid var(--stroke);border-radius:8px;padding:2px}
-  #tabs button{background:transparent;border:0;color:var(--sub);border-radius:6px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer}
-  #tabs button.on{background:var(--accent);color:var(--onAccent)}
+  #tabs{flex:none;display:flex;gap:2px;background:var(--card);border-radius:10px;padding:3px}
+  #tabs button{background:transparent;border:0;color:var(--sub);border-radius:8px;padding:6px 11px;
+    font-size:12.5px;font-weight:600;cursor:pointer;transition:background .15s,color .15s}
+  #tabs button.on{background:var(--bg);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.25)}
   /* conversation pane — plain scrollable chat, the reliable way to read history on a phone */
   /* pan-y: vertical scrolling stays the browser's, horizontal gestures come to us — which is both
      how the swipe-back below is possible and what stops Safari's own edge swipe leaving the page. */
   #chat{flex:1;min-height:0;position:relative;overflow-y:auto;-webkit-overflow-scrolling:touch;
-    background:var(--bg);padding:18px 20px 26px;display:none;overscroll-behavior:contain;
-    touch-action:pan-y}
+    background:var(--bg);padding:calc(var(--headh,54px) + 16px) 20px 26px;display:none;
+    overscroll-behavior:contain;touch-action:pan-y}
+  /* The live terminal has no scroll of ours to watch, so there the bar simply stays, and the frame
+     starts below it. */
+  #termframe.on,#termerr.on{margin-top:var(--headh,54px)}
   /* Held halfway, the overlay has to read as a card lifted off the dashboard rather than a broken
      layout — hence the edge shadow, kept through the settle so it fades out with the movement. */
   #term.dragging{transition:none}
@@ -261,7 +289,7 @@ enum WebDashboardPage {
      every past one at the top instead of replacing it, so a single element is kept and its text
      swapped as you scroll. */
   #stickyq{position:absolute;left:0;right:0;z-index:4;display:none;padding:12px 20px 0;
-    pointer-events:none}
+    pointer-events:none;transition:top .24s cubic-bezier(.2,.8,.3,1)}
   #stickyq .sq{max-width:760px;margin:0 auto}
   #stickyq.on{display:block}
   /* It floats over live text, so it needs to read as a separate layer — and on a dark page the
@@ -344,10 +372,11 @@ enum WebDashboardPage {
   .msg.user.fly{animation-name:flyR}
   @media (prefers-reduced-motion:reduce){ .skel .row,.msg.fly{animation:none} }
   @media (max-width:520px){
-    #chat{padding:14px 13px 22px}
-    #sinfo{padding:6px 13px}
+    #chat{padding:calc(var(--headh,54px) + 12px) 13px 22px}
     #stickyq{padding:10px 13px 0}
-    #inputbar{padding-left:10px;padding-right:10px}
+    #inputbar{padding-left:8px;padding-right:8px}
+    #termbar{padding-left:4px;padding-right:4px}
+    #tabs button{padding:6px 9px}
     .msg.think,.msg.tool{margin-left:0}
   }
   /* a shell terminal's scrollback — wrapped so a phone never scrolls sideways */
@@ -388,26 +417,26 @@ enum WebDashboardPage {
   .dstat{font-size:10px;font-weight:700;white-space:nowrap}
   .dstat .a{color:var(--green)}
   .dstat .d{color:var(--red)}
-  /* session info strip: model, permission mode, context-window fill */
-  #sinfo{display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:7px 20px;background:var(--panel);
-    border-bottom:1px solid var(--stroke);font-size:10px;color:var(--sub)}
+  /* Session status, as the header's subtitle: one line of plain text, not a row of pills. It was its
+     own strip of bordered chips — a second bar under the first, 40px of a phone before the
+     conversation began. Everything is still on it; it scrolls sideways when it runs long. */
+  #sinfo{display:flex;gap:0;align-items:center;font-size:11.5px;line-height:1.3;color:var(--sub);
+    white-space:nowrap;overflow-x:auto;scrollbar-width:none;
+    -webkit-mask-image:linear-gradient(90deg,#000 88%,transparent);mask-image:linear-gradient(90deg,#000 88%,transparent)}
+  #sinfo::-webkit-scrollbar{display:none}
   #sinfo:empty{display:none}
-  /* Wrapped, this strip took 89px of an iPhone SE's 667 — three rows of chips above 409px of
-     conversation. One row that scrolls sideways gives the transcript that space back and loses
-     nothing, because every chip is still on it. */
-  @media (max-height:740px),(max-width:560px){
-    #sinfo{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
-    #sinfo::-webkit-scrollbar{display:none}
-    #sinfo > *{flex:none}
-  }
-  #sinfo .chip{background:var(--card);border:1px solid var(--stroke);border-radius:999px;padding:2px 8px;font-weight:600}
-  #sinfo .chip.warn{color:var(--amber);border-color:var(--amberEdge)}
-  #sinfo .chip.danger{color:var(--red);border-color:var(--redEdge)}
-  #sinfo .bar{height:4px;width:74px;background:var(--card);border-radius:2px;overflow:hidden}
+  #sinfo > *{flex:none}
+  #sinfo > * + *::before{content:"·";margin:0 6px;color:var(--sub);opacity:.6}
+  #sinfo .chip.warn{color:var(--amber)}
+  #sinfo .chip.danger{color:var(--red)}
+  #sinfo .ctx{display:inline-flex;align-items:center;gap:5px}
+  #sinfo .bar{display:inline-block;height:4px;width:34px;background:var(--card);border-radius:2px;overflow:hidden}
   #sinfo .bar i{display:block;height:100%;background:var(--accent)}
-  #sinfo .bar.warn i{background:var(--amber)}
-  #sinfo .bar.danger i{background:var(--red)}
-  #sinfo .live{display:flex;align-items:center;gap:5px;font-weight:600}
+  #sinfo .ctx.warn .bar i{background:var(--amber)}
+  #sinfo .ctx.danger .bar i{background:var(--red)}
+  #sinfo .ctx.warn{color:var(--amber)}
+  #sinfo .ctx.danger{color:var(--red)}
+  #sinfo .live{display:inline-flex;align-items:center;gap:5px;font-weight:600}
   #sinfo .live .dot{width:7px;height:7px;border-radius:50%}
   #sinfo .live.run .dot{animation:live 1.1s ease-out infinite}
   @keyframes live{0%{box-shadow:0 0 0 0 rgba(92,209,140,.55)}100%{box-shadow:0 0 0 6px rgba(92,209,140,0)}}
@@ -450,19 +479,12 @@ enum WebDashboardPage {
     box-shadow:0 4px 14px rgba(0,0,0,.45)}
   #jump.on{display:block}
   /* flex:none + the safe-area pad keeps the composer pinned to the true bottom; without it the
-     bar floated and the page showed through underneath on a phone. */
+     bar floated and the page showed through underneath on a phone. With the drawer open the drawer
+     is the bottom edge, so the pad moves down to it. */
   #inputbar{flex:none;background:var(--panel);border-top:1px solid var(--stroke);
-    padding:10px 14px;padding-bottom:max(10px,env(safe-area-inset-bottom))}
+    padding:8px 10px;padding-bottom:max(8px,env(safe-area-inset-bottom))}
+  #term.drawer #inputbar{padding-bottom:8px}
   #inputbar > *{max-width:760px;margin-left:auto;margin-right:auto}
-  #prow{display:flex;gap:6px;align-items:center;margin-bottom:8px}
-  #pfind{flex:none;width:82px;background:var(--card);color:var(--text);border:1px solid var(--stroke);
-    border-radius:7px;padding:5px 8px;font-size:12px;font-family:inherit}
-  #presets{flex:1;display:flex;gap:6px;overflow-x:auto;min-width:0}
-  #presets button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:7px;
-    padding:6px 10px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;cursor:pointer}
-  #presets button:active{background:var(--accent);color:var(--onAccent)}
-  #presets button.meta{color:var(--accent);font-family:inherit;font-weight:600}
-  #presets button.del{color:var(--red);border-color:var(--redEdge);font-family:inherit}
   #keys{display:flex;gap:6px;overflow-x:auto;margin-bottom:8px}
   #keys button{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:7px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer}
   #keys button:active{background:var(--accent);color:var(--onAccent)}
@@ -470,20 +492,80 @@ enum WebDashboardPage {
      Chat has none of that — it scrolls natively, answers prompts with real buttons, and stops the
      agent with the Send/Stop button — so the whole row goes away there. */
   #keys.chatview{display:none}
-  /* --rowh is the height of a composer at rest, and all three controls are held to it so they
-     cannot drift apart. They had: the box sized itself off its own text, the two buttons off their
-     padding, and the row came out 38/42/38 — three different heights sitting on one baseline. It is
-     a floor, not a height, so the box still grows with what you type while the buttons stay put. It
-     is also what stops autoGrow from ever drawing the box shorter than the line it holds: that
-     measurement can be taken before there is anything to measure, and this is the floor under it. */
-  #sendrow{--rowh:42px;display:flex;gap:8px;align-items:flex-end}
-  #inputtext{flex:1;resize:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:10px;
-    padding:10px 12px;font:14px/1.35 inherit;max-height:120px;min-height:var(--rowh)}
-  #sendbtn{flex:none;background:var(--accent);color:var(--onAccent);border:0;border-radius:10px;padding:11px 16px;font-size:14px;font-weight:700;cursor:pointer;min-height:var(--rowh)}
-  #imgbtn{flex:none;background:var(--card);color:var(--text);border:1px solid var(--stroke);border-radius:10px;
-    padding:10px 12px;font-size:16px;line-height:1;cursor:pointer;min-height:var(--rowh)}
-  #imgbtn:active{background:var(--accent);color:var(--onAccent)}
-  #imgbtn[disabled]{opacity:.5}
+  /* One row, the WeChat arrangement: quick commands | the box | more | send. It used to be three
+     rows — a resize grip, a filter-and-chips strip and then the box — which took 150px of a phone
+     for a strip of chips that was mostly scrolled out of sight anyway.
+
+     --rowh is the height of a composer at rest, and every control is held to it so they cannot
+     drift apart. They had: the box sized itself off its own text, the buttons off their padding,
+     and the row came out 38/42/38. It is a floor, not a height, so the box still grows with what
+     you type while the buttons stay on the bottom line. It is also what stops autoGrow from ever
+     drawing the box shorter than the line it holds. */
+  #sendrow{--rowh:40px;display:flex;gap:6px;align-items:flex-end}
+  #inputtext{flex:1;min-width:0;resize:none;background:var(--card);color:var(--text);
+    border:1px solid var(--stroke);border-radius:20px;padding:9px 14px;
+    /* Longhands on purpose. This was `font:14px/1.35 inherit`, which is not valid — `inherit` may
+       only stand alone in the shorthand — so the whole declaration was dropped and the box drew in
+       the browser's default textarea face: monospace in Chrome, which also made the placeholder
+       too wide for the box and wrap under its own clip. */
+    font-family:inherit;font-size:14px;line-height:1.35;
+    max-height:120px;min-height:var(--rowh);outline:none;transition:border-color .15s}
+  #inputtext:focus{border-color:var(--accentEdgeOn)}
+  .rb{flex:none;width:var(--rowh);height:var(--rowh);display:grid;place-items:center;padding:0;
+    background:transparent;border:0;border-radius:50%;color:var(--sub);cursor:pointer;
+    transition:color .15s,background .15s,transform .2s}
+  .rb:active{background:var(--card)}
+  .rb.on{color:var(--accent);background:var(--accentSoft)}
+  #morebtn.on svg{transform:rotate(45deg)}
+  .rb svg{transition:transform .2s}
+  #sendbtn{flex:none;background:var(--accent);color:var(--onAccent);border:0;border-radius:20px;
+    padding:0 16px;font-size:14px;font-weight:700;cursor:pointer;min-height:var(--rowh);
+    transition:background .15s}
+  /* The panels under the composer — quick commands, and the ⊕ tiles. Only one is open at a time, and
+     the drawer is the bottom of the overlay while it is. */
+  #drawer{flex:none;display:none;background:var(--panel);
+    padding:2px 10px max(10px,env(safe-area-inset-bottom))}
+  #term.drawer #drawer{display:block}
+  #drawer > *{max-width:760px;margin-left:auto;margin-right:auto}
+  .dpane{display:none}
+  .dpane.on{display:block;animation:drawerIn .2s cubic-bezier(.2,.8,.3,1)}
+  @keyframes drawerIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){ .dpane.on{animation:none} }
+  .nhead{display:flex;gap:6px;align-items:center;margin:4px 0 8px}
+  .nsearch{flex:1;min-width:0;display:flex;align-items:center;gap:6px;background:var(--card);
+    border:1px solid var(--stroke);border-radius:12px;padding:0 10px;color:var(--sub)}
+  .nsearch:focus-within{border-color:var(--accentEdgeOn)}
+  .nsearch svg{width:17px;height:17px;flex:none}
+  #pfind{flex:1;min-width:0;background:transparent;border:0;outline:none;color:var(--text);
+    padding:9px 0;font-family:inherit;font-size:13px;-webkit-appearance:none;appearance:none}
+  #pfind::-webkit-search-cancel-button{display:none}
+  .nact{flex:none;background:var(--card);color:var(--accent);border:1px solid var(--stroke);
+    border-radius:12px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer}
+  .nact.on{background:var(--accent);color:var(--onAccent);border-color:transparent}
+  /* The list is the palette: whole commands, two lines each, instead of chips cut off at the edge
+     of a strip you had to scroll sideways to read. */
+  #presets{max-height:min(38vh,300px);overflow-y:auto;-webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;display:flex;flex-direction:column;gap:6px;padding-bottom:2px}
+  .nrow{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:var(--card);
+    color:var(--text);border:1px solid var(--stroke);border-radius:12px;padding:9px 12px;
+    cursor:pointer;font:inherit}
+  .nrow:active{background:var(--cardHover)}
+  .nrow .ntext{flex:1;min-width:0;font-size:12.5px;line-height:1.45;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .nrow .nuse{flex:none;color:var(--sub);font-size:16px;line-height:1}
+  .nrow .ndel{flex:none;background:var(--redSoft);color:var(--red);border:1px solid var(--redEdge);
+    border-radius:9px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer}
+  .nempty{color:var(--sub);font-size:12.5px;text-align:center;padding:18px 8px}
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:12px 0 6px}
+  .tile{display:flex;flex-direction:column;align-items:center;gap:7px;background:transparent;
+    border:0;color:var(--sub);cursor:pointer;font:inherit;font-size:12px;padding:0}
+  .tile .ti{width:56px;height:56px;border-radius:16px;background:var(--card);display:grid;
+    place-items:center;color:var(--text);border:1px solid var(--stroke);transition:transform .12s}
+  .tile:active .ti{transform:scale(.94);background:var(--cardHover)}
+  .tile .ti svg{width:24px;height:24px}
+  .tile .ttxt{font:600 17px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .tile[disabled]{opacity:.5}
   /* Touch sizing. Two separate things, both of which only apply where the pointer is a finger — on
      a mouse-driven browser the denser text and smaller chips are worth keeping.
 
@@ -491,19 +573,20 @@ enum WebDashboardPage {
      focuses a field whose text is under 16px, and it does not zoom back out afterwards. That zoom
      is where "the terminal card doesn't fill the screen, it's slightly bigger and I have to scroll
      to reach the top and bottom buttons" comes from — #term is still exactly `dvh` tall, the
-     viewport shrank underneath it. So tapping the composer, or the preset filter, was enough to
-     break the overlay's fit for the rest of the session. See also TA_MIN, which holds the same
-     floor against the A−/A+ buttons: an inline font-size beats this rule.
+     viewport shrank underneath it. So tapping the composer, or the quick-command search, was
+     enough to break the overlay's fit for the rest of the session. See also TA_MIN, which holds the
+     same floor against the A−/A+ buttons: an inline font-size beats this rule.
 
-     44px is Apple's minimum target. Send and 📎 were 38px tall, the preset and key chips 29px, and
-     the three grip tools 22×19 — a row of things you hit by accident and miss on purpose. */
+     44px is Apple's minimum target. */
   @media (pointer:coarse){
     #inputtext,#pfind{font-size:16px}
-    #sendrow{--rowh:44px}          /* Apple's minimum, and all three rise to it together */
-    #sendbtn,#imgbtn{min-width:44px}
-    #keys button,#presets button{min-height:40px}
-    #termbar > button{min-height:40px;min-width:40px}
-    #tabs button{min-height:36px}
+    #sendrow{--rowh:44px}          /* Apple's minimum, and every control rises to it together */
+    #inputtext{border-radius:22px}
+    #sendbtn{border-radius:22px;min-width:56px}
+    #keys button{min-height:40px}
+    .ib{width:44px;height:44px}
+    #tabs button{min-height:34px}
+    .nact{min-height:40px}
     /* Width only. Height is --gtoolh, because the row's own height is derived from it — and this
        button is the one control the user is most likely to hit by accident, so it earns a
        comfortable width rather than a bigger area in every direction. */
@@ -511,7 +594,8 @@ enum WebDashboardPage {
   }
   /* The composer can be pulled up into a proper editor. Writing anything longer than a sentence
      through a three-line slot means never seeing what you wrote, which is the whole reason the
-     phone loses to the Mac for a considered prompt. */
+     phone loses to the Mac for a considered prompt. It is entered from the ⊕ tiles; once open, the
+     grip on top resizes it and ⤡ puts it back. */
   /* Two things this row got wrong, both of which ended in the composer expanding when nobody asked.
 
      The handle drags, not the row. The pointer handlers used to sit on the whole 16px strip, which
@@ -522,12 +606,10 @@ enum WebDashboardPage {
 
      And the row is as tall as the tools it carries — --gtoolh is what ties the two together. They
      are positioned absolutely so the handle stays centred on the row rather than being pushed off
-     by them, which also means the row does not grow to fit them on its own. It never did: 19px
-     buttons on a 16px row already hung over the presets underneath, and once they were sized for a
-     finger the ⤢ covered the first preset chip outright, so a tap meant for a quick command
-     expanded the composer instead. */
+     by them, which also means the row does not grow to fit them on its own. */
   #grip{--gtoolh:22px;position:relative;min-height:calc(var(--gtoolh) + 2px);
-    display:flex;align-items:center;justify-content:center;margin-bottom:2px}
+    display:none;align-items:center;justify-content:center;margin-bottom:2px}
+  #inputbar.big #grip{display:flex}
   #grip .gbar{width:72px;align-self:stretch;display:flex;align-items:center;justify-content:center;
     cursor:ns-resize;touch-action:none}
   #grip .gbar::before{content:"";display:block;width:46px;height:4px;border-radius:999px;background:var(--stroke)}
@@ -535,58 +617,31 @@ enum WebDashboardPage {
   #grip .gtools button{background:var(--card);color:var(--sub);border:1px solid var(--stroke);
     border-radius:6px;font-size:11px;font-weight:700;line-height:1;padding:3px 7px;cursor:pointer;
     font-family:inherit;min-height:var(--gtoolh)}
-  /* Type size is only worth adjusting once there is a box big enough for it to matter. */
-  #inputbar:not(.big) #grip .fsz{display:none}
-  /* Expanded. The presets move to a column beside the box because that is the only place left for
-     them: a horizontal strip of chips above a half-screen textarea is a row you cannot read, and
-     the list is long enough that scrolling it is the point. Truncated on purpose — the full text is
-     in the tooltip, and a wrapped chip list would push the box back out of the way. */
-  #inputbar.big{display:grid;gap:8px;grid-template-columns:minmax(0,1fr) 172px;
-    grid-template-rows:auto minmax(0,1fr) auto;
-    grid-template-areas:"grip grip" "send notes" "keys keys";min-height:0}
-  #inputbar.big > *{max-width:none;margin-left:0;margin-right:0}
+  /* Expanded: the box takes the whole column and the row's buttons drop underneath it. Left in a
+     row, they ate a third of the width and the "expanded" editor wrapped every three words —
+     narrower than the bar it replaced. */
+  #inputbar.big{display:grid;gap:8px;grid-template-columns:minmax(0,1fr);
+    grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"grip" "send" "keys";min-height:0}
+  #inputbar.big > *{max-width:760px;width:100%;margin-left:auto;margin-right:auto}
   #inputbar.big #grip{grid-area:grip;margin-bottom:0}
   #inputbar.big #keys{grid-area:keys;margin-bottom:0}
-  #inputbar.big #prow{grid-area:notes;flex-direction:column;align-items:stretch;gap:6px;
-    min-height:0;margin-bottom:0}
-  #inputbar.big #pfind{width:auto}
-  #inputbar.big #presets{flex-direction:column;overflow-y:auto;overflow-x:hidden;min-height:0}
-  #inputbar.big #presets button{width:100%;text-align:left;white-space:nowrap;overflow:hidden;
-    text-overflow:ellipsis}
-  /* The box takes the whole column and the two buttons drop underneath it. Left in a row, the attach
-     and Send buttons ate a third of the width and the "expanded" editor wrapped every three words —
-     narrower than the bar it replaced. */
   #inputbar.big #sendrow{grid-area:send;min-height:0;
-    display:grid;gap:8px;grid-template-columns:auto minmax(0,1fr);
-    grid-template-rows:minmax(0,1fr) auto;grid-template-areas:"box box" "att send"}
-  #inputbar.big #inputtext{max-height:none;height:100%;grid-area:box}
-  #inputbar.big #imgbtn{grid-area:att}
+    display:grid;gap:6px;grid-template-columns:auto auto minmax(0,1fr) auto;
+    grid-template-rows:minmax(0,1fr) auto;grid-template-areas:"box box box box" "notes more . send"}
+  #inputbar.big #inputtext{max-height:none;height:100%;grid-area:box;border-radius:14px}
+  #inputbar.big #notesbtn{grid-area:notes}
+  #inputbar.big #morebtn{grid-area:more}
   #inputbar.big #sendbtn{grid-area:send}
-  /* ＋ and ✎ are controls, not entries — full-width they read as two more quick commands. */
-  #inputbar.big #presets button.meta{width:auto;align-self:flex-start;padding:6px 14px}
-  /* On a phone the two-column expansion defeats its own purpose: 140px of presets off a 375px
-     screen leaves the writing box narrower than the collapsed bar it replaced, wrapping every few
-     words. Below this width the box takes the whole column and the presets drop back to the
-     scrolling strip they use when the bar is collapsed — still there, just not paid for in width. */
-  @media (max-width:560px){
-    #inputbar.big{grid-template-columns:minmax(0,1fr);
-      grid-template-rows:auto auto minmax(0,1fr) auto;
-      grid-template-areas:"grip" "notes" "send" "keys"}
-    #inputbar.big #prow{flex-direction:row;align-items:center;gap:6px}
-    #inputbar.big #pfind{flex:none;width:82px}
-    #inputbar.big #presets{flex-direction:row;overflow-x:auto;overflow-y:hidden}
-    #inputbar.big #presets button{width:auto}
-  }
-  /* A phone held sideways has about 390px of height, and the overlay's furniture was taking 233 of
-     it — more than it left for the conversation. Nothing is dropped here: the rows that are chips
-     and readouts rather than thumb targets simply stop being sized as though they were. */
+  /* A phone held sideways has about 390px of height. Nothing is dropped here: the rows that are
+     chips and readouts rather than thumb targets simply stop being sized as though they were. */
   @media (max-height:500px){
-    #termbar{padding-top:max(6px,env(safe-area-inset-top));padding-bottom:6px}
-    #sinfo{padding-top:4px;padding-bottom:4px}
+    #termbar{min-height:46px;padding-top:2px;padding-bottom:2px}
     #grip{--gtoolh:20px;margin-bottom:0}
-    #prow{margin-bottom:6px}
     #inputbar{padding-top:6px}
-    #keys button,#presets button{min-height:34px}
+    #keys button{min-height:34px}
+    #presets{max-height:30vh}
+    .tiles{padding-top:8px}
+    .tile .ti{width:46px;height:46px}
   }
   /* Dropping a file anywhere on the conversation should work, so the whole overlay is the target. */
   #term.dropping{outline:2px dashed var(--accent);outline-offset:-6px}
@@ -687,16 +742,19 @@ enum WebDashboardPage {
 <div id="dock"></div>
 
 <div id="term">
-  <div id="termbar">
-    <button onclick="closeTerm()">‹</button>
-    <span class="tname" id="termname"></span>
-    <div id="tabs">
-      <button id="tabChat" class="on" onclick="setView('chat')">Chat</button>
-      <button id="tabTerm" onclick="setView('term')">Terminal</button>
+  <!-- One bar, laid over the transcript rather than stacked above it, so it can slide away while you
+       read and come back when you scroll up (see headBar). The status strip is its subtitle. -->
+  <div id="thead">
+    <div id="termbar">
+      <button class="ib" onclick="closeTerm()" aria-label="Back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="ttl"><span class="tname" id="termname"></span><div id="sinfo"></div></div>
+      <div id="tabs">
+        <button id="tabChat" class="on" onclick="setView('chat')">Chat</button>
+        <button id="tabTerm" onclick="setView('term')">Terminal</button>
+      </div>
+      <button class="ib" onclick="popTerm()" title="Open the terminal in a new tab" aria-label="Open in new tab"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>
     </div>
-    <button onclick="popTerm()">↗</button>
   </div>
-  <div id="sinfo"></div>
   <div id="chat" class="on"><div id="chatnote">Loading…</div></div>
   <div id="stickyq"><div class="sq"></div></div>
   <button id="jump" onclick="jumpLatest()">↓</button>
@@ -707,9 +765,8 @@ enum WebDashboardPage {
     <div id="grip"><span class="gbar"></span><span class="gtools">
       <button class="fsz" onclick="taFont(-1)" title="Smaller text">A−</button>
       <button class="fsz" onclick="taFont(1)" title="Bigger text">A+</button>
-      <button id="expand" onclick="toggleBig()" title="Expand the composer">⤢</button>
+      <button id="expand" onclick="toggleBig()" title="Collapse the editor">⤡</button>
     </span></div>
-    <div id="prow"><input id="pfind" placeholder="filter" oninput="renderPresets()"><div id="presets"></div></div>
     <div id="keys">
       <button class="skey" onclick="scrollTerm('up')">⇞</button>
       <button class="skey" onclick="scrollTerm('down')">⇟</button>
@@ -725,10 +782,31 @@ enum WebDashboardPage {
       <button onclick="key('BSpace')">⌫</button>
     </div>
     <div id="sendrow">
-      <input id="imgfile" type="file" multiple hidden>
-      <button id="imgbtn" title="Attach a file — it uploads to the Mac and its path goes in the prompt">📎</button>
+      <button id="notesbtn" class="rb" data-pane="notes" title="Quick commands (your Notes)" aria-label="Quick commands"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.2"/><circle cx="4.5" cy="12" r="1.2"/><circle cx="4.5" cy="18" r="1.2"/></svg></button>
       <textarea id="inputtext" rows="1" placeholder="Type here (中文 OK) — Enter to send, Shift+Enter for newline"></textarea>
+      <button id="morebtn" class="rb" data-pane="more" title="Attach, editor, keys" aria-label="More"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg></button>
       <button id="sendbtn">Send</button>
+    </div>
+  </div>
+  <!-- Under the composer, where the keyboard would be — the WeChat arrangement. -->
+  <div id="drawer">
+    <div class="dpane" data-pane="notes">
+      <div class="nhead">
+        <label class="nsearch"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+          <input id="pfind" type="search" enterkeyhint="search" autocomplete="off" placeholder="Search quick commands" oninput="renderPresets()"></label>
+        <button class="nact" onclick="addNote()" title="Add a quick command">＋</button>
+        <button class="nact" id="nedit" onclick="toggleEditPresets()">Edit</button>
+      </div>
+      <div id="presets"></div>
+    </div>
+    <div class="dpane" data-pane="more">
+      <input id="imgfile" type="file" multiple hidden>
+      <div class="tiles">
+        <button class="tile" id="imgbtn" title="It uploads to the Mac and its path goes in the prompt"><span class="ti"><svg viewBox="0 0 24 24"><path d="M20 11.5l-8.1 8.1a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/></svg></span><span class="tl">Attach</span></button>
+        <button class="tile" onclick="closeDrawer();toggleBig()"><span class="ti"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"/></svg></span><span class="tl" id="bigLabel">Editor</span></button>
+        <button class="tile" onclick="closeDrawer();typeRaw('/')" title="Open the agent's slash-command menu"><span class="ti ttxt">/</span><span class="tl">Commands</span></button>
+        <button class="tile" onclick="closeDrawer();key('Escape')" title="Interrupt the agent"><span class="ti ttxt">esc</span><span class="tl">Interrupt</span></button>
+      </div>
     </div>
   </div>
 </div>
@@ -866,6 +944,7 @@ function unlockBoard(id){
   document.body.classList.remove('locked');
   document.body.style.top='';
   window.scrollTo(0,boardY);
+  showBoardHead();                         // coming back is not reading on; the menu should be there
   // The last one: a running terminal is drawn twice now (once in the strip at the top, once in its
   // project), and "the card you came out of" means the one in the board, not the summary copy.
   const all=id?document.querySelectorAll('.card[data-id="'+id+'"]'):[];
@@ -881,6 +960,7 @@ function openTerm(id,name){
   document.getElementById('termname').textContent=name;
   document.getElementById('termframe').src='about:blank';
   document.getElementById('term').classList.add('show');
+  closeDrawer(); showTermHead();            // every conversation opens with its header and no drawer
   lockBoard();                              // stop the page scrolling behind the overlay
   syncViewport();
   requestAnimationFrame(syncViewport);     // re-measure once the lock has taken effect
@@ -953,12 +1033,13 @@ function swipeBack(overlayId,scrollId,busySel,onClose){
   // overlay parked half off the screen.
   document.addEventListener('visibilitychange',()=>{ if(document.hidden&&active) reset(); });
 }
-swipeBack('term','chat','pre.code,.mbody,#presets,#keys,#inputbar,#tabs',()=>closeTerm());
+swipeBack('term','chat','pre.code,.mbody,#presets,#keys,#inputbar,#drawer,#tabs',()=>closeTerm());
 /* The file browser is the other full-screen overlay, and it was the one place on the phone with no
    way back but the ‹ button. Its exclusions are its own: the crumb bar is selectable text you
    long-press to copy, a code preview scrolls sideways, and a PDF is an iframe that pans itself. */
 swipeBack('fb','fbbody','#fbpath,#fbcrumbs,pre,iframe',()=>fbClose());
 function closeTerm(){
+  closeDrawer(); showTermHead();
   document.getElementById('stickyq').classList.remove('on');
   document.getElementById('term').classList.remove('show');
   unlockBoard(curId);                      // back to the card you came from, not to the top
@@ -981,7 +1062,7 @@ function setView(v){
   document.getElementById('keys').classList.toggle('chatview',v==='chat');
   placeJump();                   // the key row just came or went, so the bar is a different height
   updateStickyPrompt();          // it belongs to the chat pane — never leave it over the terminal
-  if(v==='term'){stopChatPoll();ensureTerm();}
+  if(v==='term'){showTermHead();stopChatPoll();ensureTerm();}   // nothing of ours scrolls there to bring it back
   else{loadChat();startChatPoll();}
 }
 /* Is ttyd actually answering on that port, from THIS device? An iframe cannot tell us: a failed
@@ -1116,6 +1197,7 @@ function syncViewport(){
   if(!t.classList.contains('show')){
     if(lastBand===''){ return; }
     t.style.paddingTop=t.style.paddingBottom=t.style.height=t.style.transform='';
+    t.style.removeProperty('--padtop');
     document.getElementById('jump').style.bottom=''; lastBand=''; return;
   }
   if(!vv) return;
@@ -1146,6 +1228,7 @@ function syncViewport(){
   t.style.height='';
   if(!t.classList.contains('dragging')) t.style.transform='';   // never fight a swipe in progress
   t.style.paddingTop=top+'px';
+  t.style.setProperty('--padtop',top+'px');   // the header is absolute, so padding alone misses it
   t.style.paddingBottom=bottom+'px';
   // The band just changed size; an expanded composer drawn against the old one can be taller than
   // what is left, and #term clips rather than scrolls — the conversation would simply be gone.
@@ -1196,6 +1279,7 @@ for(const id of ['inputtext','pfind']){
 document.getElementById('chat').addEventListener('pointerdown',()=>{
   const a=document.activeElement;
   if(a&&(a.id==='inputtext'||a.id==='pfind')) a.blur();
+  closeDrawer();
 },{passive:true});
 /* Coming back from another app is the other way to return to a keyboard-sized band with no
    keyboard: the events that would have cleared it fired while the tab was hidden. */
@@ -1212,7 +1296,8 @@ document.addEventListener('visibilitychange',()=>{
 function placeJump(){
   const t=document.getElementById('term'), bar=document.getElementById('inputbar');
   const kb=parseFloat(t.style.paddingBottom)||0;   // the band syncViewport leaves for the keyboard
-  document.getElementById('jump').style.bottom=(bar.offsetHeight+12+kb)+'px';
+  const dr=document.getElementById('drawer');
+  document.getElementById('jump').style.bottom=(bar.offsetHeight+(dr.offsetHeight||0)+12+kb)+'px';
 }
 
 /* Shell terminal: the pane's scrollback, wrapped and natively scrollable. */
@@ -1249,7 +1334,9 @@ function renderInfo(i){
   if(i.model) h+='<span class="chip">'+esc(i.model.replace(/^claude-/,''))+'</span>';
   if(i.permissionMode&&i.permissionMode!=='default'){
     const risky=/bypass|yolo|accept/i.test(i.permissionMode);
-    h+='<span class="chip'+(risky?' danger':'')+'">'+esc(i.permissionMode)+'</span>';
+    // A subtitle has room for a word, not an identifier: "bypassPermissions" alone was a third of it.
+    const pm=i.permissionMode.replace(/Permissions$/,'').replace(/([a-z])([A-Z])/g,'$1 $2').toLowerCase();
+    h+='<span class="chip'+(risky?' danger':'')+'" title="'+esc(i.permissionMode)+'">'+esc(pm)+'</span>';
   }
   // Several terminals can be attached to one agent session — then the chat is identical for all of
   // them by definition. Say so, rather than letting it look like the wrong conversation.
@@ -1262,8 +1349,8 @@ function renderInfo(i){
   if(i.contextWindow>0&&i.contextTokens>0){
     const pct=Math.min(100,Math.round(i.contextTokens*100/i.contextWindow));
     const lvl=pct>=95?'danger':(pct>=90?'warn':'');
-    h+='<span class="bar '+lvl+'"><i style="width:'+pct+'%"></i></span>'+
-       '<span class="chip '+lvl+'">'+pct+'% ctx · '+short(i.contextTokens)+'</span>';
+    h+='<span class="ctx '+lvl+'"><span class="bar"><i style="width:'+pct+'%"></i></span>'+
+       pct+'% ctx · '+short(i.contextTokens)+'</span>';
   }
   el.innerHTML=h;
 }
@@ -1303,14 +1390,18 @@ function updateStickyPrompt(){
   const chat=document.getElementById('chat'), bar=document.getElementById('stickyq');
   if(!chat.classList.contains('on')||(curInfo&&curInfo.shell)){bar.classList.remove('on');return;}
   let cur=null;
+  // The header lies over the top of the pane, so "scrolled past" means past its bottom edge — and
+  // that edge moves when the header slides away.
+  const cover=document.getElementById('term').classList.contains('headhide')?0:
+    document.getElementById('thead').offsetHeight;
   const users=chat.querySelectorAll('.msg.user');
   for(let i=0;i<users.length;i++){
-    if(users[i].offsetTop < chat.scrollTop+6) cur=users[i]; else break;
+    if(users[i].offsetTop < chat.scrollTop+cover+6) cur=users[i]; else break;
   }
   if(!cur){bar.classList.remove('on');return;}
   const t=cur.querySelector('.mtext');
   bar.firstElementChild.textContent=t?(t.innerText||t.textContent||''):'';
-  bar.style.top=chat.offsetTop+'px';
+  bar.style.top=(chat.offsetTop+cover)+'px';
   bar.classList.add('on');
 }
 /* That top is computed, not inherited, so it goes stale the moment anything above the pane changes
@@ -1597,14 +1688,14 @@ function renderPresets(){
   // Substring filter — the Notes list doubles as a command palette and gets long.
   const q=(document.getElementById('pfind').value||'').trim().toLowerCase();
   const notes=q?all.filter(n=>(n.text||'').toLowerCase().includes(q)):all;
-  let html=notes.map((n,i)=>presetEdit
-    ?`<button class="del" onclick="delNote('${n.id}')">✕ ${esc(n.text)}</button>`
-    :`<button onclick="usePreset('${n.id}')" title="${esc(n.text)}">${esc(n.text)}</button>`).join('');
-  if(!notes.length) html+='<span style="color:var(--sub);font-size:12px;align-self:center;white-space:nowrap">'+
-    (q?'no match':'No commands — tap ＋, or add Notes on the Mac')+'</span>';
-  html+=`<button class="meta" onclick="addNote()">＋</button>`
-      +`<button class="meta" onclick="toggleEditPresets()">${presetEdit?'Done':'✎'}</button>`;
+  let html=notes.map(n=>presetEdit
+    ?`<div class="nrow"><span class="ntext">${esc(n.text)}</span><button class="ndel" onclick="delNote('${n.id}')">Delete</button></div>`
+    :`<button class="nrow" onclick="usePreset('${n.id}')" title="${esc(n.text).replace(/"/g,'&quot;')}"><span class="ntext">${esc(n.text)}</span><span class="nuse">↵</span></button>`).join('');
+  if(!notes.length) html='<div class="nempty">'+
+    (q?'Nothing matches “'+esc(q)+'”':'No quick commands yet — tap ＋, or add Notes on the Mac')+'</div>';
   document.getElementById('presets').innerHTML=html;
+  const ed=document.getElementById('nedit');
+  ed.textContent=presetEdit?'Done':'Edit'; ed.classList.toggle('on',presetEdit);
 }
 /* Append, never replace. A quick command is a fragment you stack onto what you are already writing
    — "run the tests" then "and fix what fails" — and replacing threw away a half-typed prompt with
@@ -1615,6 +1706,7 @@ function usePreset(id){
   const cur=ta.value, pad=(cur&&!/\s$/.test(cur))?' ':'';
   ta.value=cur+pad+n.text;
   const at=ta.value.length; ta.setSelectionRange(at,at);
+  closeDrawer();
   autoGrow(ta); ta.focus();
   syncSendBtn();
 }
@@ -1623,6 +1715,117 @@ async function addNote(){const c=prompt('Add a quick command (saved to Notes on 
 async function delNote(id){await fetch('/note?del='+encodeURIComponent(id));await refreshState();renderPresets();}
 function toggleEditPresets(){presetEdit=!presetEdit;renderPresets();}
 renderPresets();
+
+/* ---------- the drawer under the composer ----------
+   Quick commands and the ⊕ tiles, one at a time, where the keyboard would otherwise be — WeChat's
+   arrangement. The quick commands used to be a strip of chips above the box: always on screen,
+   mostly scrolled out of sight, and a filter field 82px wide. */
+function drawerPane(){ const p=document.querySelector('#drawer .dpane.on'); return p?p.dataset.pane:''; }
+function openDrawer(pane){
+  document.querySelectorAll('#drawer .dpane').forEach(p=>p.classList.toggle('on',p.dataset.pane===pane));
+  document.querySelectorAll('#sendrow .rb').forEach(b=>b.classList.toggle('on',b.dataset.pane===pane));
+  document.getElementById('term').classList.add('drawer');
+  if(pane==='notes'){ presetEdit=false; document.getElementById('pfind').value=''; renderPresets(); }
+  placeJump();
+}
+function closeDrawer(){
+  const t=document.getElementById('term');
+  if(!t.classList.contains('drawer')) return;
+  t.classList.remove('drawer');
+  document.querySelectorAll('#drawer .dpane').forEach(p=>p.classList.remove('on'));
+  document.querySelectorAll('#sendrow .rb').forEach(b=>b.classList.remove('on'));
+  const f=document.getElementById('pfind'); if(document.activeElement===f) f.blur();
+  placeJump();
+}
+(function(){
+  for(const b of document.querySelectorAll('#sendrow .rb')){
+    /* A press would take focus from the box, and on a phone losing focus is the keyboard dropping:
+       the row jumps out from under the finger and the tap lands on something else — the same fault
+       that once made Send take two taps. So the press is swallowed and the work happens on click. */
+    b.addEventListener('pointerdown',e=>{ if(!e.button) e.preventDefault(); });
+    b.addEventListener('click',()=>{
+      const pane=b.dataset.pane;
+      if(drawerPane()===pane){
+        closeDrawer();
+        if(pane==='notes') document.getElementById('inputtext').focus();
+        return;
+      }
+      openDrawer(pane);
+      if(pane==='notes'){
+        /* Straight into the search, inside the tap itself: iOS raises the keyboard only for a
+           focus() it can tie to a gesture, and one made after an await or a timeout gets none. */
+        document.getElementById('pfind').focus();
+      }else{
+        // The tiles are the keyboard's alternative, as in WeChat, so the keyboard goes away.
+        const a=document.activeElement;
+        if(a&&(a.id==='inputtext'||a.id==='pfind')) a.blur();
+      }
+    });
+  }
+  // Back in the box means done choosing: fold the drawer away.
+  document.getElementById('inputtext').addEventListener('focus',closeDrawer);
+  document.getElementById('pfind').addEventListener('keydown',e=>{
+    if(e.key==='Escape'){ closeDrawer(); document.getElementById('inputtext').focus(); return; }
+    // Return takes the first match: the list is searched in order to be used, not browsed.
+    if(e.key==='Enter'&&!e.isComposing){
+      e.preventDefault();
+      const first=document.querySelector('#presets button.nrow');
+      if(first) first.click();
+    }
+  });
+})();
+
+/* ---------- headers that get out of the way ----------
+   Reading down hides the bar; any scroll back up, or being near the top, brings it back. Only
+   scrolls a person made count. The poll landing new messages, jumpLatest and the keyboard
+   re-measure all move the pane too — and opening a conversation lands at its bottom — so a bar
+   that followed every scroll would vanish whenever the agent said something, and on every open. */
+function autoHide(scroller,target,cls,limit,skip){
+  let lastY=0, acc=0, userUntil=0;
+  const y=()=>scroller===window?window.scrollY:scroller.scrollTop;
+  const view=()=>scroller===window?window.innerHeight:scroller.clientHeight;
+  /* "Yours" is a chain, not a window: input starts it, and every scroll frame after it keeps it alive
+     for another 150ms. A glide after the finger lifts is a frame every ~16ms, so it stays yours; a
+     jump landed half a second later by the poll or jumpLatest does not. A flat second after touchend
+     was long enough to let those through, and the bar hid itself on "take me to the latest". */
+  const mine=()=>{ userUntil=performance.now()+150; };
+  for(const ev of ['touchstart','touchmove','touchend','wheel'])
+    scroller.addEventListener(ev,mine,{passive:true});
+  const set=hide=>{
+    if(target.classList.contains(cls)===hide) return;
+    target.classList.toggle(cls,hide);
+    if(scroller!==window) updateStickyPrompt();
+  };
+  scroller.addEventListener('scroll',()=>{
+    const cur=y(), dy=cur-lastY; lastY=cur;
+    if(skip&&skip()){ acc=0; return; }
+    if(cur<limit()){ acc=0; set(false); return; }
+    const now=performance.now();
+    if(now>userUntil){ acc=0; return; }
+    userUntil=now+150;
+    if(Math.abs(dy)>view()){ acc=0; return; }       // a jump, not a scroll: no finger moves a screen a frame
+    if((dy>0)!==(acc>0)) acc=0;
+    acc+=dy;
+    // A little travel first, so the jitter at the end of a flick cannot flap the bar.
+    if(acc>28) set(true); else if(acc<-28) set(false);
+  },{passive:true});
+  return ()=>{ acc=0; target.classList.remove(cls); };
+}
+const showTermHead=autoHide(document.getElementById('chat'),document.getElementById('term'),'headhide',
+  ()=>document.getElementById('thead').offsetHeight,
+  ()=>curView!=='chat');
+const showBoardHead=autoHide(window,document.querySelector('body > header'),'hide',
+  ()=>document.getElementById('panel').offsetHeight+document.querySelector('body > header').offsetHeight,
+  // Parked behind the overlay, dragging a card, or with the files tray open under it: stay put.
+  ()=>document.body.classList.contains('locked')||dragging||
+      document.getElementById('tray').classList.contains('on'));
+/* The transcript starts below the bar, however tall the bar is today — a notch, a wrapped title. */
+if(window.ResizeObserver){
+  new ResizeObserver(()=>{
+    document.getElementById('term').style.setProperty('--headh',document.getElementById('thead').offsetHeight+'px');
+    updateStickyPrompt();
+  }).observe(document.getElementById('thead'));
+}
 
 /* ---------- composer size ----------
    Two states, one number: 0 is the auto-growing three-line bar, anything else is an explicit height
@@ -1658,6 +1861,7 @@ function applyBar(){
     bar.style.height=Math.min(barMax(),Math.max(BAR_MIN,barH))+'px';
   }
   document.getElementById('expand').textContent=barH?'⤡':'⤢';
+  document.getElementById('bigLabel').textContent=barH?'Collapse':'Editor';
   autoGrow(document.getElementById('inputtext'));
   placeJump();                      // the bar just changed height; the ↓ rides on top of it
 }
@@ -1753,14 +1957,23 @@ async function sendText(){
      button label can be a poll behind the terminal, and letting it decide here meant a typed
      message interrupted the turn instead of sending — so it took two taps. */
   if(!t){ key(document.getElementById('sendbtn').dataset.stop?'Escape':'Enter'); return; }
+  closeDrawer();
   ta.value='';autoGrow(ta);
   showSent(t);                       // don't wait a round trip to acknowledge the send
   stickBottom=true; jumpLatest();    // follow your own message down, wherever you were reading
   markSent();                       // the hook is a beat behind; don't sit on 'idle' meanwhile
-  try{ await fetch('/type?id='+encodeURIComponent(curId)+'&enter=1&text='+encodeURIComponent(t)); }
-  catch(e){ ta.value=t; autoGrow(ta); sentAt=0; renderInfo(curInfo);
-            if(sentGhost){ sentGhost.node.remove(); sentGhost=null; } }
+  /* wait=1: the Mac answers once it has seen the prompt leave the agent's input box, pressing Enter
+     again if it had not — Codex takes text followed at once by Enter as a paste and turns that Enter
+     into a newline. "stuck" is the one case that needs you: the text is typed but never ran, which
+     on the board looks exactly like an agent ignoring you. An older Mac answers without "submit". */
+  const req=fetch('/type?id='+encodeURIComponent(curId)+'&enter=1&wait=1&text='+encodeURIComponent(t));
   setTimeout(loadChat,400);
+  try{
+    const r=await (await req).json();
+    if(r&&r.submit==='stuck'){ sentAt=0; renderInfo(curInfo);
+      toast('没发出去：文字还停在 agent 的输入框里，点 ⏎ 再发一次',5000); }
+  }catch(e){ ta.value=t; autoGrow(ta); sentAt=0; renderInfo(curInfo);
+             if(sentGhost){ sentGhost.node.remove(); sentGhost=null; } }
 }
 /* ---------- files an agent sent (the outbox) ----------
    The mirror of the attach button: `fleetview-send` drops a file in ~/.fleetview/outbox and it
@@ -1892,7 +2105,9 @@ async function attachFiles(files){
   const list=[...files];
   if(!list.length)return;
   const btn=document.getElementById('imgbtn');
-  const was=btn.textContent; btn.disabled=true; btn.textContent='…';
+  // The attach control is a tile now; only its label changes, or the icon would be wiped with it.
+  const lab=btn.querySelector('.tl')||btn;
+  const was=lab.textContent; btn.disabled=true; lab.textContent='…';
   const paths=[];
   for(let i=0;i<list.length;i++){
     const f=list[i];
@@ -1903,14 +2118,14 @@ async function attachFiles(files){
          .csv or .pdf, and the basename it writes is still its own uuid. */
       paths.push(await uploadOne(f,label));
     }catch(e){
-      btn.textContent='✕';
-      setTimeout(()=>{btn.textContent=was;},1400);
+      lab.textContent='✕';
+      setTimeout(()=>{lab.textContent=was;},1400);
       toast('upload failed: '+e.message);
     }
   }
   uprogHide();
   btn.disabled=false;
-  if(btn.textContent==='…') btn.textContent=was;
+  if(lab.textContent==='…') lab.textContent=was;
   if(paths.length) insertAtCursor(document.getElementById('inputtext'), paths.join(' ')+' ');
 }
 /* Land the path where the cursor is, so a caption typed around it survives. */
@@ -1925,7 +2140,10 @@ function insertAtCursor(ta,text){
   ta.focus();
   syncSendBtn();
 }
-document.getElementById('imgbtn').addEventListener('click',()=>document.getElementById('imgfile').click());
+document.getElementById('imgbtn').addEventListener('click',()=>{
+  document.getElementById('imgfile').click();   // first, while this is still the tap that allows it
+  closeDrawer();
+});
 document.getElementById('imgfile').addEventListener('change',e=>{
   attachFiles(e.target.files);
   e.target.value='';                 // same file twice in a row still fires
@@ -2136,13 +2354,19 @@ async function doAction(id,act,extra){
 
 // ---------- drag-to-act ----------
 let drag={id:null,name:null,cluster:false,x:0,y:0,sx:0,sy:0,active:false,
-          touch:false,armed:false,holdTimer:0};
+          touch:false,armed:false,holdTimer:0,live:false};
+/* How long a finger has to rest on a card before it picks the card up. It was 220ms, which is
+   shorter than a finger rests before most scrolls begin — so reading down the board kept lifting
+   cards. 450 is the platform long-press, the delay people already expect a hold to take. */
+const HOLD_MS=450;
 function endDrag(){
   clearTimeout(drag.holdTimer);
   window.removeEventListener('pointermove',onMove);
   window.removeEventListener('pointerup',onUp);
+  window.removeEventListener('pointercancel',endDrag);
   if(drag.card)drag.card.classList.remove('armed');
-  drag.active=false;drag.armed=false;dragging=false;
+  if(drag.card)drag.card.classList.remove('dragging');
+  drag.active=false;drag.armed=false;drag.live=false;dragging=false;
   document.getElementById('chip').style.display='none';
   document.getElementById('dock').style.display='none';
 }
@@ -2171,7 +2395,7 @@ function onDown(e){
   const card=e.target.closest('.card');if(!card)return;
   drag.id=card.dataset.id;drag.name=card.dataset.name;drag.cluster=card.dataset.cluster==='1';
   drag.done=card.dataset.done==='1';drag.canopen=card.dataset.canopen==='1';drag.card=card;
-  drag.sx=e.clientX;drag.sy=e.clientY;drag.active=false;
+  drag.sx=e.clientX;drag.sy=e.clientY;drag.active=false;drag.live=true;drag.y0=window.scrollY;
   // A finger can't both scroll the list and drag a card, so touch has to say which it means:
   // hold still for a moment and the card arms for dragging, otherwise the swipe stays a scroll.
   drag.touch=e.pointerType==='touch';
@@ -2179,19 +2403,26 @@ function onDown(e){
   clearTimeout(drag.holdTimer);
   if(drag.touch){
     drag.holdTimer=setTimeout(()=>{
+      // The page moved under a finger that "held still": that was a scroll, not a hold.
+      if(!drag.live||Math.abs(window.scrollY-drag.y0)>3){ endDrag(); return; }
       drag.armed=true;
       if(drag.card)drag.card.classList.add('armed');
       if(navigator.vibrate)navigator.vibrate(8);
-    },220);
+    },HOLD_MS);
   }
   window.addEventListener('pointermove',onMove);
   window.addEventListener('pointerup',onUp);
+  /* The missing half of the old version. When the browser takes a touch for scrolling it sends
+     pointercancel — and then no more pointermoves and no pointerup. Nothing listened for it, so the
+     hold timer ran on and armed the card mid-scroll, and the pointerup listener stayed behind to
+     fire on the NEXT tap anywhere, which opened the card the scroll had started on. */
+  window.addEventListener('pointercancel',endDrag);
 }
 function onMove(e){
   const dx=e.clientX-drag.sx,dy=e.clientY-drag.sy;
   // Moved before the hold completed → the user is scrolling; let the browser have the gesture.
   if(!drag.armed){
-    if(Math.hypot(dx,dy)>12){ clearTimeout(drag.holdTimer); endDrag(); }
+    if(Math.hypot(dx,dy)>8){ clearTimeout(drag.holdTimer); endDrag(); }
     return;
   }
   if(!drag.active&&Math.hypot(dx,dy)<9)return;
@@ -2211,13 +2442,19 @@ function onUp(e){
   clearTimeout(drag.holdTimer);
   window.removeEventListener('pointermove',onMove);
   window.removeEventListener('pointerup',onUp);
+  window.removeEventListener('pointercancel',endDrag);
   if(drag.card)drag.card.classList.remove('armed');
+  const heldStill=drag.touch&&drag.armed&&!drag.active;
+  drag.live=false;
   const wasActive=drag.active;
   const act=wasActive?drag.hotAct:null;   // captured during onMove, while zones still had layout
   document.getElementById('chip').style.display='none';
   document.getElementById('dock').style.display='none';
   if(drag.card)drag.card.classList.remove('dragging');
   dragging=false;
+  // Picked up and put back down where it was: the hold was the start of a drag that did not
+  // happen, not a slow tap. Opening the terminal there surprised people who had only paused.
+  if(heldStill) return;
   if(!wasActive){ // a tap, not a drag
     if(drag.canopen)openTerm(drag.id,drag.name);else toast('Open this terminal on the Mac first');
     return;
@@ -2227,13 +2464,22 @@ function onUp(e){
   else doAction(drag.id,act);
 }
 document.getElementById('root').addEventListener('pointerdown',onDown);
-// Non-passive: touch-action is evaluated when the gesture begins, so the only way to stop a scroll
-// that a long press has turned into a drag is to cancel the touch moves themselves.
-document.addEventListener('touchmove',e=>{ if(drag.armed&&drag.active)e.preventDefault(); },
-                          {passive:false});
+/* Non-passive: touch-action is evaluated when the gesture begins, so the only way to stop a scroll
+   that a long press has turned into a drag is to cancel the touch moves themselves. Two jobs, both
+   needing touch events because pointer events stop once the browser scrolls:
+   - once a card is armed the gesture is the drag's, from the first move — waiting for `active` let
+     that first move start a scroll, which cancelled the drag before it began;
+   - before it is armed, a finger that travels is scrolling, so the hold is off. */
+document.addEventListener('touchmove',e=>{
+  if(!drag.live||!drag.touch) return;
+  if(drag.armed){ e.preventDefault(); return; }
+  const p=e.touches[0];
+  if(p&&Math.hypot(p.clientX-drag.sx,p.clientY-drag.sy)>8) endDrag();
+},{passive:false});
+window.addEventListener('scroll',()=>{ if(drag.live&&!drag.armed) endDrag(); },{passive:true});
 
 let toastT=null;
-function toast(msg){
+function toast(msg,ms){
   let t=document.getElementById('toast');
   if(!t){t=document.createElement('div');t.id='toast';
     /* pointer-events:none, because it is only ever faded out and never removed: an invisible node
@@ -2242,7 +2488,7 @@ function toast(msg){
     t.style.cssText='position:fixed;left:50%;bottom:70px;transform:translateX(-50%);z-index:70;pointer-events:none;background:var(--card);border:1px solid var(--stroke);color:var(--text);padding:9px 14px;border-radius:10px;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.5)';
     document.body.appendChild(t);}
   t.textContent=msg;t.style.opacity='1';
-  clearTimeout(toastT);toastT=setTimeout(()=>{t.style.opacity='0';},1600);
+  clearTimeout(toastT);toastT=setTimeout(()=>{t.style.opacity='0';},ms||1600);
 }
 
 // ---------- render ----------
