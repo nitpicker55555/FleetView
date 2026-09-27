@@ -26,6 +26,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // transcript on disk (~15 s); every refresh after that is incremental and near-free, so
         // doing it at launch means ⌘K is instant instead of waiting on a cold index.
         SearchIndex.refresh()
+        // …and keep it warm. `project-manager projects/history/session/search` read this index from
+        // outside the app, and nothing else refreshed it while the app ran — only launch and opening
+        // the search panel did, so after a day of uptime the history an agent was reading had
+        // stopped a day ago. An unchanged corpus costs ~0.1 s off the main thread.
+        let reindex = Timer(timeInterval: 300, repeats: true) { _ in SearchIndex.refresh() }
+        RunLoop.main.add(reindex, forMode: .common)
         state.updates.check()        // one GET, at most every six hours; off via logging.json
         let w = EventWatcher()
         w.onEvent = { [weak self] ev in

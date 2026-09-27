@@ -54,7 +54,7 @@ chips on its web dashboard) are readable *and* writable from here, so `notes add
 path or a command where someone at that Mac will see it. An empty list means that instance has no
 notes — not that the notes could not be read.
 
-## Three things do not cross the network
+## Four things do not cross the network
 
 - **`open`** hands back a ttyd port on *that* machine. The web dashboard rebuilds a URL from its own
   host, which is why it works there; a remote CLI just gets a number. Use `show`/`tail` to read a
@@ -64,6 +64,9 @@ notes — not that the notes could not be read.
 - **`ask`** forks an agent process on the remote machine. It works, but it spends that machine's API
   budget and you cannot see it start. Prefer `show` unless you specifically want the agent's own
   reading of its context.
+- **`projects` / `history` / `session` / `search`** read *this* Mac's transcripts and search index,
+  so they refuse `-u` rather than describe your history under another machine's name. To see
+  another Mac's history, run them on that Mac (e.g. `send` the command to a shell terminal there).
 
 ## There is no authentication
 

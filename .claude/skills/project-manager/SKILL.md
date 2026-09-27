@@ -4,10 +4,14 @@ description: >-
   Inspect and control the OTHER running FleetView agent terminals from the shell via the `project-manager`
   CLI: list every agent's live status/tokens/last prompt, read a terminal's recent output or locate
   its conversation transcript, inject a prompt, answer a Claude/Codex permission or menu prompt,
-  and detect sessions that ended in an error. Use whenever asked to monitor, supervise, coordinate,
-  or drive other agents/terminals in the FleetView fleet — e.g. "check on the other agents", "is any
-  session stuck or errored", "tell the X terminal to…", "approve/answer the prompt in Y", "what is
-  the fleet doing", "where is agent Z's chat log".
+  and detect sessions that ended in an error. Also the way into the user's PAST work on this Mac:
+  which projects they worked on recently, each project's Claude/Codex conversations with their
+  transcript paths, what a conversation covered turn by turn, and search across all of it. Use
+  whenever asked to monitor, supervise, coordinate, or drive other agents/terminals in the FleetView
+  fleet — e.g. "check on the other agents", "is any session stuck or errored", "tell the X terminal
+  to…", "approve/answer the prompt in Y", "what is the fleet doing", "where is agent Z's chat log" —
+  and whenever the user refers to earlier work: "what was I doing lately", "我最近做了 X 项目",
+  "find the conversation where we…", "where is the session file for…".
 ---
 
 # project-manager — control the FleetView agent fleet
@@ -45,7 +49,7 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager watch [-n SEC] [-p PROJ] [-g]` | Live-refreshing `ls` (Ctrl-C to stop) |
 | `project-manager show <id> [-l N]` | One terminal: status, cwd, transcript path, and the last N lines of output |
 | `project-manager tail <id> [-l N]` | Just the recent output (default 200 lines) |
-| `project-manager send <id> <text…>` | Inject a prompt and submit it (Enter). `-N` sends the text without Enter |
+| `project-manager send <id> <text…>` | Inject a prompt, submit it, and **confirm it left the input box** (see below). `-N` types without Enter |
 | `project-manager key <id> <key>` | Send one key: `esc enter up down left right tab bspace c-c c-d …` |
 | `project-manager choose <id> <n>` | Answer a numbered menu: sends digit `<n>` then Enter |
 | `project-manager check [<id>]` | Flag sessions that look error-terminated (API errors, tracebacks, exited, …) |
@@ -59,6 +63,11 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager notes add <text…>` | Append a note (newlines and quotes survive; use single quotes in zsh) |
 | `project-manager notes rm <note>` | Delete a note, selected by its number, id prefix, or a text substring. It prints the note back — that's the only undo |
 | `project-manager peers` | Scan the LAN and list every FleetView instance with its URL (for `-u`) |
+| `project-manager projects [-n N] [--days D]` | **History L0**: projects on this Mac by last activity, 2 lines each |
+| `project-manager history [<project>] [-n N]` | **History L1**: a project's conversations — title, span, turns, transcript path (default: your own project) |
+| `project-manager session <id> [--all]` | **History L2**: one conversation, one line per turn, plus how it ended and how to resume it |
+| `project-manager session <id> -t N[-M] [--full]` | **History L3**: one turn (up to 5) in full — your prompt and the agent's answer |
+| `project-manager search <words…> [-p PROJ]` | Which conversations mention something, grouped by conversation, with turn numbers |
 
 ## Knowing which project you are in
 
@@ -191,6 +200,24 @@ become the same task queued five times — a delivered task appears exactly once
 If it still cannot land it, it says so and gives you the command to finish by hand rather than
 leaving a card that looks like it was briefed.
 
+## Sending, and knowing it arrived
+
+`send` does not just type: it waits for FleetView to confirm the prompt **left the agent's input box**
+and prints which of these happened —
+
+| Output | Meaning |
+|---|---|
+| `sent to X — submitted` | seen in the composer, then seen leave it: the agent has it |
+| `sent to X — Enter pressed, not verified` | short text (a menu digit), a plain shell, or the text never showed up to be checked |
+| `sent to X — another input reached it before…` | something else typed into that terminal meanwhile; check with `show` |
+| *exit 1:* `typed into X but it did NOT submit` | the text is sitting in its input box. `project-manager key <id> enter` |
+
+Why it needs checking: text followed at once by Enter reads to **Codex** as a paste, and its
+paste-burst guard turns that Enter into a newline — the prompt sits in the composer looking sent.
+Claude drops it too on long text. FleetView leaves a gap, looks, and presses Enter again if the text is
+still there (up to 4 times); against an older FleetView (a peer on another Mac) the CLI does the same
+check itself. So a `send` that exits 0 has either landed or says plainly that it could not tell.
+
 ## How to answer an agent's prompt
 
 Both Claude Code and Codex show **numbered select lists** (e.g. `❯ 1. Yes  2. No`). Always **look
@@ -229,6 +256,40 @@ few seconds; use it for genuine questions, not routine polling (use `ls`/`show` 
 - **Read/locate a conversation**: `project-manager log <id>` (path to the Claude/Codex `.jsonl`), or
   `project-manager show <id> -l 400` to read recent turns inline.
 
+## Looking back: the user's project history
+
+When the user refers to earlier work — "我最近做了 qwen fancy web", "find the chat where we fixed
+the rubric", "where's that session file" — read it **one level at a time**. Each level is capped and
+ends with the command for the next one down. Do not `cat` transcripts: one is often 40 MB.
+
+```bash
+project-manager projects                     # L0  which projects, most recent first
+project-manager history qwen_fancy_web       # L1  its conversations + transcript paths
+project-manager session 01a0da0b-e436        # L2  that conversation, one line per turn
+project-manager session 01a0da0b-e436 -t 19  # L3  turn 19 in full
+project-manager search rubric 权重 -p qwen   # or jump straight to where something was said
+```
+
+- **Stop at the level that answers the question.** "What was I working on" is L0. "What did we do in
+  project X" is L1 plus maybe one L2. Only go to L3 for what was actually said in a turn.
+- **Projects come from where conversations ran**, not from the FleetView board: a project removed from
+  the board still has its history, and conversations started in a plain terminal are included. Names
+  are forgiving — `history "qwen facy web"` finds `qwen_fancy_web` and says so.
+- **Ids**: L1 prints a short id per conversation (Claude: 8 characters; Codex: 13, since Codex ids
+  share their first 8 across a batch started in the same minute). `session` also takes a FleetView
+  card id — live or removed — or a transcript path.
+- **Turn numbers** count what the user typed, not injected messages (task notifications,
+  continuation summaries), and are the same in `session`, `search` and `-t`, so `search`'s `t19` is
+  `session <id> -t 19`.
+- `history` and `projects` hide subagent threads (folded into their parent's count), `claude -p` /
+  `codex exec` runs and `/tmp` scratch dirs; `-a` shows them.
+- A conversation whose file Claude has since deleted still reads from FleetView's index; `session`
+  marks it `[deleted]` and gives no resume command. Otherwise it prints the exact `claude --resume` /
+  `codex resume` line.
+- **Local only**: this reads the transcripts and FleetView's search index on *this* Mac, so it refuses
+  `-u`. For another Mac's history, run it there.
+- Transcripts hold whatever the user typed, secrets included. Quote only what the task needs.
+
 ## Reaching a terminal on another machine (LAN)
 
 A target id that's missing from the local `ls` is usually **on another FleetView instance**, not gone.
@@ -259,10 +320,10 @@ session).
 
 - `send`/`choose`/`key` **inject real keystrokes** into a live session. Before acting on a terminal
   that is `working`, prefer to `show` it first — don't interrupt an in-progress turn unless asked.
-- **Confirm a `send`/`choose` actually landed** — check the exit status and re-`show` the terminal (an
-  empty input box `❯` means it didn't). Don't write `send … && echo ok` and trust it: a failed send
-  just skips the `&&`, so it looks silent. (This is how the zsh `$PM` bug above hid — the send returned
-  127 and nothing was injected.)
+- **Read `send`'s verdict and exit status** — `submitted` means the agent has it; exit 1 means the
+  text is stuck in its input box. Don't write `send … && echo ok` and trust it: a failed send just
+  skips the `&&`, so it looks silent. (This is how the zsh `$PM` bug above hid — the send returned
+  127 and nothing was injected.) `choose` sends a single digit, which is not verified; `show` after it.
 - A terminal must have a live tmux session to inspect/drive it (`ls` shows it; closed ones can't be
   read). `send`/`choose` do nothing useful on a closed terminal.
 - `check` is heuristic (it scans recent output). Confirm by reading `show <id>` before concluding a

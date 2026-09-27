@@ -31,3 +31,4 @@ YYYY-MM-DD-<主题>.md
 | 2026-07-28 | [审计日志实施：分层拦截架构](2026-07-28-audit-logging-implementation.md) | 已实现 | 意图 + 状态 diff 双层拦截，视图层零打点；模块划分、测试策略、实测记录 |
 | 2026-08-19 | [state.json 被清空事故](2026-08-19-state-json-wipe.md) | 已修复 | 给已上盘结构体加了个非可选字段 → 整个 `Persisted` 解码失败 → 当成全新安装 → 覆盖掉全部项目/终端/notes。规则：新字段必须 Optional；解码要逐字段容错。附审计日志重放恢复的做法 |
 | 2026-08-23 | [macOS TCC 权限排障](2026-08-23-tcc-permissions.md) | 已解决（辅助功能待处理） | 反复索权的根因是 ad-hoc 签名——身份就是二进制哈希，每次重装都作废。换固定证书后旧授权全部对不上：`auth_value` 是 2 但 csreq 没重写。**关键操作是删掉重加，不是切开关**。含 csreq 比对、验证手段、三次错误判断的复盘 |
+| 2026-09-26 | [提交确认 + 分层项目历史](2026-09-26-send-and-project-history.md) | 已实现 | Codex 把"文字后紧跟 Enter"当粘贴，Enter 变换行 → 留间隔、看输入框、没走就再按，`/type?wait=1` 报告结果；copy-mode 吞键同修。`project-manager projects/history/session/search` 四层读历史，每层有上限，项目从会话 cwd 推出 |

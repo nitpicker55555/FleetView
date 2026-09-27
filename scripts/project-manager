@@ -24,6 +24,13 @@ auto-discovers the local server via ~/.fleetview/web-port.
   project-manager notes add <text...>      append a note
   project-manager notes rm <note-sel>      delete a note (prints it back, so you can re-add it)
 
+History of this Mac's conversations (Claude + Codex), one level at a time:
+  project-manager projects                 L0  projects by last activity
+  project-manager history [<project>]      L1  a project's conversations + transcript paths
+  project-manager session <id>             L2  one conversation, one line per turn
+  project-manager session <id> -t N        L3  one turn in full
+  project-manager search <words…>          which conversations mention something
+
 <sel> matches a terminal by name substring (case-insensitive) or id prefix.
 <note-sel> matches a note by its number in `notes`, its id prefix, or a text substring.
 """
@@ -495,14 +502,86 @@ def cmd_show(a):
     print(c("90", "-" * 60))
     sys.stdout.write(api_text("/capture?id=%s&lines=%d" % (t["id"], a.lines)))
 
+# ---- getting a prompt to actually submit ----
+#
+# Text followed at once by Enter reads to Codex as a paste with a Return inside it, and its
+# paste-burst guard turns that Return into a newline: the prompt sits in the composer looking sent.
+# FleetView now leaves a gap, checks the composer and presses Enter again (Remote/Submit.swift), and
+# answers `/type?wait=1` with what happened. These helpers mirror that check for a FleetView that
+# predates it — a peer on another Mac is often a version behind.
+
+PROMPT_MARKS = ("›", "❯")    # Codex ›, Claude ❯
+
+def _squeeze(s):
+    """Text with spaces, line breaks and box edges removed — what survives a TUI re-wrapping it."""
+    return re.sub(r"[\s│]+", "", s)
+
+def _probe(text):
+    """The tail of the text (a long prompt scrolls in Claude's composer, keeping the end in view);
+    None when there is too little to recognise — a menu digit is on screen in every menu."""
+    s = _squeeze(text)
+    return s[-12:] if len(s) >= 3 else None
+
+def _is_marker(line):
+    t = line.lstrip(" │")
+    return t[:1] in PROMPT_MARKS or t.startswith("> ")
+
+def _composer_holds(pane, probe):
+    """Whether the composer — the LAST prompt-marker line and what follows — still holds the text.
+    Earlier marker lines are history: both agents keep a submitted prompt on screen under its marker,
+    which is how an earlier version of this check read a long-finished task as forever pending."""
+    lines = pane.split("\n")
+    marks = [i for i, ln in enumerate(lines) if _is_marker(ln)]
+    if not marks:
+        return False
+    region = "\n".join(lines[marks[-1]:])
+    if "[Pasted text" in region or "[Pasted Content" in region:
+        return True
+    return probe in _squeeze(region)
+
+def _type(tid, text, enter=True):
+    """Type into a terminal and return the server's verdict — submitted / stuck / sent / typed /
+    superseded — or None from a FleetView too old to give one (it ignores `wait`)."""
+    # quote_via=quote so spaces become %20 (not "+", which the server won't turn back into a space)
+    q = urllib.parse.urlencode({"id": tid, "text": text, "enter": "1" if enter else "0",
+                                "wait": "1"}, quote_via=urllib.parse.quote)
+    return api_json("/type?" + q).get("submit")
+
+def _confirm_submit(t, text, tries=4):
+    """The server's check, done from here. True submitted, False stuck, None not checkable.
+
+    Only for agents: in a shell running a command, a second Enter answers whatever that command is
+    waiting on, and a `❯` shell prompt would pass for a composer.
+    """
+    probe = _probe(text)
+    if probe is None or not t.get("agent"):
+        return None
+    for i in range(tries + 1):
+        time.sleep(0.5 if i == 0 else 0.7)
+        if not _composer_holds(api_text("/capture?id=%s&lines=60" % t["id"]), probe):
+            return True
+        if i == tries:
+            break
+        api_json("/key?" + urllib.parse.urlencode({"id": t["id"], "k": "Enter"}))
+    return False
+
 def cmd_send(a):
     t = resolve(state(), a.sel)
     text = " ".join(a.text)
-    # quote_via=quote so spaces become %20 (not "+", which the server won't turn back into a space)
-    q = urllib.parse.urlencode({"id": t["id"], "text": text, "enter": "0" if a.no_enter else "1"},
-                               quote_via=urllib.parse.quote)
-    api_json("/type?" + q)
-    print("sent to %s%s" % (t["name"], " (no enter)" if a.no_enter else ""))
+    verdict = _type(t["id"], text, enter=not a.no_enter)
+    if a.no_enter:
+        print("typed into %s (no enter)" % t["name"]); return
+    if verdict is None:
+        ok = _confirm_submit(t, text)
+        verdict = {True: "submitted", False: "stuck", None: "sent"}[ok]
+    if verdict == "stuck":
+        # Exit non-zero: `send … && next-step` must not carry on as if the agent got the prompt.
+        sys.exit("typed into %s but it did NOT submit — the text is still in its input box.\n"
+                 "press Enter with: project-manager key %s enter" % (t["name"], t["id"][:8].lower()))
+    note = {"submitted": "submitted",
+            "sent": "Enter pressed, not verified",
+            "superseded": "another input reached it before this one could be confirmed"}
+    print("sent to %s — %s" % (t["name"], note.get(verdict, verdict)))
 
 def cmd_key(a):
     t = resolve(state(), a.sel)
@@ -684,19 +763,27 @@ def _send_task(tid, task, attempts=20):
     ~20 attempts because this now carries the whole readiness question: a cold Codex with its
     banners, or a Claude loading many MCP servers, can take most of a minute.
     """
-    probe = task[:16]
+    # Head or tail, squeezed: a long task scrolls in Claude's composer (the head goes off the top)
+    # and wraps at the pane's width either way. Looking for the head alone retyped a task that was
+    # sitting right there.
+    s = _squeeze(task)
+    probes = {s[:16], s[-12:]}
     q = urllib.parse.urlencode({"id": tid, "text": task, "enter": "1"},
                                quote_via=urllib.parse.quote)
-    for _ in range(attempts):
+
+    def landed():
         pane = api_text("/capture?id=%s&lines=40" % tid)
+        flat = _squeeze(pane)
         # Already landed — either sitting in the composer or already being worked on.
-        if probe in pane or "esc to interrupt" in pane:
+        return any(p in flat for p in probes) or "esc to interrupt" in pane
+
+    for _ in range(attempts):
+        if landed():
             return True
         api_json("/type?" + q)
         for _ in range(6):
             time.sleep(0.5)
-            pane = api_text("/capture?id=%s&lines=40" % tid)
-            if probe in pane or "esc to interrupt" in pane:
+            if landed():
                 return True
     return False
 
@@ -707,25 +794,14 @@ def _submit_if_pending(tid, task, tries=8):
     `/type` sends the text and the Return together, and Codex during its banner phase takes the
     text and drops the Return — the task then sits in the composer forever, which reads on the board
     as a subagent that was given work and ignored it. Measured: the text arrived, `› <task>` stayed
-    on screen, nothing ran.
-
-    Only the LAST prompt line counts. Codex keeps a submitted prompt on screen, still prefixed with
-    its marker, so "some prompt line contains the task" is true long after it ran — that read it as
-    forever-pending, pressed Enter eight more times, and reported failure on a task that had already
-    been answered. The live composer is the last such line, and once the task is in, it holds the
-    placeholder instead.
+    on screen, nothing ran. A current FleetView already retries this itself; this is the same check
+    from outside, which is harmless after a success and the whole fix against an older instance.
     """
-    probe = task[:16]
-    marks = ("\u203a", "\u276f", ">")
+    probe = _probe(task)
+    if probe is None:
+        return True
     for _ in range(tries):
-        pane = api_text("/capture?id=%s&lines=40" % tid)
-        last = None
-        for ln in reversed(pane.splitlines()):
-            t = ln.strip()
-            if t[:1] in marks:
-                last = t
-                break
-        if last is None or probe not in last:
+        if not _composer_holds(api_text("/capture?id=%s&lines=40" % tid), probe):
             return True
         api_json("/key?" + urllib.parse.urlencode({"id": tid, "k": "Enter"}))
         time.sleep(1.0)
@@ -871,6 +947,921 @@ def cmd_notes(a):
     if q and not a.plain:
         print(c("90", "%d of %d notes" % (len(shown), len(notes))))
 
+# ======================================================================================
+# History — which projects, which conversations, what was said, and where the files are.
+#
+# Four levels, each capped and each ending with the command for the level below, so a caller
+# spends context one level at a time instead of pouring a transcript into it:
+#
+#   projects             L0  projects by last activity, two lines each
+#   history <project>    L1  its conversations: title, span, turns, transcript path
+#   session <id>         L2  one conversation, one line per turn
+#   session <id> -t N    L3  one turn, in full
+#   search <words>       across all of it, grouped by conversation, with turn numbers into L3
+#
+# Read-only, and local by nature: it reads this Mac's transcripts and FleetView's search index
+# (~/.fleetview/search.db), so it ignores -u. The why behind every rule below is in
+# docs/design/2026-09-26-send-and-project-history.md.
+# ======================================================================================
+
+CLAUDE_ROOT = os.path.join(HOME, ".claude", "projects")
+CODEX_ROOT = os.path.join(HOME, ".codex", "sessions")
+FV_DIR = os.path.join(HOME, ".fleetview")
+INDEX_DB = os.path.join(FV_DIR, "search.db")
+HEADS_CACHE = os.path.join(FV_DIR, "cache", "history-heads.json")
+SCRATCH = "(scratch)"
+SCRATCH_PREFIXES = ("/private/tmp/", "/tmp/", "/private/var/folders/", "/var/folders/")
+
+# Text that reaches a transcript as a user message but was never typed. Measured on this corpus:
+# <task-notification> alone is 6,183 "prompts" — left in, it would be most of every outline.
+INJECTED = ("<task-notification>", "<subagent_notification>", "<recommended_plugins>",
+            "This session is being continued from a previous conversation", "<heartbeat>",
+            "Base directory for this skill", "[SYSTEM NOTIFICATION", "<user_instructions>",
+            "# AGENTS.md instructions", "<environment_context>", "<turn_aborted>")
+_INJECTED_SQL = " AND ".join("body NOT LIKE ?" for _ in INJECTED)
+_INJECTED_ARGS = [s + "%" for s in INJECTED]
+
+# Real prompts that make poor titles: they say "carry on", not what the conversation is about.
+WEAK_TITLES = ("Continue from where you left off", "[Image", "继续")
+
+# What the indexer drops before storing a prompt (SearchIndex.noise). The tail parser below has to
+# drop the same things, or a turn would be numbered differently before and after a refresh.
+INDEX_NOISE = ("<local-command", "<command-name", "<command-message", "<command-args",
+               "<system-reminder", "<user-memory", "Caveat: The messages below",
+               "[Request interrupted", "<bash-input", "<bash-stdout", "<bash-stderr")
+
+
+def _tilde(p):
+    return "~" + p[len(HOME):] if p == HOME or p.startswith(HOME + "/") else p
+
+def _clip(s, n):
+    s = " ".join((s or "").split())
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+def _epoch(iso):
+    if not iso:
+        return None
+    import datetime
+    try:
+        return datetime.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+def _when(t, day=True):
+    if t is None:
+        return "?"
+    return time.strftime("%m-%d %H:%M" if day else "%H:%M", time.localtime(t))
+
+def _span(a, b):
+    if a is None or b is None:
+        return _when(a or b)
+    same = time.localtime(a)[:3] == time.localtime(b)[:3]
+    return "%s → %s" % (_when(a), _when(b, day=not same))
+
+def _injected(body):
+    return body.startswith(INJECTED)
+
+
+# ---- reading a transcript's tail the way the indexer would ----
+
+def _clean_prompt(raw):
+    t = (raw or "").strip()
+    if not t or t.startswith(INDEX_NOISE):
+        return None
+    r = t.find("<system-reminder>")
+    if r > 0:
+        t = t[:r].strip()
+    return t or None
+
+def _codex_text(payload):
+    parts = []
+    for b in payload.get("content") or []:
+        if isinstance(b, dict):
+            t = b.get("text") or b.get("input_text") or b.get("output_text") or ""
+            if t:
+                parts.append(t)
+    return "\n".join(parts).strip()
+
+def _parse_rows(path, src, start=0, cap=96 << 20):
+    """(role, iso-ts, text) from byte `start` on, by SearchIndex's rules; role 0 = you, 1 = agent.
+
+    Used only for what the index has not reached yet — a tail written since its last refresh, or a
+    conversation newer than it. Stops before a partial last line, as the indexer does.
+    """
+    rows = []
+    try:
+        with open(path, "rb") as f:
+            f.seek(start)
+            data = f.read(cap)
+    except OSError:
+        return rows
+    end = data.rfind(b"\n")
+    for line in data[:end + 1].split(b"\n") if end >= 0 else []:
+        if src == 0:
+            if b'"type":"user"' not in line and b'"type":"assistant"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            typ, msg = o.get("type"), o.get("message")
+            if typ not in ("user", "assistant") or not isinstance(msg, dict):
+                continue
+            role, ts, content = (0 if typ == "user" else 1), o.get("timestamp") or "", msg.get("content")
+            texts = [content] if isinstance(content, str) else \
+                [b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text"]
+            for raw in texts:
+                t = _clean_prompt(raw) if role == 0 else ((raw or "").strip() or None)
+                if t:
+                    rows.append((role, ts, t))
+        else:
+            if b'"role":"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            p = o.get("payload") or {}
+            if o.get("type") != "response_item" or p.get("type") != "message":
+                continue
+            txt, ts = _codex_text(p), o.get("timestamp") or ""
+            if p.get("role") == "user":
+                if txt and not txt.startswith(("<environment_context>", "<turn_aborted>")):
+                    t = _clean_prompt(txt)
+                    if t:
+                        rows.append((0, ts, t))
+            elif p.get("role") == "assistant" and txt:
+                rows.append((1, ts, txt))
+    return rows
+
+
+# ---- what kind of transcript a file is (cached: a head never changes) ----
+
+def _classify(path, src):
+    """{"kind": main | sub | exec, "parent": sid, "cwd": …} from where the file is and how it opens.
+
+    sub  — a subagent thread: Claude `<sid>/subagents/agent-*.jsonl`, Codex `source.subagent`.
+           Folded into its parent; 5,812 of them on this Mac, so listing them would bury everything.
+    exec — not a conversation anyone had: `claude -p` (entrypoint sdk-cli), `codex exec`.
+    """
+    if src == 0:
+        parts = path.split(os.sep)
+        if "subagents" in parts:
+            return {"kind": "sub", "parent": parts[parts.index("subagents") - 1]}
+        try:
+            with open(path, "rb") as f:
+                head = f.read(256 << 10)
+        except OSError:
+            return {"kind": "main"}
+        ep = cwd = None
+        for line in head.split(b"\n")[:300]:
+            if b'"entrypoint"' not in line and b'"cwd"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            ep, cwd = ep or o.get("entrypoint"), cwd or o.get("cwd")
+            if ep and cwd:
+                break
+        d = {"kind": "exec" if ep == "sdk-cli" else "main", "cwd": cwd}
+        if ep is None and len(head) < (256 << 10):
+            d["tentative"] = len(head)       # too young to say; look again once it has grown
+        return d
+    try:
+        with open(path, "rb") as f:
+            p = json.loads(f.readline(8 << 20)).get("payload") or {}
+    except (OSError, ValueError):
+        return {"kind": "main"}
+    s = p.get("source")
+    if isinstance(s, dict) and "subagent" in s:
+        spawn = s["subagent"].get("thread_spawn") if isinstance(s["subagent"], dict) else None
+        return {"kind": "sub", "parent": (spawn or {}).get("parent_thread_id"), "cwd": p.get("cwd")}
+    return {"kind": "exec" if s == "exec" else "main", "cwd": p.get("cwd")}
+
+def _sid_from_path(path, src):
+    stem = os.path.basename(path)[:-len(".jsonl")]
+    if src == 1:
+        return "-".join(stem.split("-")[-5:])      # rollout-<time>-<uuid>
+    return stem
+
+
+def _git_root(d, cache={}):
+    if d in cache:
+        return cache[d]
+    cur, found = d, None
+    while cur.startswith(HOME + "/"):
+        if os.path.exists(os.path.join(cur, ".git")):
+            found = cur
+            break
+        cur = os.path.dirname(cur)
+    cache[d] = found
+    return found
+
+
+class _History:
+    """Every transcript on this Mac, as the index and the disk see it, grouped into projects."""
+
+    def __init__(self):
+        import sqlite3
+        host = urllib.parse.urlparse(BASE).hostname or ""
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            # Answering from this Mac's files while -u names another would describe the wrong
+            # machine's history under that machine's name.
+            sys.exit("history reads this Mac's transcripts, not %s's — run it on that Mac" % host)
+        if not os.path.exists(INDEX_DB):
+            sys.exit("no conversation index at %s — FleetView builds it at launch" % _tilde(INDEX_DB))
+        self.db = sqlite3.connect("file:%s?mode=ro" % INDEX_DB, uri=True)
+        self.now = time.time()
+        self._load_fleet()
+        files = {}
+        for path, src, sid, cwd, done in self.db.execute(
+                "SELECT path, src, session, project, done FROM file"):
+            files[path] = {"path": path, "src": src, "sid": sid, "cwd": cwd, "done": done,
+                           "size": None, "mtime": None}
+        for root, src in ((CLAUDE_ROOT, 0), (CODEX_ROOT, 1)):
+            for dp, _, names in os.walk(root):
+                for n in names:
+                    if not n.endswith(".jsonl"):
+                        continue
+                    p = os.path.join(dp, n)
+                    try:
+                        st = os.stat(p)
+                    except OSError:
+                        continue
+                    e = files.get(p)
+                    if e is None:
+                        e = files[p] = {"path": p, "src": src, "sid": _sid_from_path(p, src),
+                                        "cwd": "", "done": 0}
+                    e["size"], e["mtime"] = st.st_size, st.st_mtime
+        self._classify_all(files)
+        self.files = files
+
+        # Sessions are main transcripts; subagent threads count toward their parent.
+        self.sessions = {}
+        for e in files.values():
+            if e["kind"] in ("main", "exec"):
+                e["subs"] = 0
+                self.sessions[e["path"]] = e
+        by_sid = {}
+        for e in self.sessions.values():
+            by_sid.setdefault(e["sid"].lower(), e)
+        for e in files.values():
+            if e["kind"] == "sub":
+                parent = by_sid.get((e.get("parent") or "").lower())
+                if parent:
+                    parent["subs"] += 1
+                    e["parent_path"] = parent["path"]
+
+        self.roots = {}
+        for e in self.sessions.values():
+            e["root"] = self._root(e["cwd"])
+            e["card"] = self.cards.get(e["path"])
+
+    # -- sources --
+
+    def _load_fleet(self):
+        """FleetView's own knowledge: project names, and a name for every conversation that ever
+        had a card — the archive keeps removed cards' transcript paths, and a card name is the best
+        title a conversation has."""
+        self.named, self.cards, anchors = {}, {}, set()
+        try:
+            with open(os.path.join(FV_DIR, "state.json")) as f:
+                st = json.load(f)
+        except (OSError, ValueError):
+            st = {}
+        for p in st.get("projects") or []:
+            if p.get("path"):
+                self.named[p["path"].rstrip("/")] = p.get("name") or os.path.basename(p["path"])
+        for t in st.get("terminalArchive") or []:
+            if t.get("projectPath"):
+                anchors.add(t["projectPath"].rstrip("/"))
+            if t.get("transcriptPath"):
+                self.cards[t["transcriptPath"]] = {"name": t.get("name") or "", "id": t.get("id") or "",
+                                                   "live": False}
+        for t in st.get("terminals") or []:
+            if t.get("transcriptPath"):
+                self.cards[t["transcriptPath"]] = {"name": t.get("name") or "", "id": t.get("id") or "",
+                                                   "live": True}
+        # FleetView projects — including ones since removed from the board — anchor attribution:
+        # the user drew those boundaries. Longest first, so a nested project wins over its parent.
+        self.anchors = sorted(set(self.named) | anchors, key=len, reverse=True)
+        self.project_names = set(self.named.values()) | {os.path.basename(a) for a in anchors}
+
+    def _classify_all(self, files):
+        try:
+            with open(HEADS_CACHE) as f:
+                heads = json.load(f)
+        except (OSError, ValueError):
+            heads = {}
+        dirty = False
+        for p, e in files.items():
+            h = heads.get(p)
+            stale = h is not None and h.get("tentative") is not None and (e["size"] or 0) > h["tentative"]
+            if h is None or stale:
+                if e["size"] is None and "/subagents/" not in p:
+                    h = {"kind": "main"}               # gone from disk; the index is all there is
+                else:
+                    h = _classify(p, e["src"])
+                heads[p] = h
+                dirty = True
+            e["kind"], e["parent"] = h.get("kind", "main"), h.get("parent")
+            if not e["cwd"] and h.get("cwd"):
+                e["cwd"] = h["cwd"]
+        if dirty:
+            try:
+                os.makedirs(os.path.dirname(HEADS_CACHE), exist_ok=True)
+                tmp = HEADS_CACHE + ".%d.tmp" % os.getpid()
+                with open(tmp, "w") as f:
+                    json.dump(heads, f)
+                os.replace(tmp, HEADS_CACHE)
+            except OSError:
+                pass                                   # a cache that cannot be written only costs time
+
+    def _root(self, cwd):
+        """Which project a working directory belongs to (see the design note for the order)."""
+        if not cwd:
+            return "(unknown)"
+        cwd = cwd.rstrip("/") or "/"
+        if cwd.startswith(SCRATCH_PREFIXES) or cwd in ("/tmp", "/private/tmp"):
+            return SCRATCH
+        for a in self.anchors:
+            if cwd == a or cwd.startswith(a + "/"):
+                return a
+        g = _git_root(cwd)
+        if g and g != HOME:
+            return g
+        # Fold a subdirectory into an ancestor that has conversations of its own — but never above
+        # $HOME/<x>/<y>, or one session run in ~/PycharmProjects would swallow every repo in it.
+        floor = len(HOME.split("/")) + 2
+        seen = self._cwds()
+        cur = os.path.dirname(cwd)
+        best = cwd
+        while len(cur.split("/")) >= floor:
+            if cur in seen:
+                best = cur
+            cur = os.path.dirname(cur)
+        return best
+
+    def _cwds(self):
+        if not hasattr(self, "_cwd_set"):
+            self._cwd_set = {(e["cwd"] or "").rstrip("/") for e in self.files.values()
+                             if e["kind"] in ("main", "exec")}
+        return self._cwd_set
+
+    def name(self, root):
+        if root in self.named:
+            return self.named[root]
+        if root in (SCRATCH, "(unknown)"):
+            return root
+        return "~" if root == HOME else os.path.basename(root)
+
+    # -- what the index knows, per transcript --
+
+    def prompt_stats(self, paths=None):
+        """{path: [turns, first_ts, last_ts, first_id, last_id]} over real prompts."""
+        sql = ("SELECT path, COUNT(*), MIN(ts), MAX(ts), MIN(id), MAX(id) FROM msg "
+               "WHERE role = 0 AND " + _INJECTED_SQL)
+        args = list(_INJECTED_ARGS)
+        if paths is not None:
+            paths = list(paths)
+            if not paths:
+                return {}
+            sql += " AND path IN (%s)" % ",".join("?" * len(paths))
+            args += paths
+        out = {}
+        for path, n, a, b, i, j in self.db.execute(sql + " GROUP BY path", args):
+            out[path] = [n, _epoch(a), _epoch(b), i, j]
+        return out
+
+    def rows(self, e):
+        """Every message of one transcript: the index's rows, then whatever it has not reached."""
+        rows = [(r, ts, body) for r, ts, body in self.db.execute(
+            "SELECT role, ts, body FROM msg WHERE path = ? ORDER BY id", (e["path"],))]
+        if e["size"] is not None and e["size"] > (e["done"] or 0):
+            rows += _parse_rows(e["path"], e["src"], e["done"] or 0)
+        return rows
+
+    def fresh_tail(self, e):
+        """Real prompts past the index — (count, first_ts, last_ts, first, last) — or None."""
+        if e["size"] is None or e["size"] <= (e["done"] or 0):
+            return None
+        ps = [(ts, t) for r, ts, t in _parse_rows(e["path"], e["src"], e["done"] or 0)
+              if r == 0 and not _injected(t)]
+        if not ps:
+            return None
+        return len(ps), _epoch(ps[0][0]), _epoch(ps[-1][0]), ps[0][1], ps[-1][1]
+
+    def body(self, msg_id):
+        r = self.db.execute("SELECT body FROM msg WHERE id = ?", (msg_id,)).fetchone()
+        return r[0] if r else ""
+
+    def title_prompt(self, e):
+        """The first prompt that says something — "继续" and "hi" open plenty of conversations."""
+        for (body,) in self.db.execute(
+                "SELECT body FROM msg WHERE path = ? AND role = 0 ORDER BY id LIMIT 40", (e["path"],)):
+            if not _injected(body) and len(_squeeze(body)) >= 8 and not body.startswith(WEAK_TITLES):
+                return body
+        return None
+
+    def last_active(self, e, stats=None):
+        """When the conversation last moved.
+
+        The file's mtime only when the file has grown past the index — growth is real activity.
+        Otherwise the last message's own timestamp: transcripts get touched without being written to
+        (seen here: week-old conversations all stamped with the same hour), and trusting mtime then
+        floats dead conversations to the top.
+        """
+        if e["size"] is not None and e["size"] > (e["done"] or 0) and e["mtime"]:
+            return e["mtime"]
+        if not hasattr(self, "_last"):
+            self._last = {p: _epoch(t) for p, t in
+                          self.db.execute("SELECT path, MAX(ts) FROM msg GROUP BY path")}
+        t = self._last.get(e["path"])
+        return t if t is not None else e["mtime"]
+
+    def lag(self):
+        """Bytes of transcript the index has not read yet."""
+        return sum(max(0, (e["size"] or 0) - (e["done"] or 0)) for e in self.files.values()
+                   if e["size"] is not None)
+
+
+def _session_summary(h, e, stats):
+    """Turns, span, title and last prompt of one conversation, the index's view topped up with the
+    tail it has not reached."""
+    s = stats.get(e["path"]) or [0, None, None, None, None]
+    turns, first_t, last_t = s[0], s[1], s[2]
+    first = h.title_prompt(e) or (h.body(s[3]) if s[3] else "")
+    last = h.body(s[4]) if s[4] else ""
+    tail = h.fresh_tail(e)
+    if tail:
+        turns += tail[0]
+        first_t = first_t or tail[1]
+        last_t = tail[2] or last_t
+        first = first or tail[3]
+        last = tail[4]
+    return {"turns": turns, "first_t": first_t, "last_t": last_t, "first": first, "last": last}
+
+def _n(k, word):
+    return "%d %s%s" % (k, word, "" if k == 1 else "s")
+
+def _agent(e):
+    return "codex" if e["src"] == 1 else "claude"
+
+def _short_sid(e):
+    # Codex ids are UUIDv7: the first 8 hex are a timestamp shared by every session started in the
+    # same minute (a batch of 15 subagents all read 01a0da0b). The first 13 carry the millisecond.
+    return e["sid"][:13] if e["src"] == 1 else e["sid"][:8]
+
+def _card_title(h, card):
+    """A card's name, when it says something.
+
+    Two kinds do not: the default `<project>-<n>`, and names FleetView derived from a prompt that was
+    itself injected (`⌕ <task-notifi ⑂`). A name someone chose — "DES-T8-015 difficulty repair",
+    "rb-006" — is the best title a conversation has.
+    """
+    if not card:
+        return None
+    n = card["name"].strip("⌕⑂⚙ \t")
+    m = re.fullmatch(r"(.+)-\d+", n)
+    if m and m.group(1) in h.project_names:
+        return None
+    if len(n) < 3 or n.startswith(("<", "This session")):
+        return None
+    return n
+
+def _card_note(h, card):
+    if not card:
+        return ""
+    title = _card_title(h, card)
+    named = '"%s"' % _clip(title, 40) if title else ""
+    if card["live"]:
+        return ("on the board as %s %s" % (card["id"][:8].lower(), named)).rstrip()
+    return named
+
+
+def _width(s):
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in s)
+
+def _pad(s, w):
+    """Left-justify by display width: a Chinese project name is twice as wide as its len()."""
+    return s + " " * max(0, w - _width(s))
+
+
+def _norm(s):
+    return re.sub(r"[^0-9a-z一-鿿]+", "", s.lower())
+
+def _resolve_project(h, sel, visible):
+    """A project by name: exact, then ignoring _ - and spaces, then substring, then fuzzy."""
+    cands = {root: h.name(root) for root in visible}
+    sl, sn = sel.lower().strip(), _norm(sel)
+    path = os.path.expanduser(sel).rstrip("/")
+    for test in (lambda r, n: n.lower() == sl or r == path,
+                 lambda r, n: _norm(n) == sn,
+                 lambda r, n: sl in n.lower() or sl in r.lower(),
+                 lambda r, n: sn and sn in _norm(n)):
+        hits = [r for r, n in cands.items() if test(r, n)]
+        if len(hits) == 1:
+            return hits[0], None
+        if len(hits) > 1:
+            print("%r matches several projects:" % sel, file=sys.stderr)
+            for r in hits[:12]:
+                print("  %-24s %s" % (cands[r], _tilde(r)), file=sys.stderr)
+            sys.exit(2)
+    import difflib
+    scored = sorted(((difflib.SequenceMatcher(None, sn, _norm(n)).ratio(), r)
+                     for r, n in cands.items()), reverse=True)
+    if scored and scored[0][0] >= 0.75 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.08):
+        return scored[0][1], "no project is called %r; using %s" % (sel, cands[scored[0][1]])
+    close = [cands[r] for s, r in scored[:5] if s >= 0.5]
+    sys.exit("no project matches %r%s  (project-manager projects lists them)"
+             % (sel, " — closest: " + ", ".join(close) if close else ""))
+
+def _visible(e, show_all):
+    return show_all or (e["kind"] == "main" and e["root"] != SCRATCH)
+
+
+def cmd_projects(a):
+    h = _History()
+    stats = h.prompt_stats()
+    groups = {}
+    for e in h.sessions.values():
+        if not _visible(e, a.all):
+            continue
+        t = h.last_active(e, stats)
+        if t is None:
+            continue
+        g = groups.setdefault(e["root"], {"last": 0, "latest": None, "n": 0, "turns": 0,
+                                          "claude": 0, "codex": 0, "subs": 0})
+        g["n"] += 1
+        g["turns"] += (stats.get(e["path"]) or [0])[0]
+        g[_agent(e)] += 1
+        g["subs"] += e["subs"]
+        if t > g["last"]:
+            g["last"], g["latest"] = t, e
+    rows = sorted(groups.items(), key=lambda kv: -kv[1]["last"])
+    if a.days:
+        rows = [r for r in rows if h.now - r[1]["last"] <= a.days * 86400]
+    shown = rows[:a.n]
+    if not shown:
+        print("no conversations found%s" % (" in the last %d days" % a.days if a.days else "")); return
+    w = min(24, max(_width(h.name(r)) for r, _ in shown))
+    print(c("1", "PROJECTS") + c("90", "  by last activity · %d of %d%s"
+                                 % (len(shown), len(rows), "" if a.all else " (-a adds scratch dirs and "
+                                    "non-interactive runs)")))
+    for root, g in shown:
+        mix = " · ".join("%s %d" % (k, g[k]) for k in ("claude", "codex") if g[k])
+        print("  %s %5s  %4d conv  %6s turns  %-18s %s" % (
+            _pad(_clip(h.name(root), w), w), ago(int(h.now - g["last"])), g["n"],
+            "{:,}".format(g["turns"]), mix, c("90", _tilde(root))))
+        e = g["latest"]
+        s = _session_summary(h, e, h.prompt_stats([e["path"]]))
+        title = _card_title(h, e.get("card"))
+        head = ('"%s"' % _clip(title, 36)) if title else _clip(s["first"], 60)
+        # A one-prompt conversation's title IS its last prompt; say it once.
+        same = not title and _squeeze(s["last"] or "")[:24] == _squeeze(s["first"] or "")[:24]
+        print(c("90", "  %s  latest: %s%s" % (" " * w, head, "" if same else " — " + _clip(s["last"], 60))))
+    lag = h.lag()
+    if lag > 50 << 20:
+        print(c("33", "index is %s behind the transcripts — counts may lag; FleetView catches up within minutes"
+                % short_bytes(lag)))
+    print(c("90", "next: project-manager history <project>   e.g. project-manager history %s"
+            % h.name(shown[0][0])))
+
+
+def _own_root(h):
+    """The caller's project: its FleetView card's project if it is on one, else where it stands."""
+    tid = _self_term_id()
+    if tid:
+        try:
+            st = state()
+            key = tid.replace("-", "").lower()
+            me = next((t for t in st["terminals"] if t["id"].replace("-", "").lower() == key), None)
+            p = me and next((q for q in st["projects"] if q["id"] == me.get("projectId")), None)
+            if p:
+                return h._root(p["path"])
+        except SystemExit:
+            pass
+    return h._root(os.getcwd())
+
+
+def cmd_history(a):
+    h = _History()
+    visible = {e["root"] for e in h.sessions.values() if _visible(e, a.all)}
+    if a.project:
+        root, note = _resolve_project(h, a.project, visible | {e["root"] for e in h.sessions.values()})
+    else:
+        root, note = _own_root(h), None
+    if note:
+        print(c("33", note))
+    mine = [e for e in h.sessions.values() if e["root"] == root and _visible(e, a.all)]
+    hidden = [e for e in h.sessions.values() if e["root"] == root and not _visible(e, a.all)]
+    stats = h.prompt_stats([e["path"] for e in mine])
+    mine.sort(key=lambda e: -(h.last_active(e, stats) or 0))
+    if not mine:
+        sys.exit("no conversations in %s (%s)" % (h.name(root), _tilde(root)))
+    mix = ", ".join("%s %d" % (k, sum(1 for e in mine if _agent(e) == k)) for k in ("claude", "codex")
+                    if any(_agent(e) == k for e in mine))
+    subs = sum(e["subs"] for e in mine)
+    print("%s — %s · %d conversations (%s)%s" % (
+        c("1", h.name(root)), _tilde(root), len(mine), mix,
+        c("90", " · %d subagent threads folded in" % subs) if subs else ""))
+    briefs = {}
+    for e in mine[:a.n]:
+        s = _session_summary(h, e, stats)
+        size = short_bytes(e["size"]) if e["size"] is not None else c("31", "file gone")
+        print(("\n %s  %-6s %s  %s  %s  %s  %s" % (
+            c("1", _short_sid(e)), _agent(e), _span(s["first_t"], s["last_t"]),
+            c("90", "(%s ago)" % ago(int(h.now - h.last_active(e, stats)))) if h.last_active(e, stats) else "",
+            _n(s["turns"], "turn"), size, _card_note(h, e["card"]))).rstrip())
+        key = _squeeze(s["first"] or "")[:60]
+        if key and key in briefs:
+            print("    first: %s" % c("90", "(same opening brief as %s)" % briefs[key]))
+        else:
+            if key:
+                briefs[key] = _short_sid(e)
+            print("    first: %s" % _clip(s["first"], 100))
+        if s["last"] and s["turns"] > 1:
+            print("    last:  %s" % _clip(s["last"], 100))
+        cwd = _tilde(e["cwd"]) if e["cwd"] and e["cwd"].rstrip("/") != root else ""
+        print(c("90", "    %s%s" % (_tilde(e["path"]), "   (cwd %s)" % cwd if cwd else "")))
+    more = len(mine) - a.n
+    tail = []
+    if more > 0:
+        tail.append("%d older — -n %d" % (more, len(mine)))
+    if hidden:
+        tail.append("%d non-interactive/scratch hidden — -a" % len(hidden))
+    if tail:
+        print(c("90", "\n… " + " · ".join(tail)))
+    print(c("90", "next: project-manager session <id>   (one line per turn)"))
+
+
+def _resolve_session(h, sel):
+    s = sel.strip()
+    p = os.path.abspath(os.path.expanduser(s))
+    if s.endswith(".jsonl"):
+        e = h.files.get(p)
+        if not e:
+            sys.exit("not a transcript FleetView knows: %s" % s)
+        return e
+    key = s.lower().replace("-", "")
+    if len(key) < 4:
+        sys.exit("give at least 4 characters of the session id")
+    hits = [e for e in h.sessions.values() if e["sid"].lower().replace("-", "").startswith(key)]
+    if not hits:
+        # A FleetView card id — live or removed — names the conversation it last held.
+        paths = [tp for tp, card in h.cards.items()
+                 if card["id"].lower().replace("-", "").startswith(key)]
+        hits = [h.files[tp] for tp in paths if tp in h.files]
+    if not hits:
+        hits = [e for e in h.files.values() if os.path.basename(e["path"]).lower().startswith(s.lower())]
+    if len(hits) == 1:
+        return hits[0]
+    if not hits:
+        sys.exit("no conversation matches %r (ids come from project-manager history)" % sel)
+    print("%r matches %d conversations:" % (sel, len(hits)), file=sys.stderr)
+    for e in hits[:10]:
+        print("  %s  %s  %s" % (e["sid"], _agent(e), _tilde(e["path"])), file=sys.stderr)
+    sys.exit(2)
+
+
+def _turns(rows):
+    """Group messages into turns: a real prompt opens one, replies join the open one. Injected
+    "prompts" join nothing — they are not something you said and not the agent answering."""
+    turns = []
+    for role, ts, body in rows:
+        if role == 0:
+            if not _injected(body):
+                turns.append({"n": len(turns) + 1, "ts": _epoch(ts), "prompt": body, "replies": []})
+        elif turns:
+            turns[-1]["replies"].append(body)
+    return turns
+
+
+def _session_head(h, e, turns):
+    root = e.get("root") or h._root(e["cwd"])
+    kind = {"sub": "subagent thread", "exec": "non-interactive run"}.get(e["kind"], "")
+    print("%s %s · %s · %s%s" % (c("1", "session"), e["sid"], _agent(e), h.name(root),
+                                c("90", " · " + kind) if kind else ""))
+    card = h.cards.get(e["path"])
+    if card:
+        print("  card:   %s" % (_card_note(h, card) or "removed from the board"))
+    if e["cwd"]:
+        print("  cwd:    %s" % _tilde(e["cwd"]))
+    if e["size"] is not None:
+        print("  file:   %s  (%s)" % (_tilde(e["path"]), short_bytes(e["size"])))
+    else:
+        print("  file:   %s  %s" % (_tilde(e["path"]), c("31", "[deleted — text below is from "
+                                                              "FleetView's index; it cannot be resumed]")))
+    a = turns[0]["ts"] if turns else None
+    b = turns[-1]["ts"] if turns else None
+    extra = " · " + _n(e["subs"], "subagent thread") if e.get("subs") else ""
+    last = h.last_active(e) or b
+    print("  span:   %s%s · %s%s" % (_span(a, b), " (%s ago)" % ago(int(h.now - last)) if last else "",
+                                     _n(len(turns), "turn"), extra))
+    if e["size"] is not None and e["kind"] != "sub" and e["cwd"]:
+        cmd = "codex resume %s" % e["sid"] if e["src"] == 1 else "claude --resume %s" % e["sid"]
+        print("  resume: cd %s && %s" % (_tilde(e["cwd"]), cmd))
+
+
+def cmd_session(a):
+    h = _History()
+    e = _resolve_session(h, a.sel)
+    turns = _turns(h.rows(e))
+    if a.turn:
+        return _show_turns(h, e, turns, a)
+    _session_head(h, e, turns)
+    if not turns:
+        print(c("90", "  (no prompts recorded)")); return
+    # Runs of the same short prompt ("继续" ×5) are one line: the rhythm is the information.
+    lines = []
+    for t in turns:
+        if lines and lines[-1]["prompt"] == t["prompt"] and len(t["prompt"]) <= 40:
+            lines[-1]["times"] += 1
+            continue
+        lines.append({"n": t["n"], "ts": t["ts"], "prompt": t["prompt"], "times": 1})
+    head, tail = (len(lines), 0) if a.all or len(lines) <= a.first + a.last else (a.first, a.last)
+    print("turns%s:" % ("" if not tail else " — first %d and last %d of %d lines (--all for every one)"
+                        % (head, tail, len(lines))))
+    prev_day = None
+
+    def show(ln):
+        nonlocal prev_day
+        day = time.localtime(ln["ts"])[:3] if ln["ts"] else None
+        stamp = _when(ln["ts"], day=day != prev_day)
+        prev_day = day
+        rep = c("90", " (×%d)" % ln["times"]) if ln["times"] > 1 else ""
+        print("  %4d  %11s  %s%s" % (ln["n"], stamp, _clip(ln["prompt"], 90), rep))
+
+    for ln in lines[:head]:
+        show(ln)
+    if tail:
+        print(c("90", "        …  %d turns  …" % (lines[-tail]["n"] - lines[head]["n"])))
+        for ln in lines[-tail:]:
+            show(ln)
+    final = next((t for t in reversed(turns) if t["replies"]), None)
+    if final:
+        print("last reply (turn %d): %s" % (final["n"], _clip(final["replies"][-1], 300)))
+    print(c("90", "next: project-manager session %s -t <N>   (one turn in full)" % _short_sid(e)))
+
+
+def _show_turns(h, e, turns, a):
+    m = re.fullmatch(r"(\d+)(?:-(\d+))?", a.turn.strip())
+    if not m:
+        sys.exit("-t takes a turn number or a range: -t 12, -t 12-14")
+    lo = int(m.group(1))
+    hi = int(m.group(2) or lo)
+    if not turns:
+        sys.exit("this conversation has no turns")
+    if not (1 <= lo <= hi <= len(turns)):
+        sys.exit("turns run 1-%d" % len(turns))
+    if hi - lo >= 5:
+        sys.exit("at most 5 turns at a time — each can be long")
+    budget_p, budget_r = (None, None) if a.full else (1500, 2500)
+
+    def cut(s, n):
+        if n is None or len(s) <= n:
+            return s
+        return s[:n] + c("90", "\n[… %d more characters — --full]" % (len(s) - n))
+
+    print(c("1", "session %s" % e["sid"]) + c("90", " · %s · %s · %s" % (
+        _agent(e), h.name(e.get("root") or h._root(e["cwd"])), _tilde(e["path"]))))
+    for t in turns[lo - 1:hi]:
+        print("\n" + c("1", "── turn %d of %d · %s ──" % (t["n"], len(turns), _when(t["ts"]))))
+        print(c("36", "you:"))
+        print(cut(t["prompt"], budget_p))
+        reps = t["replies"]
+        if not reps:
+            print(c("90", "(no reply recorded)")); continue
+        # The last message is where the agent landed; the ones before it are its running commentary,
+        # so they get a line each and the last gets the space.
+        if len(reps) > 1:
+            print(c("36", "agent — %d messages; the earlier ones by their first line:" % len(reps)))
+            earlier = reps[:-1] if a.full else reps[:-1][-8:]
+            if len(reps) - 1 > len(earlier):
+                print(c("90", "  · … %d more" % (len(reps) - 1 - len(earlier))))
+            for r in earlier:
+                print(c("90", "  · ") + (r if a.full else _clip(r.split("\n", 1)[0], 110)))
+            print(c("36", "agent — last message:"))
+        else:
+            print(c("36", "agent:"))
+        print(cut(reps[-1], budget_r))
+    nav = []
+    if lo > 1:
+        nav.append("-t %d" % (lo - 1))
+    if hi < len(turns):
+        nav.append("-t %d" % (hi + 1))
+    print(c("90", "\nnext: project-manager session %s %s" % (_short_sid(e), " | ".join(nav) or "")))
+
+
+def _is_cjk(ch):
+    o = ord(ch)
+    return (0x3400 <= o <= 0x4DBF or 0x4E00 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF
+            or 0x3040 <= o <= 0x30FF or 0xAC00 <= o <= 0xD7AF or 0x20000 <= o <= 0x2FA1F)
+
+def _fts_query(q):
+    """SearchIndex.matchExpression, in Python: terms AND-ed, each CJK character its own token, each
+    term an adjacent phrase — FTS5's tokenizer swallows a whole Han run otherwise, and 搜索 would
+    never match 搜索能力."""
+    terms, buf, quoted = [], "", False
+    for ch in q:
+        if ch == '"':
+            if quoted and buf.strip():
+                terms.append(buf.strip())
+                buf = ""
+            quoted = not quoted
+        elif ch.isspace() and not quoted:
+            if buf.strip():
+                terms.append(buf.strip())
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        terms.append(buf.strip())
+    parts = []
+    for term in terms:
+        seg = "".join(" %s " % ch if _is_cjk(ch) else ch for ch in term)
+        toks = [t.replace('"', "") for t in seg.split()]
+        toks = [t for t in toks if t]
+        if toks:
+            parts.append('"%s"' % " ".join(toks))
+    return " AND ".join(parts), terms
+
+
+def _snippet(body, terms, width=44):
+    flat = " ".join(body.split())
+    low = flat.lower()
+    at = min((i for i in (low.find(t.lower()) for t in terms) if i >= 0), default=0)
+    lo = max(0, at - width)
+    hi = min(len(flat), at + width + max((len(t) for t in terms), default=0))
+    return ("…" if lo else "") + flat[lo:hi] + ("…" if hi < len(flat) else "")
+
+
+def cmd_search(a):
+    h = _History()
+    match, terms = _fts_query(" ".join(a.words))
+    if not match:
+        sys.exit("nothing to search for")
+    sql = ("SELECT m.id, m.role, m.ts, m.path, m.body FROM msg_fts JOIN msg m ON m.id = msg_fts.rowid "
+           "WHERE msg_fts MATCH ?")
+    args = [match]
+    if a.prompts != a.replies:
+        sql += " AND m.role = ?"
+        args.append(0 if a.prompts else 1)
+    if a.project:
+        roots = {e["root"] for e in h.sessions.values()}
+        root, note = _resolve_project(h, a.project, roots)
+        if note:
+            print(c("33", note))
+        paths = [p for p, e in h.files.items()
+                 if h._root(e["cwd"]) == root]
+        if not paths:
+            sys.exit("no conversations in %s" % h.name(root))
+        sql += " AND m.path IN (%s)" % ",".join("?" * len(paths))
+        args += paths
+    sql += " ORDER BY m.ts DESC LIMIT 3000"
+    groups = {}
+    for mid, role, ts, path, body in h.db.execute(sql, args):
+        if role == 0 and _injected(body):
+            continue
+        e = h.files.get(path)
+        if e is None:
+            continue
+        home = h.files.get(e.get("parent_path") or path, e)
+        if not a.all and home["kind"] == "exec":
+            continue
+        g = groups.setdefault(home["path"], {"e": home, "hits": [], "last": _epoch(ts)})
+        g["hits"].append((mid, role, ts, path, body))
+    if not groups:
+        print("no conversation mentions %s" % " ".join(a.words)); return
+    total = sum(len(g["hits"]) for g in groups.values())
+    order = sorted(groups.values(), key=lambda g: -(g["last"] or 0))
+    print("%s — %d hit%s in %d conversation%s, newest first%s" % (
+        c("1", "search %s" % " ".join(a.words)), total, "" if total == 1 else "s",
+        len(groups), "" if len(groups) == 1 else "s",
+        " (showing %d)" % a.n if len(groups) > a.n else ""))
+    for g in order[:a.n]:
+        e = g["e"]
+        title = _card_title(h, e.get("card"))
+        card = ('  "%s"' % _clip(title, 30)) if title else ""
+        print("\n %s  %-6s %-18s %s  %d hit%s%s" % (
+            c("1", _short_sid(e)), _agent(e), _clip(h.name(h._root(e["cwd"])), 18), _when(g["last"]),
+            len(g["hits"]), "" if len(g["hits"]) == 1 else "s", card))
+        for mid, role, ts, path, body in g["hits"][:2]:
+            if path != e["path"]:
+                where = c("90", "subagent")
+            else:
+                n = h.db.execute(
+                    "SELECT COUNT(*) FROM msg WHERE path = ? AND role = 0 AND id %s ? AND %s"
+                    % ("<=" if role == 0 else "<", _INJECTED_SQL),
+                    [path, mid] + _INJECTED_ARGS).fetchone()[0]
+                where = "t%d" % n
+            who = "you:  " if role == 0 else "agent:"
+            print("    %-8s %s %s" % (where, c("36", who), _snippet(body, terms)))
+    print(c("90", "\nnext: project-manager session <id> -t <N>   (the turn a hit is in)"))
+
+
 def main():
     p = argparse.ArgumentParser(prog="project-manager", description="Control a running FleetView instance.")
     p.add_argument("-u", "--url", help="target another FleetView (same as FLEETVIEW_URL)")
@@ -930,6 +1921,33 @@ def main():
     s = sub.add_parser("rename", help="relabel a terminal")
     s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_rename)
     s = sub.add_parser("rm"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
+    s = sub.add_parser("projects", help="history L0: projects by last activity (this Mac)")
+    s.add_argument("-n", type=int, default=12, help="how many projects (default 12)")
+    s.add_argument("--days", type=int, help="only projects active in the last N days")
+    s.add_argument("-a", "--all", action="store_true",
+                   help="include scratch dirs and non-interactive runs (claude -p, codex exec)")
+    s.set_defaults(fn=cmd_projects)
+    s = sub.add_parser("history", help="history L1: one project's conversations (this Mac)")
+    s.add_argument("project", nargs="?", help="project name/path (default: your own)")
+    s.add_argument("-n", type=int, default=10, help="how many conversations (default 10)")
+    s.add_argument("-a", "--all", action="store_true", help="include non-interactive runs")
+    s.set_defaults(fn=cmd_history)
+    s = sub.add_parser("session", help="history L2/L3: one conversation's turns, or one turn")
+    s.add_argument("sel", help="session id prefix, FleetView card id, or transcript path")
+    s.add_argument("-t", "--turn", help="show turn N (or N-M, up to 5) in full")
+    s.add_argument("--all", action="store_true", help="list every turn, not just the first and last")
+    s.add_argument("--first", type=int, default=3, help=argparse.SUPPRESS)
+    s.add_argument("--last", type=int, default=12, help=argparse.SUPPRESS)
+    s.add_argument("--full", action="store_true", help="with -t: no length limits")
+    s.set_defaults(fn=cmd_session)
+    s = sub.add_parser("search", help="find conversations that mention something (this Mac)")
+    s.add_argument("words", nargs="+", help='words to find (AND-ed; "quote a phrase")')
+    s.add_argument("-p", "--project", help="only this project")
+    s.add_argument("-n", type=int, default=8, help="how many conversations (default 8)")
+    s.add_argument("--prompts", action="store_true", help="only what you typed")
+    s.add_argument("--replies", action="store_true", help="only what agents answered")
+    s.add_argument("-a", "--all", action="store_true", help="include non-interactive runs")
+    s.set_defaults(fn=cmd_search)
     s = sub.add_parser("notes", help="the shared Notes list / web quick-commands")
     s.add_argument("action", nargs="?", choices=("ls", "add", "rm"), help="default: ls")
     s.add_argument("rest", nargs="*", help="text to add, or which note to remove")
