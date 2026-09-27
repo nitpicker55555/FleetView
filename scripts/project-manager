@@ -7,19 +7,24 @@ auto-discovers the local server via ~/.fleetview/web-port.
 
   project-manager peers                    find FleetView instances on this network
   project-manager -u <URL> <cmd>           run any command against another instance
-  project-manager ls [-m]                  list every terminal + live status (-m: only marked)
+  project-manager whoami [-p|--path|--id]  which terminal/project this agent is running in
+  project-manager ls [-m] [-p P] [-g]      list every terminal + live status (-m marked, -g grouped)
   project-manager watch [-n SEC] [-m]      live-refreshing list
   project-manager show <sel> [-l N]        one terminal: status + recent output (conversation)
   project-manager tail <sel> [-l N]        recent output only
-  project-manager send <sel> <text...>     inject a prompt (adds Enter; -N to not submit)
+  project-manager send <sel> <text...>     inject a prompt, submit it, confirm it left the input box
+                                           (-N types it without Enter)
   project-manager key  <sel> <key>         send a key: esc enter up down left right tab bspace c-c ...
   project-manager choose <sel> <n>         answer a menu: send digit <n> then Enter
   project-manager check [<sel>]            flag conversations that look error-terminated / stuck
   project-manager ask <sel> <question…>    "BTW" side-query: ask the agent using its context WITHOUT
                                            interrupting its live session (forked, throwaway answer)
   project-manager log <sel> [-f|-c|-p]     locate the agent's conversation-history file (Claude/Codex)
-  project-manager new <project-sel>        open a new terminal in a project
-  project-manager rm <sel>                 remove a terminal
+  project-manager new <project-sel>        open a new terminal in a board project (--claude, -c CMD)
+  project-manager subagent <task...>       open an agent terminal and deliver it a task (--codex, --id)
+  project-manager rename <sel> <name...>   relabel a terminal
+  project-manager rm <sel>                 remove a terminal (kills its session)
+  project-manager open <folder> [--claude] put a ~/PycharmProjects folder on the board
   project-manager notes [-f Q] [-p]        the shared Notes list (the web's quick-command chips)
   project-manager notes add <text...>      append a note
   project-manager notes rm <note-sel>      delete a note (prints it back, so you can re-add it)
@@ -32,9 +37,9 @@ History of this Mac's conversations (Claude + Codex), one level at a time:
   project-manager search <words…>          which conversations mention something
   project-manager session <id> --files     the files a conversation wrote/edited/read
   project-manager memory [<project>]       notes earlier agents left about a project
-  project-manager open <folder> [--claude] put a ~/PycharmProjects folder on the board
 
 <sel> matches a terminal by name substring (case-insensitive) or id prefix.
+<id> (session) is a conversation: a session-id prefix, a FleetView card id, or a transcript path.
 <note-sel> matches a note by its number in `notes`, its id prefix, or a text substring.
 """
 import argparse, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
@@ -487,9 +492,16 @@ def cmd_watch(a):
     except KeyboardInterrupt:
         pass
 
+def _recent(tid, n):
+    """The last `n` lines of a pane that have something on them. A TUI's screen ends in rows of
+    padding under its composer, so a plain capture of the last 3 lines was 3 blank ones."""
+    text = api_text("/capture?id=%s&lines=%d" % (tid, n + 80))
+    lines = text.rstrip().split("\n")
+    return "\n".join(lines[-n:]) + "\n" if lines and lines != [""] else ""
+
 def cmd_tail(a):
     t = resolve(state(), a.sel)
-    sys.stdout.write(api_text("/capture?id=%s&lines=%d" % (t["id"], a.lines)))
+    sys.stdout.write(_recent(t["id"], a.lines))
 
 def cmd_show(a):
     st = state(); t = resolve(st, a.sel)
@@ -503,7 +515,7 @@ def cmd_show(a):
     tp = t.get("transcript")
     print("transcript: %s" % (tp if tp else c("90", "(none yet — interact once to capture)")))
     print(c("90", "-" * 60))
-    sys.stdout.write(api_text("/capture?id=%s&lines=%d" % (t["id"], a.lines)))
+    sys.stdout.write(_recent(t["id"], a.lines))
 
 # ---- getting a prompt to actually submit ----
 #
@@ -2162,8 +2174,9 @@ def main():
     w.add_argument("-p", "--project", help="only this project (name substring or id prefix)")
     w.add_argument("-g", "--group", action="store_true", help="group by project")
     w.set_defaults(fn=cmd_watch)
-    for name, fn in (("show", cmd_show), ("tail", cmd_tail)):
-        s = sub.add_parser(name); s.add_argument("sel"); s.add_argument("-l", "--lines", type=int, default=200); s.set_defaults(fn=fn)
+    for name, fn, hlp in (("show", cmd_show, "one terminal: status, cwd, transcript, recent output"),
+                          ("tail", cmd_tail, "a terminal's recent output only")):
+        s = sub.add_parser(name, help=hlp); s.add_argument("sel"); s.add_argument("-l", "--lines", type=int, default=200); s.set_defaults(fn=fn)
     s = sub.add_parser("send", help="inject a prompt"); s.add_argument("sel"); s.add_argument("-N", "--no-enter", action="store_true"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_send)
     s = sub.add_parser("key", help="send a key"); s.add_argument("sel"); s.add_argument("key"); s.set_defaults(fn=cmd_key)
     s = sub.add_parser("choose", help="answer a numbered menu"); s.add_argument("sel"); s.add_argument("n"); s.set_defaults(fn=cmd_choose)
@@ -2192,7 +2205,7 @@ def main():
     s.set_defaults(fn=cmd_subagent)
     s = sub.add_parser("rename", help="relabel a terminal")
     s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_rename)
-    s = sub.add_parser("rm"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
+    s = sub.add_parser("rm", help="remove a terminal (kills its session)"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
     s = sub.add_parser("projects", help="history L0: projects by last activity (this Mac)")
     s.add_argument("-n", type=int, default=12, help="how many projects (default 12)")
     s.add_argument("--days", type=int, help="only projects active in the last N days")

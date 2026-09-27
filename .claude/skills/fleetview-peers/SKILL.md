@@ -26,8 +26,11 @@ http://192.168.2.2:8080 tianyi       9     1         cosy voice, FleetView
 http://192.168.2.6:8080 puzhen       26    2         FleetView, datagen_vision2web  ←self
 ```
 
-It probes the local /24 on 8080–8082 and identifies an instance by whether `/state` answers with the
-right shape. A whole subnet takes a few seconds. FleetView binds the next free port from 8080 up, so
+It probes every address on your subnets (netmask-aware; a network wider than 4096 addresses is cut
+to the local /24, and it says so) plus the online peers Tailscale reports, on ports 8080–8082
+(`--ports` to change), and identifies an instance by whether `/state` answers with the right shape.
+Tailnet hosts get a longer timeout — a tailnet hop can take two seconds to answer. A whole subnet
+takes a few seconds. FleetView binds the next free port from 8080 up, so
 a machine whose 8080 was busy appears on 8081 — and **one machine can show up twice**, which means
 two instances are running there and they are fighting over the same hook events. That is worth
 reporting, not working around.
@@ -46,8 +49,13 @@ project-manager -u http://192.168.2.2:8080 send cosy "继续"
 ```
 
 `-u` applies to every subcommand; `FLEETVIEW_URL` does the same thing if you would rather export it
-once. Everything in the [[project-manager]] skill works unchanged against a remote instance —
-`ls`, `watch`, `show`, `tail`, `send`, `key`, `choose`, `check`, `new`, `rm`, `notes`.
+once. The terminal commands in the [[project-manager]] skill work unchanged against a remote
+instance — `ls`, `watch`, `show`, `tail`, `send`, `key`, `choose`, `check`, `new`, `rename`, `rm`,
+`notes`, `subagent -p <project>` (it cannot default to "your own project" over there), and `open`
+(a folder in *that* Mac's `~/PycharmProjects`).
+
+`send` reports whether the prompt actually left the agent's input box. A peer running an older
+FleetView cannot answer that, so the CLI checks the pane itself — same verdicts, same exit codes.
 
 `notes` crossing the network is worth knowing: the other machine's sidebar notes (and the quick-command
 chips on its web dashboard) are readable *and* writable from here, so `notes add` is a way to leave a
@@ -56,9 +64,10 @@ notes — not that the notes could not be read.
 
 ## Four things do not cross the network
 
-- **`open`** hands back a ttyd port on *that* machine. The web dashboard rebuilds a URL from its own
-  host, which is why it works there; a remote CLI just gets a number. Use `show`/`tail` to read a
-  terminal instead.
+- **The live terminal view** (the dashboard's Terminal tab, HTTP `/open`) hands back a ttyd port on
+  *that* machine. The web dashboard rebuilds a URL from its own host, which is why it works there; a
+  remote CLI just gets a number. Use `show`/`tail` to read a terminal instead. (Not to be confused
+  with the CLI's `open`, which puts a project on the board and works remotely.)
 - **`log`** prints a transcript path on *that* machine's filesystem. It will not exist locally, so do
   not try to read it — `show` is how you see that conversation from here.
 - **`ask`** forks an agent process on the remote machine. It works, but it spends that machine's API

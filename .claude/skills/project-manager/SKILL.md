@@ -35,9 +35,12 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
   pass `-u <url>` (applies to every subcommand) or export `FLEETVIEW_URL`, e.g.
   `project-manager -u http://192.168.2.2:8080 ls`. To *discover* remote instances, run
   `project-manager peers` (below) — don't hand-grep logs or guess IPs.
-- **`<id>`** in every command is a terminal selector: an id prefix (the 8-char code shown by `ls`,
-  e.g. `7233abcc`) or a case-insensitive name substring. Names can repeat — **prefer the id prefix**.
-  If a selector is ambiguous, `project-manager` prints the matches; re-run with a longer/id selector.
+- **`<id>`** in the terminal commands is a terminal selector: an id prefix (the 8-char code shown by
+  `ls`, e.g. `7233abcc`) or a case-insensitive name substring. Names can repeat — **prefer the id
+  prefix**. If a selector is ambiguous, `project-manager` prints the matches; re-run with a longer one.
+- **`session <id>` is different: it names a conversation**, not a terminal — a session-id prefix as
+  `history` prints it, a FleetView card id (live or removed), or a transcript path. A live terminal's
+  own conversation is reachable either way: `session <its card id>`.
 - If a command says it can't reach FleetView, the app isn't running — say so; do not guess.
 
 ## Commands
@@ -45,10 +48,10 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | Command | What it does |
 |---|---|
 | `project-manager whoami` | Which card *this* agent is on: terminal, project, project path, cwd. `-p`/`--path`/`--id` print one value for scripts |
-| `project-manager ls [-p PROJ] [-g]` | Table of all terminals: id, name, cluster, project, agent, idle, tokens, status, last prompt. `-p` narrows to one project, `-g` groups by project |
-| `project-manager watch [-n SEC] [-p PROJ] [-g]` | Live-refreshing `ls` (Ctrl-C to stop) |
+| `project-manager ls [-p PROJ] [-g] [-m]` | Table of all terminals: id, name, cluster, project, agent, idle, tokens, status, last prompt. `-p` narrows to one project, `-g` groups by project, `-m` only marked cards (in full detail) |
+| `project-manager watch [-n SEC] [-p PROJ] [-g] [-m]` | Live-refreshing `ls` (Ctrl-C to stop) |
 | `project-manager show <id> [-l N]` | One terminal: status, cwd, transcript path, and the last N lines of output |
-| `project-manager tail <id> [-l N]` | Just the recent output (default 200 lines) |
+| `project-manager tail <id> [-l N]` | Just the recent output (default 200 lines; blank padding at the bottom of a TUI is not counted) |
 | `project-manager send <id> <text…>` | Inject a prompt, submit it, and **confirm it left the input box** (see below). `-N` types without Enter |
 | `project-manager key <id> <key>` | Send one key: `esc enter up down left right tab bspace c-c c-d …` |
 | `project-manager choose <id> <n>` | Answer a numbered menu: sends digit `<n>` then Enter |
@@ -56,21 +59,21 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager ask <id> <q…>` | **"BTW" side-query**: ask the agent a question using its current context **without** touching/interrupting its live session (forked print-mode query; the answer is thrown away after printing). Takes ~10-40s |
 | `project-manager log <id> [-p\|-c\|-f]` | Locate the agent's transcript file; `-p` path only, `-c` cat, `-f` follow (tail -f) |
 | `project-manager new <project> [label]` | Open a terminal in a project. `--claude` starts a permission-bypassed Claude session in it, `-c CMD` runs any other command |
-| `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project |
+| `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project, `-n` to name the card, `--id` for the bare uuid on stdout, `--no-wait` to start the agent without sending the task |
 | `project-manager rename <id> <name…>` | Relabel a terminal |
 | `project-manager rm <id>` | Remove a terminal (kills its session) |
 | `project-manager notes [-f Q] [-p]` | The sidebar Notes list — also the web dashboard's quick-command chips. `-f` filters, `-p` prints raw text for copying |
 | `project-manager notes add <text…>` | Append a note (newlines and quotes survive; use single quotes in zsh) |
 | `project-manager notes rm <note>` | Delete a note, selected by its number, id prefix, or a text substring. It prints the note back — that's the only undo |
-| `project-manager peers` | Scan the LAN and list every FleetView instance with its URL (for `-u`) |
-| `project-manager projects [-n N] [--days D]` | **History L0**: projects on this Mac by last activity, 2 lines each |
-| `project-manager history [<project>] [-n N]` | **History L1**: a project's conversations — title, span, turns, transcript path (default: your own project) |
+| `project-manager peers [--ports P] [--timeout S]` | Scan your subnets and online Tailscale peers; list every FleetView instance with its URL (for `-u`) |
+| `project-manager projects [-n N] [--days D] [-a]` | **History L0**: projects on this Mac by last activity, 2 lines each. `-a` adds scratch dirs and non-interactive runs |
+| `project-manager history [<project>] [-n N] [-a]` | **History L1**: a project's conversations — title, span, turns, transcript path (default: your own project) |
 | `project-manager session <id> [--all]` | **History L2**: one conversation, one line per turn, plus how it ended and how to resume it |
 | `project-manager session <id> -t N[-M] [--full]` | **History L3**: one turn (up to 5) in full — your prompt and the agent's answer |
-| `project-manager search <words…> [-p PROJ]` | Which conversations mention something, grouped by conversation, with turn numbers |
+| `project-manager search <words…> [-p PROJ] [-n N] [--prompts\|--replies] [-a]` | Which conversations mention something, grouped by conversation, with turn numbers. `--prompts` only what the user typed, `--replies` only what agents said |
 | `project-manager session <id> --files` | The files a conversation **wrote/edited** (and, for Claude, read), grouped by folder; plus paths its shell commands created |
 | `project-manager memory [<project>]` | Notes earlier agents left about a project (Claude's per-project memory) — read these first |
-| `project-manager open <folder> [-t\|--claude\|--codex]` | Put a folder from `~/PycharmProjects` on the board (the web's 📂), optionally with a terminal/agent in it |
+| `project-manager open <folder> [-t\|--claude\|--codex] [-n NAME]` | Put a folder from `~/PycharmProjects` on the board (the web's 📂), optionally with a terminal/agent in it. Needs a FleetView new enough to have `/workspace` — an older one says so |
 
 ## Knowing which project you are in
 
@@ -257,7 +260,10 @@ few seconds; use it for genuine questions, not routine polling (use `ls`/`show` 
   failed before deciding to resend, interrupt, or restart it.
 - **Unblock a waiting agent**: `project-manager show <id>` to see the question → `choose`/`key`/`send`.
 - **Read/locate a conversation**: `project-manager log <id>` (path to the Claude/Codex `.jsonl`), or
-  `project-manager show <id> -l 400` to read recent turns inline.
+  `project-manager show <id> -l 400` to read recent turns inline. For a *past* conversation or one
+  whose terminal is gone, use the history commands below (`session <card id>` works too).
+- **Pick up earlier work**: `projects` → `history <project>` → `memory <project>` → `session <id>`
+  → `--files` (see below).
 
 ## Looking back: the user's project history
 
@@ -349,9 +355,9 @@ Pitfalls I hit doing it the hard way — avoid them:
 - **A selector is per-instance.** `8f904256` on `192.168.2.2` means nothing locally — pass the same
   `-u`/`FLEETVIEW_URL` to *every* command in the sequence, and report the URL alongside the name.
 
-See the [[fleetview-peers]] skill for the full remote rules (what `open`/`log`/`ask` can't do across the
-network, and the safety notes — there's no auth, so `send` lands in someone's live, permission-bypassed
-session).
+See the [[fleetview-peers]] skill for the full remote rules (what does not cross the network — the web
+terminal view, `log` paths, `ask`, the history commands — and the safety notes: there's no auth, so
+`send` lands in someone's live, permission-bypassed session). The CLI `open` command does work remotely.
 
 ## Cautions
 
