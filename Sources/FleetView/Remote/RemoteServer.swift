@@ -26,7 +26,7 @@ struct AskSpec: Sendable {
 @MainActor
 final class RemoteServer {
     /// Dedicated tmux socket so FleetView's server never collides with the user's own tmux.
-    static let socket = "fleetview"
+    nonisolated static let socket = "fleetview"
     private static let basePort = 7681
 
     let tmuxPath: String?
@@ -162,12 +162,27 @@ final class RemoteServer {
     }
 
     /// Inject literal text into a session (used by the web input bar — robust CJK/IME input that
-    /// bypasses xterm.js). `enter` also sends a Return so a typed prompt is submitted.
-    func sendText(_ id: UUID, text: String, enter: Bool) {
-        guard tmuxPath != nil else { return }
+    /// bypasses xterm.js). `enter` also submits it, and checks that it did: see `Submit` for why a
+    /// Return sent straight after the text is not enough. `done` hears the outcome, on the write
+    /// queue, once the checking is over.
+    func sendText(_ id: UUID, text: String, enter: Bool,
+                  done: (@Sendable (Submit.Outcome) -> Void)? = nil) {
+        guard let tmuxPath else { done?(.typed); return }
         let session = RemoteServer.sessionName(for: id)
-        if !text.isEmpty { runTmux(["send-keys", "-t", session, "-l", "--", text]) }
-        if enter { runTmux(["send-keys", "-t", session, "Enter"]) }
+        let mine = ledger.bump(session)
+        let ledger = ledger
+        writeQueue(for: session).async {
+            let outcome = Submit.run(text: text, enter: enter, session: session,
+                                     superseded: { ledger.current(session) != mine },
+                                     tmux: { args, capture in
+                                         Self.spawnTmux(tmuxPath, args, timeout: Self.tmuxTimeout,
+                                                        capture: capture)
+                                     })
+            if outcome == .stuck {
+                FV.log("type: \(session) still holds its text after \(Submit.retries) extra Enters")
+            }
+            done?(outcome)
+        }
     }
 
     /// Scroll a terminal for the web view's on-screen buttons (phones can't wheel-scroll).
@@ -183,10 +198,11 @@ final class RemoteServer {
             let button: [UInt8] = up ? [0x36, 0x34] : [0x36, 0x35]
             let seq = ([0x1b, 0x5b, 0x3c] + button + [0x3b, 0x34, 0x30, 0x3b, 0x31, 0x35, 0x4d])
                 .map { String(format: "%02x", $0) }
-            for _ in 0..<4 { runTmux(["send-keys", "-t", session, "-H"] + seq) }
+            for _ in 0..<4 { runTmux(["send-keys", "-t", session, "-H"] + seq, session: session) }
         } else {
-            runTmux(["copy-mode", "-e", "-t", session])
-            runTmux(["send-keys", "-X", "-t", session, up ? "halfpage-up" : "halfpage-down"])
+            runTmux(["copy-mode", "-e", "-t", session], session: session)
+            runTmux(["send-keys", "-X", "-t", session, up ? "halfpage-up" : "halfpage-down"],
+                    session: session)
         }
     }
 
@@ -205,7 +221,8 @@ final class RemoteServer {
                                     "Up", "Down", "Left", "Right", "PageUp", "PageDown",
                                     "C-c", "C-d", "C-z", "C-l", "C-u", "C-a", "C-e"]
         guard allowed.contains(key), tmuxPath != nil else { return }
-        runTmux(["send-keys", "-t", RemoteServer.sessionName(for: id), key])
+        let session = RemoteServer.sessionName(for: id)
+        runTmux(["send-keys", "-t", session, key], session: session)
     }
 
     /// Ask the terminal's agent a one-off question using the SAME conversation context but WITHOUT
@@ -352,10 +369,22 @@ final class RemoteServer {
     /// bytes — lets that write block. Run inline with `waitUntilExit()` that froze the whole app,
     /// which is what "messaging another terminal hung FleetView" was.
     ///
-    /// Serial, so `send-keys <text>` still lands before the `Enter` that submits it.
-    private func runTmux(_ args: [String]) {
+    /// Serial per terminal, so a key still lands after the text typed before it. Every write counts
+    /// in the ledger — that is how a submit check in flight learns it has been overtaken.
+    private func runTmux(_ args: [String], session: String) {
         guard let tmuxPath else { return }
-        writeQueue.async { Self.spawnTmux(tmuxPath, args, timeout: Self.tmuxTimeout) }
+        ledger.bump(session)
+        writeQueue(for: session).async { Self.spawnTmux(tmuxPath, args, timeout: Self.tmuxTimeout) }
+    }
+
+    /// One serial queue per terminal. It used to be one for all of them, which was fine while a
+    /// write was a single spawn; a submit now waits on the TUI for up to a few seconds, and that
+    /// must not hold up an Escape aimed at a different agent.
+    private func writeQueue(for session: String) -> DispatchQueue {
+        if let q = writeQueues[session] { return q }
+        let q = DispatchQueue(label: "ai.eigent.fleetview.tmux-write.\(session)")
+        writeQueues[session] = q
+        return q
     }
 
     /// For the callers that must not return before tmux has acted — closing a terminal, Close All.
@@ -371,7 +400,7 @@ final class RemoteServer {
     /// The order matters when capturing: `readDataToEndOfFile` blocks until EOF, which a wedged
     /// tmux never sends, so a limit applied after the read would never be reached.
     @discardableResult
-    private static func spawnTmux(_ tmuxPath: String, _ args: [String],
+    nonisolated private static func spawnTmux(_ tmuxPath: String, _ args: [String],
                                   timeout: TimeInterval, capture: Bool = false) -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: tmuxPath)
@@ -392,12 +421,13 @@ final class RemoteServer {
         return out
     }
 
-    /// Serial: ordering within one terminal is the whole contract of `send-keys` + `Enter`.
-    private let writeQueue = DispatchQueue(label: "ai.eigent.fleetview.tmux-write")
+    /// Ordering within one terminal is the whole contract of `send-keys` + `Enter`; see `writeQueue`.
+    private var writeQueues: [String: DispatchQueue] = [:]
+    private let ledger = WriteLedger()
 
     /// Long enough that a busy tmux still completes, short enough that a wedged one is an
     /// inconvenience rather than a hang.
-    private static let tmuxTimeout: TimeInterval = 5
+    nonisolated private static let tmuxTimeout: TimeInterval = 5
 
     private func prepareLog() -> URL {
         let url = FV.remoteLog

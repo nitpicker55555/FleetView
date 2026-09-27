@@ -129,6 +129,7 @@ final class WebServer {
         let scope = WebAudit.shared.begin(request: request, ip: client.ip, port: client.port)
 
         if path == "/ask" { handleAsk(conn, params, scope); return }   // long-running; off the main thread
+        if path == "/type", params["wait"] == "1" { handleTypeAndWait(conn, params, scope); return }
         if path == "/upload" {                                         // writes a file; no app state
             handleUpload(conn, request, body, params, scope); return
         }
@@ -199,6 +200,39 @@ final class WebServer {
             DispatchQueue.global(qos: .userInitiated).async {
                 let reply = RemoteServer.ask(spec, question: q)
                 answer("200 OK", "text/plain; charset=utf-8", Data(reply.utf8))
+            }
+        }
+    }
+
+    /// GET /type?…&wait=1 — the same typing as plain `/type`, answered only once the submit has been
+    /// checked: `{"ok":true,"submit":"submitted"|"stuck"|"sent"|"typed"|"superseded"}`.
+    ///
+    /// Plain `/type` answers before tmux has even run, so "ok" there only ever meant "queued" — and
+    /// a prompt left sitting in Codex's composer looked exactly like one that ran. A caller that
+    /// reports back (`project-manager send`, the web's Send) needs the difference. The wait is
+    /// spent on the terminal's write queue, never on the main actor. An older FleetView ignores
+    /// `wait` and answers `{"ok":true}` at once, so callers treat a missing `submit` as "unknown".
+    private func handleTypeAndWait(_ conn: NWConnection, _ query: [String: String],
+                                   _ scope: WebAudit.Scope) {
+        @Sendable func answer(_ status: String, _ body: Data) {
+            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
+            Self.write(conn, status: status, type: "application/json", body: body,
+                       setCookie: scope.setCookie)
+        }
+        guard let s = query["id"], let id = UUID(uuidString: s) else {
+            answer("400 Bad Request", Data(#"{"error":"bad id"}"#.utf8)); return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data())
+                return
+            }
+            MainActor.assumeIsolated {
+                AuditContext.with(scope.actor, trace: scope.trace) {
+                    app.webType(id, text: query["text"] ?? "", enter: query["enter"] == "1") { outcome in
+                        answer("200 OK", Data(#"{"ok":true,"submit":"\#(outcome.rawValue)"}"#.utf8))
+                    }
+                }
             }
         }
     }
@@ -524,6 +558,13 @@ final class WebServer {
 
     private func send(_ conn: NWConnection, status: String = "200 OK", type: String, body: Data,
                       setCookie: String? = nil, disposition: String? = nil) {
+        Self.write(conn, status: status, type: type, body: body, setCookie: setCookie,
+                   disposition: disposition)
+    }
+
+    /// `send` without the instance, for replies composed off every queue this server owns.
+    private static func write(_ conn: NWConnection, status: String, type: String, body: Data,
+                              setCookie: String? = nil, disposition: String? = nil) {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(type)\r\n"
         head += "Content-Length: \(body.count)\r\n"

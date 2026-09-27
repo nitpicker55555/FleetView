@@ -2098,8 +2098,9 @@ final class AppState: ObservableObject {
             guard let s = query["id"], let id = UUID(uuidString: s) else {
                 return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
             }
-            remote.sendText(id, text: query["text"] ?? "", enter: query["enter"] == "1")
-            markActivity(id)
+            // `wait=1` is answered by WebServer once the submit is confirmed; this is the
+            // fire-and-forget form, for callers that do not need to know.
+            webType(id, text: query["text"] ?? "", enter: query["enter"] == "1")
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         case "/key":
             guard let s = query["id"], let id = UUID(uuidString: s), let k = query["k"] else {
@@ -2279,6 +2280,14 @@ final class AppState: ObservableObject {
     /// to a session several terminals share, so identical chat content is expected, not a bug.
     func terminalsSharing(_ path: String) -> Int {
         terminals.filter { (hookSessionPath(for: $0.id) ?? $0.transcriptPath) == path }.count
+    }
+
+    /// Text from the web or `project-manager` into a terminal. Both `/type` forms come through
+    /// here; only `wait=1` passes `done`, to hear whether the prompt actually submitted.
+    func webType(_ id: UUID, text: String, enter: Bool,
+                 done: (@Sendable (Submit.Outcome) -> Void)? = nil) {
+        remote.sendText(id, text: text, enter: enter, done: done)
+        markActivity(id)
     }
 
     /// Typing/keys from the web are real interaction — record it (drives "3m ago").
