@@ -8,37 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var watcher: EventWatcher?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        state.load()
-        // Start auditing right after load, before anything can mutate state: the first snapshot is
-        // the baseline every later diff is measured against.
-        AppAudit.shared.start(state)
+        self.watcher = AppStartup.start(state)
         setupMenu()
-
-        // Live status via Claude Code hooks (reversible; no-ops for terminals FleetView didn't launch).
-        HookInstaller.install()
-        CodexHookInstaller.install() // same pipeline for Codex CLI (only if ~/.codex already exists)
-        ShellIntegration.install()   // zsh command capture for FleetView-launched terminals
-        RemoteServer.installConfig() // tmux config for LAN web access (harmless if tmux is absent)
-        state.web.app = state
-        state.web.start()            // web dashboard (mirror of this window) on the LAN
-        state.startPanelWatch()      // hot-load the agent-authored top panel (no relaunch needed)
-        // Warm the conversation-search index in the background. The first build reads every
-        // transcript on disk (~15 s); every refresh after that is incremental and near-free, so
-        // doing it at launch means ⌘K is instant instead of waiting on a cold index.
-        SearchIndex.refresh()
-        // …and keep it warm. `project-manager projects/history/session/search` read this index from
-        // outside the app, and nothing else refreshed it while the app ran — only launch and opening
-        // the search panel did, so after a day of uptime the history an agent was reading had
-        // stopped a day ago. An unchanged corpus costs ~0.1 s off the main thread.
-        let reindex = Timer(timeInterval: 300, repeats: true) { _ in SearchIndex.refresh() }
-        RunLoop.main.add(reindex, forMode: .common)
-        state.updates.check()        // one GET, at most every six hours; off via logging.json
-        let w = EventWatcher()
-        w.onEvent = { [weak self] ev in
-            Task { @MainActor in self?.state.handleHookEvent(ev) }
-        }
-        w.start()
-        self.watcher = w
 
         let root = DashboardView().environmentObject(state)
         let hosting = NSHostingView(rootView: root)
@@ -61,19 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Tear down web servers and the FleetView tmux server so nothing is left listening after quit.
     func applicationWillTerminate(_ notification: Notification) {
-        // Before anything else: a window disappearing from here on is teardown, not someone closing
-        // a terminal, and must not take the session with it (see AppState.handleWindowClosed).
-        state.isQuitting = true
-        // Terminals outlive the app by default — that is what lets a long run continue across a
-        // relaunch or an update. Only quit with the fleet when the user asked for it, and never
-        // when this "quit" is the self-updater handing off to the installer.
-        if state.closeTerminalsOnQuit && !SelfUpdate.isHandingOff {
-            state.closeAllTerminals(reason: "quit")
-        }
-        state.saveNow()          // saves are debounced now; this is the one that must not be missed
-        state.web.stop()
-        state.remote.stopAll()
-        AppAudit.shared.stop(reason: "quit")   // flushes the buffer before the process goes away
+        AppStartup.stop(state)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

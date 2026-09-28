@@ -138,6 +138,7 @@ final class WebServer {
         let scope = WebAudit.shared.begin(request: request, ip: client.ip, port: client.port)
 
         if path == "/ask" { handleAsk(conn, params, scope); return }   // long-running; off the main thread
+        if path == "/pm" { handlePM(conn, params, scope); return }     // runs a script; off it too
         if path == "/type", params["wait"] == "1" { handleTypeAndWait(conn, params, scope); return }
         if path == "/upload" {                                         // writes a file; no app state
             handleUpload(conn, request, body, params, scope); return
@@ -210,6 +211,23 @@ final class WebServer {
                 let reply = RemoteServer.ask(spec, question: q)
                 answer("200 OK", "text/plain; charset=utf-8", Data(reply.utf8))
             }
+        }
+    }
+
+    /// GET /pm?argv=<JSON array>&color=0|1&origin=<caller's URL for this instance> — run one of
+    /// project-manager's file-reading commands here and answer `{"code","stdout","stderr"}`. See
+    /// PMRunner for why the script runs rather than a Swift copy of it.
+    private func handlePM(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        let port = self.port
+        let argv = (query["argv"].flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) }
+                    as? [String]) ?? []
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let (status, result) = PMRunner.run(argv: argv, port: port, color: query["color"] == "1",
+                                                origin: query["origin"])
+            let body = (try? JSONEncoder().encode(result)) ?? Data(#"{"code":1}"#.utf8)
+            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
+            self?.send(conn, status: status, type: "application/json", body: body,
+                       setCookie: scope.setCookie)
         }
     }
 

@@ -49,10 +49,10 @@ project-manager -u http://192.168.2.2:8080 send cosy "继续"
 ```
 
 `-u` applies to every subcommand; `FLEETVIEW_URL` does the same thing if you would rather export it
-once. The terminal commands in the [[project-manager]] skill work unchanged against a remote
-instance — `ls`, `watch`, `show`, `tail`, `send`, `key`, `choose`, `check`, `new`, `rename`, `rm`,
-`notes`, `subagent -p <project>` (it cannot default to "your own project" over there), and `open`
-(a folder in *that* Mac's `~/PycharmProjects`).
+once. Every command in the [[project-manager]] skill works against a remote instance — the terminal
+ones (`ls`, `watch`, `show`, `tail`, `send`, `key`, `choose`, `check`, `new`, `rename`, `rm`,
+`notes`, `open` for a folder in *that* Mac's `~/PycharmProjects`) through the HTTP API, and the ones
+that read files through `/pm`, below.
 
 `send` reports whether the prompt actually left the agent's input box. A peer running an older
 FleetView cannot answer that, so the CLI checks the pane itself — same verdicts, same exit codes.
@@ -62,25 +62,63 @@ chips on its web dashboard) are readable *and* writable from here, so `notes add
 path or a command where someone at that Mac will see it. An empty list means that instance has no
 notes — not that the notes could not be read.
 
-## Four things do not cross the network
+## Reading another machine's history and files
 
-- **The live terminal view** (the dashboard's Terminal tab, HTTP `/open`) hands back a ttyd port on
-  *that* machine. The web dashboard rebuilds a URL from its own host, which is why it works there; a
-  remote CLI just gets a number. Use `show`/`tail` to read a terminal instead. (Not to be confused
-  with the CLI's `open`, which puts a project on the board and works remotely.)
-- **`log`** prints a transcript path on *that* machine's filesystem. It will not exist locally, so do
-  not try to read it — `show` is how you see that conversation from here.
+`projects`, `history`, `session` (with `-t` and `--files`), `search`, `memory`, `log` and `cat` read
+files — transcripts, the search index, memory notes. Against another instance they run **on that
+machine**: FleetView's `GET /pm` starts the same `project-manager` script there and hands back what it
+printed. So the answer is that Mac's history, byte for byte what you would see at its keyboard, and the
+`next:` hints already carry the `-u` to follow them.
+
+```bash
+project-manager -u http://100.109.51.92:8080 projects
+project-manager -u http://100.109.51.92:8080 session 23f989d7 --files
+project-manager -u http://100.109.51.92:8080 cat '~/PycharmProjects/ml_data_gen/README.md'
+project-manager -u http://100.109.51.92:8080 log 4d7e4c21 -f      # follows the transcript over there
+```
+
+- **`cat` is how you open what history points at.** A path from `--files` or `memory` is on the other
+  disk; `cat <file>` prints it (1 MB cap, `--max` for more), `cat <folder>` lists it. Quote a `~` path
+  — your own shell would expand it to *your* home before it left.
+- **`log -c` / `-f` read the transcript there**, in pieces cut at line ends; `-f` holds back a line the
+  agent is still writing, so you never see half a record.
+- **"Your project" is decided here.** `history`/`memory` with no project, and `subagent` with no `-p`,
+  mean the project with your project's name on that machine; if it has none, the command says so.
+- **`whoami` ignores `-u`.** It is about the card *you* run on, which lives on this Mac.
 - **`ask`** forks an agent process on the remote machine. It works, but it spends that machine's API
   budget and you cannot see it start. Prefer `show` unless you specifically want the agent's own
   reading of its context.
-- **`projects` / `history` / `session` / `search`** read *this* Mac's transcripts and search index,
-  so they refuse `-u` rather than describe your history under another machine's name. To see
-  another Mac's history, run them on that Mac (e.g. `send` the command to a shell terminal there).
+- **An older FleetView has no `/pm`** and the CLI says so; the terminal commands still work against it.
+- **The live terminal view** (the dashboard's Terminal tab, HTTP `/open`) hands back a ttyd port on
+  that machine; the web page rebuilds the URL from its own host, a CLI just gets a number. Use
+  `show`/`tail` from the CLI. (Not the CLI's `open`, which puts a project on the board.)
+
+## A FleetView with no screen (headless)
+
+A Mac reached only over SSH — the Mac mini is one — has no window server for FleetView to draw on, and
+the app used to start there as a process that never finished launching. It now runs headless there:
+the board is its web dashboard, terminals are tmux sessions nobody is attached to, and everything above
+works against it unchanged. It turns itself on when there is no GUI session, or with `--headless`.
+
+Start it **from an SSH login**, in a tmux session so it outlives the connection:
+
+```bash
+tmux new-session -d -s fleetview-app "~/Applications/FleetView.app/Contents/MacOS/FleetView --headless 2>&1 | tee -a ~/fleetview-headless.log"
+```
+
+Not from launchd. macOS checks the files an agent opens against the process responsible for it; from
+SSH that is the remote-login service, which on the mini has Full Disk Access (measured: a FleetView
+terminal there reads the system TCC database), while a launchd job would be FleetView itself — and
+granting FleetView anything takes a screen. Stop it with `kill -TERM` (or Ctrl-C in its tmux window):
+it saves and leaves the terminals running, and the next start reattaches them. It does not come back
+by itself after a reboot.
 
 ## There is no authentication
 
-Anything that can reach the port can inject prompts, press keys, and remove terminals. There is no
-token, no password, and the agents on the other side usually run with permissions bypassed.
+Anything that can reach the port can inject prompts, press keys, and remove terminals — and, through
+`/pm`, read that machine's conversation history and any file its user can (`cat`). There is no token,
+no password, and the agents on the other side usually run with permissions bypassed. That is a
+deliberate choice for a home LAN and a private tailnet; it is not safe on a network you share.
 
 What follows from that, for you:
 

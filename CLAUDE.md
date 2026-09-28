@@ -62,6 +62,12 @@ directory outside the repo when you have one.
 - **The user runs a long-lived production FleetView.** A second instance steals its hook events.
   Don't launch the app to test — build (`swift build`), and let the user deploy
   (`./scripts/package_app.sh --install`, which needs the running app quit first).
+- **FleetView also runs headless** — on a Mac with no window server (reached only over SSH, like
+  the Mac mini) or with `--headless`: no windows, terminals are detached tmux sessions
+  (`HeadlessTerminal`), the web dashboard is the board. AppState reaches a terminal only through
+  `TerminalHost`, so anything new it needs from a terminal window has to have a headless answer too.
+  Start it from an SSH login, not launchd — see
+  [`docs/design/2026-09-28-remote-parity-and-headless.md`](docs/design/2026-09-28-remote-parity-and-headless.md).
 - **Quitting FleetView does not kill the terminals.** `RemoteServer.stopAll()` stops the web
   servers but leaves the tmux sessions on the `fleetview` socket running, so restarting the app is
   safe (and so is a self-update, which quits to hand off). The opt-in `closeTerminalsOnQuit`

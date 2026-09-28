@@ -29,7 +29,7 @@ auto-discovers the local server via ~/.fleetview/web-port.
   project-manager notes add <text...>      append a note
   project-manager notes rm <note-sel>      delete a note (prints it back, so you can re-add it)
 
-History of this Mac's conversations (Claude + Codex), one level at a time:
+History of the conversations (Claude + Codex) on this Mac — or, with -u, on that one:
   project-manager projects                 L0  projects by last activity
   project-manager history [<project>]      L1  a project's conversations + transcript paths
   project-manager session <id>             L2  one conversation, one line per turn
@@ -37,6 +37,7 @@ History of this Mac's conversations (Claude + Codex), one level at a time:
   project-manager search <words…>          which conversations mention something
   project-manager session <id> --files     the files a conversation wrote/edited/read
   project-manager memory [<project>]       notes earlier agents left about a project
+  project-manager cat <path>               a file or folder — on the -u machine, where history points
 
 <sel> matches a terminal by name substring (case-insensitive) or id prefix.
 <id> (session) is a conversation: a session-id prefix, a FleetView card id, or a transcript path.
@@ -69,10 +70,35 @@ CLAUDE_CMD = "claude --dangerously-skip-permissions"
 CODEX_CMD = "codex --dangerously-bypass-approvals-and-sandbox"
 
 
-def _get(path):
-    req = urllib.request.Request(BASE + path, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=10) as r:
+def _get(path, timeout=10, base=None):
+    req = urllib.request.Request((base or BASE) + path, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", "replace")
+
+def local_base():
+    """This Mac's own FleetView, whatever -u or FLEETVIEW_URL point at."""
+    try:
+        with open(os.path.join(HOME, ".fleetview", "web-port")) as f:
+            return "http://127.0.0.1:%s" % f.read().strip()
+    except OSError:
+        return "http://127.0.0.1:8080"
+
+def is_remote():
+    """Whether BASE is another machine. Only loopback counts as here: this Mac's own LAN address
+    also reaches this Mac, but going through the server for it costs nothing and is still right."""
+    return (urllib.parse.urlparse(BASE).hostname or "") not in ("127.0.0.1", "localhost", "::1")
+
+# Set when FleetView runs this script on behalf of another machine (GET /pm): the output goes back
+# over the network, so colour follows the caller's terminal rather than this process's pipe, and
+# every "next: project-manager …" hint names the instance the caller has to aim at to follow it.
+SERVED = os.environ.get("FV_PM_SERVED") == "1"
+PM = "project-manager"
+if SERVED and os.environ.get("FV_PM_ORIGIN"):
+    PM = "project-manager -u %s" % os.environ["FV_PM_ORIGIN"]
+
+def _cmd(s):
+    """A hint's command line, aimed at the instance the output came from."""
+    return s.replace("project-manager ", PM + " ") if PM != "project-manager" else s
 
 def api_json(path):
     try:
@@ -86,8 +112,61 @@ def api_text(path):
     except urllib.error.URLError as e:
         sys.exit("cannot reach FleetView at %s (%s)." % (BASE, e))
 
+# ---- running a command on the machine it is about ----
+#
+# The history commands, `log` and `cat` read files: transcripts, the search index, memory notes.
+# Answered here they would describe this Mac under another machine's name, so against another
+# instance they run *there* — FleetView's GET /pm starts this same script on that machine and hands
+# back what it printed. Same code, that machine's files: the output is identical to running it there.
+
+# What /pm will run. FleetView keeps its own copy of this list (PMRunner.commands) and refuses the
+# rest: everything else here already goes through the HTTP API and has no reason to be run remotely.
+REMOTE_RUN = ("projects", "history", "session", "search", "memory", "log", "cat")
+
+def pm_remote(argv, timeout=300):
+    """Run `project-manager <argv>` on the -u instance: (exit code, stdout, stderr)."""
+    q = urllib.parse.urlencode({"argv": json.dumps(argv), "color": "1" if TTY else "0",
+                                "origin": BASE}, quote_via=urllib.parse.quote)
+    try:
+        r = json.loads(_get("/pm?" + q, timeout=timeout))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            sys.exit("%s is a FleetView too old to run %s remotely (no /pm) — update it there"
+                     % (BASE, argv[0]))
+        body = e.read().decode("utf-8", "replace").strip()
+        try:
+            r = json.loads(body)
+        except ValueError:
+            sys.exit("%s refused %s: %s" % (BASE, argv[0], body or e))
+        sys.exit("%s: %s" % (BASE, (r.get("stderr") or str(e)).strip()))
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach FleetView at %s (%s)." % (BASE, e))
+    except ValueError:
+        sys.exit("%s answered /pm with something that is not JSON" % BASE)
+    return r.get("code", 1), r.get("stdout", ""), r.get("stderr", "")
+
+def forward(argv):
+    code, out, err = pm_remote(argv)
+    sys.stdout.write(out)
+    sys.stderr.write(err)
+    sys.exit(code)
+
+def _sub_argv(argv):
+    """The command line from the subcommand on — what the other machine should run. Only -u/--url
+    sits in front of it, and that is the one thing it must not see: aimed at itself it would loop."""
+    i = 0
+    while i < len(argv):
+        t = argv[i]
+        if t in ("-u", "--url"):
+            i += 2
+        elif t.startswith("--url=") or (t.startswith("-u") and len(t) > 2):
+            i += 1
+        else:
+            return argv[i:]
+    return []
+
 # ---- colors ----
-TTY = sys.stdout.isatty()
+TTY = os.environ.get("FV_PM_COLOR") == "1" if SERVED else sys.stdout.isatty()
 def c(code, s):
     return "\033[%sm%s\033[0m" % (code, s) if TTY else s
 STATUS_COLOR = {"working": "32", "needsYou": "33", "idle": "90", "shell": "36", "exited": "31", "closed": "90"}
@@ -448,6 +527,41 @@ def _self_term_id():
     return name[3:] if name.startswith("fv_") else None
 
 
+def my_card():
+    """(state, my terminal, its project) from THIS Mac's FleetView, or None outside a card.
+
+    Always the local instance, whatever -u says: the card an agent runs on lives on the machine the
+    agent runs on. Asking the -u instance instead is how `whoami` used to answer "wrong instance?"
+    to every caller aiming at another Mac.
+    """
+    tid = _self_term_id()
+    if not tid:
+        return None
+    try:
+        st = json.loads(_get("/state", base=local_base()))
+    except (OSError, ValueError):     # URLError and a 3.9 socket.timeout are both OSErrors
+        return None
+    key = tid.replace("-", "").lower()
+    me = next((t for t in st["terminals"] if t["id"].replace("-", "").lower() == key), None)
+    if not me:
+        return None
+    return st, me, next((q for q in st["projects"] if q["id"] == me.get("projectId")), None)
+
+
+def own_project_name():
+    """The caller's project by name — its card's project, else the folder it stands in — for a
+    command run on another machine, where "your project" can only mean the one called the same."""
+    mine = my_card()
+    if mine and mine[2]:
+        return mine[2]["name"]
+    try:
+        top = subprocess.check_output(["git", "rev-parse", "--show-toplevel"],
+                                      stderr=subprocess.DEVNULL, text=True).strip()
+    except Exception:
+        top = ""
+    return os.path.basename(top or os.getcwd())
+
+
 def cmd_whoami(a):
     """Which card is this agent on? Run from inside a FleetView terminal.
 
@@ -458,13 +572,11 @@ def cmd_whoami(a):
     tid = _self_term_id()
     if not tid:
         sys.exit("not inside a FleetView terminal (no FLEETVIEW_TERM_ID, no fv_* tmux session)")
-    key = tid.replace("-", "").lower()
-    st = state()
-    me = next((t for t in st["terminals"] if t["id"].replace("-", "").lower() == key), None)
-    if not me:
-        # The id is real but unknown here — almost always -u/FLEETVIEW_URL aimed at another Mac.
-        sys.exit("terminal %s is not on %s — wrong instance?" % (tid[:8].lower(), BASE))
-    p = next((q for q in st["projects"] if q["id"] == me.get("projectId")), None)
+    mine = my_card()
+    if not mine:
+        sys.exit("terminal %s is not on this Mac's FleetView (%s) — is it running?"
+                 % (tid[:8].lower(), local_base()))
+    st, me, p = mine
     if a.project_only:
         print(p["name"] if p else ""); return
     if a.path_only:
@@ -661,9 +773,86 @@ def cmd_ask(a):
     except urllib.error.URLError as e:
         sys.exit("ask failed: %s" % e)
 
+LOG_CHUNK = 4 << 20   # a transcript can run to hundreds of MB; over /pm it travels in pieces
+
+def _read_chunk(path, start, tailing, cap=LOG_CHUNK):
+    """Bytes of a transcript from `start`, and where the next read should begin.
+
+    Cut at a line end, so each piece decodes cleanly and the next one starts on a whole record. A
+    single line longer than the cap (a pasted image is one line) is cut at a character boundary
+    instead. When `tailing`, a last line with no newline yet is held back: the agent is still
+    writing it, and `-f` printing half a record then the rest reads as two. Negative `start` is
+    that many bytes before the end, from the next whole line — how `tail` opens.
+    """
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        if start < 0:
+            pos = max(0, size + start)
+            f.seek(pos)
+            if pos:
+                f.readline()
+        else:
+            f.seek(start if start <= size else 0)   # shorter than last time: it was rewritten
+        start = f.tell()
+        data = f.read(cap)
+    if data and not data.endswith(b"\n") and (tailing or start + len(data) < size):
+        cut = data.rfind(b"\n") + 1
+        if cut == 0 and len(data) == cap:
+            cut = len(data)
+            while cut > 0 and (data[cut - 1] & 0xC0) == 0x80:
+                cut -= 1
+            if cut > 0 and data[cut - 1] >= 0xC0:
+                cut -= 1
+        data = data[:cut]
+    return data, start + len(data), size
+
+
+def _log_remote(a):
+    """`log` against another machine: the path and its state as that machine sees them, and with
+    -c/-f the transcript itself, read there and carried back a piece at a time."""
+    head = ["log", a.sel]
+    if a.path_only:
+        forward(head + ["-p"])
+    if not (a.cat or a.follow):
+        forward(head)
+    code, out, err = pm_remote(head)
+    sys.stdout.write(out)
+    sys.stderr.write(err)
+    if code or "[exists]" not in out:
+        sys.exit(code)
+    off = 0 if a.cat else -8192
+    try:
+        while True:
+            code, out, err = pm_remote(head + ["--bytes-from=%d" % off] + ([] if a.cat else ["--tailing"]))
+            m = re.search(r"^@offset (\d+) (\d+)", err, re.M)
+            if code or not m:
+                sys.stderr.write(err)
+                sys.exit(code or "unexpected answer from %s" % BASE)
+            sys.stdout.write(out)
+            sys.stdout.flush()
+            off, size = int(m.group(1)), int(m.group(2))
+            if off >= size or not out:
+                if a.cat:
+                    return
+                time.sleep(1.0)
+    except KeyboardInterrupt:
+        pass
+
+
 def cmd_log(a):
+    if is_remote():
+        return _log_remote(a)
     st = state(); t = resolve(st, a.sel)
     tp = t.get("transcript")
+    if a.bytes_from is not None:
+        # One piece of the transcript for a caller on another machine (see _log_remote).
+        if not tp or not os.path.exists(tp):
+            sys.exit("no transcript for %s" % t["name"])
+        data, nxt, size = _read_chunk(tp, a.bytes_from, a.tailing)
+        sys.stderr.write("@offset %d %d\n" % (nxt, size))
+        sys.stdout.flush()
+        sys.stdout.buffer.write(data)
+        return
     if not tp:
         slug = t.get("cwd", "").replace("/", "-").replace("_", "-")
         guess = os.path.join(HOME, ".claude", "projects", slug)
@@ -899,17 +1088,19 @@ def cmd_subagent(a):
             sys.exit("specify one project (matched %d)" % len(ps))
         proj = ps[0]
     else:
-        tid = _self_term_id()
-        me = None
-        if tid:
-            key = tid.replace("-", "").lower()
-            me = next((t for t in st["terminals"]
-                       if t["id"].replace("-", "").lower() == key), None)
-        if me is None:
+        mine = my_card()
+        if mine is None:
             sys.exit("not inside a FleetView terminal — name the project with -p")
-        proj = next((p for p in st["projects"] if p["id"] == me.get("projectId")), None)
+        proj = mine[2]
         if proj is None:
             sys.exit("could not resolve your own project — name it with -p")
+        if is_remote():
+            # Your project lives on this Mac; over there it can only mean the one of the same name.
+            same = [p for p in st["projects"] if p["name"].lower() == proj["name"].lower()]
+            if len(same) != 1:
+                sys.exit("%s has %s project called %r — name one with -p"
+                         % (BASE, "no" if not same else "more than one", proj["name"]))
+            proj = same[0]
 
     task = " ".join(a.text).strip()
     if not task:
@@ -1037,9 +1228,10 @@ def cmd_notes(a):
 #   session <id> -t N    L3  one turn, in full
 #   search <words>       across all of it, grouped by conversation, with turn numbers into L3
 #
-# Read-only, and local by nature: it reads this Mac's transcripts and FleetView's search index
-# (~/.fleetview/search.db), so it ignores -u. The why behind every rule below is in
-# docs/design/2026-09-26-send-and-project-history.md.
+# Read-only, and bound to the machine whose files it reads: this Mac's transcripts and FleetView's
+# search index (~/.fleetview/search.db). With -u the whole command runs on that machine instead
+# (main → forward → GET /pm), so everything below only ever reads the disk it is running on. The
+# why behind every rule below is in docs/design/2026-09-26-send-and-project-history.md.
 # ======================================================================================
 
 CLAUDE_ROOT = os.path.join(HOME, ".claude", "projects")
@@ -1244,9 +1436,10 @@ class _History:
         import sqlite3
         host = urllib.parse.urlparse(BASE).hostname or ""
         if host not in ("127.0.0.1", "localhost", "::1"):
-            # Answering from this Mac's files while -u names another would describe the wrong
-            # machine's history under that machine's name.
-            sys.exit("history reads this Mac's transcripts, not %s's — run it on that Mac" % host)
+            # main() sends these to the -u machine before they get here. Reaching this means that
+            # was skipped, and answering from this Mac's files would describe the wrong machine's
+            # history under that machine's name.
+            sys.exit("history reads this Mac's transcripts, not %s's" % host)
         if not os.path.exists(INDEX_DB):
             sys.exit("no conversation index at %s — FleetView builds it at launch" % _tilde(INDEX_DB))
         self.db = sqlite3.connect("file:%s?mode=ro" % INDEX_DB, uri=True)
@@ -1553,7 +1746,7 @@ def _resolve_project(h, sel, visible):
     if scored and scored[0][0] >= 0.75 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.08):
         return scored[0][1], "no project is called %r; using %s" % (sel, cands[scored[0][1]])
     close = [cands[r] for s, r in scored[:5] if s >= 0.5]
-    sys.exit("no project matches %r%s  (project-manager projects lists them)"
+    sys.exit(_cmd("no project matches %r%s  (project-manager projects lists them)")
              % (sel, " — closest: " + ", ".join(close) if close else ""))
 
 def _visible(e, show_all):
@@ -1604,7 +1797,7 @@ def cmd_projects(a):
     if lag > 50 << 20:
         print(c("33", "index is %s behind the transcripts — counts may lag; FleetView catches up within minutes"
                 % short_bytes(lag)))
-    print(c("90", "next: project-manager history <project>   e.g. project-manager history %s"
+    print(c("90", _cmd("next: project-manager history <project>   e.g. project-manager history %s")
             % h.name(shown[0][0])))
 
 
@@ -1647,7 +1840,7 @@ def cmd_history(a):
         c("90", " · %d subagent threads folded in" % subs) if subs else ""))
     mem = sum(len(_memory_notes(d)) for d in _memory_dirs(h, root))
     if mem:
-        print(c("33", "  %s left by earlier agents — project-manager memory %s"
+        print(c("33", _cmd("  %s left by earlier agents — project-manager memory %s")
                 % (_n(mem, "memory note"), h.name(root) if " " not in h.name(root) else '"%s"' % h.name(root))))
     briefs = {}
     for e in mine[:a.n]:
@@ -1676,7 +1869,7 @@ def cmd_history(a):
         tail.append("%d non-interactive/scratch hidden — -a" % len(hidden))
     if tail:
         print(c("90", "\n… " + " · ".join(tail)))
-    print(c("90", "next: project-manager session <id>   (one line per turn)"))
+    print(c("90", _cmd("next: project-manager session <id>   (one line per turn)")))
 
 
 def _resolve_session(h, sel):
@@ -1701,7 +1894,7 @@ def _resolve_session(h, sel):
     if len(hits) == 1:
         return hits[0]
     if not hits:
-        sys.exit("no conversation matches %r (ids come from project-manager history)" % sel)
+        sys.exit(_cmd("no conversation matches %r (ids come from project-manager history)") % sel)
     print("%r matches %d conversations:" % (sel, len(hits)), file=sys.stderr)
     for e in hits[:10]:
         print("  %s  %s  %s" % (e["sid"], _agent(e), _tilde(e["path"])), file=sys.stderr)
@@ -1787,7 +1980,7 @@ def cmd_session(a):
     final = next((t for t in reversed(turns) if t["replies"]), None)
     if final:
         print("last reply (turn %d): %s" % (final["n"], _clip(final["replies"][-1], 300)))
-    print(c("90", "next: project-manager session %s -t <N>   (one turn in full)   · --files (what it wrote)"
+    print(c("90", _cmd("next: project-manager session %s -t <N>   (one turn in full)   · --files (what it wrote)")
             % _short_sid(e)))
 
 
@@ -1837,7 +2030,7 @@ def _show_turns(h, e, turns, a):
         nav.append("-t %d" % (lo - 1))
     if hi < len(turns):
         nav.append("-t %d" % (hi + 1))
-    print(c("90", "\nnext: project-manager session %s %s" % (_short_sid(e), " | ".join(nav) or "")))
+    print(c("90", _cmd("\nnext: project-manager session %s %s") % (_short_sid(e), " | ".join(nav) or "")))
 
 
 # Where a shell command put things: redirects, tee, -o/--output/--local-dir, and the last argument
@@ -1984,7 +2177,7 @@ def _show_files(h, e):
             print(ln)
     elif e["src"] == 1:
         print(c("90", "read: not tracked for Codex (it reads through shell commands)"))
-    print(c("90", "next: open a file directly, or project-manager session %s -t <N> for why"
+    print(c("90", _cmd("next: project-manager cat <file> to read one, or project-manager session %s -t <N> for why")
             % _short_sid(e)))
 
 
@@ -2036,7 +2229,58 @@ def cmd_memory(a):
         print("%s — %s" % (c("1", h.name(root)), _tilde(d) + "/"))
         for fn, name, desc in notes:
             print("  %-26s %s" % (_clip(name, 26), _clip(desc, 110)))
-    print(c("90", "next: read one — cat <folder>/<name>.md (they are short)"))
+    print(c("90", _cmd("next: read one — project-manager cat <folder>/<name>.md (they are short)")))
+
+
+def cmd_cat(a):
+    """A file, or a folder's listing, on the machine -u names.
+
+    Here it is only `cat`/`ls`. It exists for the other machine: history hands over paths — memory
+    notes, the files a session wrote, transcripts — and without this, following one from another
+    Mac ends at a path you cannot open. Capped, and binary files are described rather than dumped,
+    because the output travels back as JSON.
+    """
+    p = os.path.abspath(os.path.expanduser(a.path))
+    if os.path.isdir(p):
+        try:
+            names = sorted(os.listdir(p), key=str.lower)
+        except OSError as e:
+            sys.exit("cannot list %s: %s" % (_tilde(p), e.strerror))
+        dirs = [n for n in names if os.path.isdir(os.path.join(p, n))]
+        files = [n for n in names if n not in set(dirs)]
+        print("%s  %s, %s" % (c("1", _tilde(p) + "/"), _n(len(dirs), "folder"), _n(len(files), "file")))
+        for n in (dirs + files)[:a.max_entries]:
+            fp = os.path.join(p, n)
+            if n in dirs:
+                print("  %8s  %s/" % ("", n))
+            else:
+                try:
+                    stt = os.stat(fp)
+                    print("  %8s  %s  %s" % (short_bytes(stt.st_size),
+                                             time.strftime("%m-%d %H:%M", time.localtime(stt.st_mtime)), n))
+                except OSError:
+                    print("  %8s  %s" % ("?", n))
+        more = len(names) - a.max_entries
+        if more > 0:
+            print(c("90", "  … %d more (--max-entries %d)" % (more, len(names))))
+        return
+    try:
+        size = os.path.getsize(p)
+        with open(p, "rb") as f:
+            data = f.read(a.max)
+    except OSError as e:
+        sys.exit("cannot read %s: %s" % (_tilde(p), e.strerror or e))
+    if b"\0" in data[:8192]:
+        sys.exit("%s is binary (%s) — not printed" % (_tilde(p), short_bytes(size)))
+    text = data.decode("utf-8", "replace")
+    if a.lines:
+        text = "".join(text.splitlines(True)[:a.lines])
+    sys.stdout.write(text)
+    if text and not text.endswith("\n"):
+        sys.stdout.write("\n")
+    if size > len(data) and not a.lines:
+        print(c("33", "… cut at %s of %s (--max BYTES for more)" % (short_bytes(len(data)), short_bytes(size))),
+              file=sys.stderr)
 
 
 def _is_cjk(ch):
@@ -2143,7 +2387,7 @@ def cmd_search(a):
                 where = "t%d" % n
             who = "you:  " if role == 0 else "agent:"
             print("    %-8s %s %s" % (where, c("36", who), _snippet(body, terms)))
-    print(c("90", "\nnext: project-manager session <id> -t <N>   (the turn a hit is in)"))
+    print(c("90", _cmd("\nnext: project-manager session <id> -t <N>   (the turn a hit is in)")))
 
 
 def main():
@@ -2184,7 +2428,10 @@ def main():
     s = sub.add_parser("ask", help="BTW side-query (forked; does not touch the live session)"); s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_ask)
     s = sub.add_parser("log", help="locate the agent transcript file"); s.add_argument("sel")
     s.add_argument("-f", "--follow", action="store_true"); s.add_argument("-c", "--cat", action="store_true")
-    s.add_argument("-p", "--path", dest="path_only", action="store_true", help="print only the path"); s.set_defaults(fn=cmd_log)
+    s.add_argument("-p", "--path", dest="path_only", action="store_true", help="print only the path")
+    s.add_argument("--bytes-from", type=int, help=argparse.SUPPRESS)   # /pm plumbing, see _log_remote
+    s.add_argument("--tailing", action="store_true", help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_log)
     s = sub.add_parser("new", help="open a terminal in a project")
     s.add_argument("sel", help="project")
     s.add_argument("label", nargs="?", help="label the new terminal (same as -n)")
@@ -2246,6 +2493,12 @@ def main():
     s.add_argument("--replies", action="store_true", help="only what agents answered")
     s.add_argument("-a", "--all", action="store_true", help="include non-interactive runs")
     s.set_defaults(fn=cmd_search)
+    s = sub.add_parser("cat", help="print a file, or list a folder (on the -u machine)")
+    s.add_argument("path")
+    s.add_argument("-n", "--lines", type=int, help="only the first N lines")
+    s.add_argument("--max", type=int, default=1 << 20, help="bytes to read at most (default 1 MB)")
+    s.add_argument("--max-entries", type=int, default=400, help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_cat)
     s = sub.add_parser("notes", help="the shared Notes list / web quick-commands")
     s.add_argument("action", nargs="?", choices=("ls", "add", "rm"), help="default: ls")
     s.add_argument("rest", nargs="*", help="text to add, or which note to remove")
@@ -2256,6 +2509,13 @@ def main():
     if a.url:
         global BASE
         BASE = a.url.rstrip("/")
+    if is_remote() and a.cmd in REMOTE_RUN and a.cmd != "log":   # log mixes both; see _log_remote
+        argv = _sub_argv(sys.argv[1:])
+        if a.cmd in ("history", "memory") and not a.project:
+            # "Your project" is decided here, where you are; over there it would be decided by
+            # FleetView's own working directory, which is no project at all.
+            argv.append(own_project_name())
+        forward(argv)
     a.fn(a)
 
 if __name__ == "__main__":

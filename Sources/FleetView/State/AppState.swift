@@ -67,7 +67,7 @@ final class AppState: ObservableObject {
     @Published var highlightedClusterId: UUID?
     @Published var scrollToId: UUID?
 
-    private var controllers: [UUID: TerminalWindowController] = [:]
+    private var controllers: [UUID: TerminalHost] = [:]
     private var cascadePoint = NSPoint(x: 60, y: 60)
     var hookPort: Int? = nil
 
@@ -377,6 +377,7 @@ final class AppState: ObservableObject {
                         // itself spells out — silence would leave a terminal sitting at a bare
                         // prompt with no idea why.
                         FV.log("tree fork FAILED (codex): \(error.localizedDescription)")
+                        guard !Headless.active else { return }   // nobody to show a dialog to
                         let a = NSAlert()
                         a.messageText = "打不开这个 Codex 节点"
                         a.informativeText = error.localizedDescription
@@ -2384,9 +2385,21 @@ final class AppState: ObservableObject {
         // persisted one (reopen after the window was closed) would spawn a second claude.
         let spec = remote.tmuxSpec(for: t.id)
         let autoRun = autoRun ?? (t.autoRunClaude && !(spec != nil && remote.sessionExists(t.id)))
-        let ctrl = TerminalWindowController(termId: t.id, title: t.name, cwd: t.cwd,
+        let ctrl: TerminalHost
+        if Headless.active {
+            // No screen to put a window on: the session alone is the terminal. Without tmux there
+            // is nothing to hold a shell at all, so the card stays closed rather than pretend.
+            guard let spec, let h = HeadlessTerminal(termId: t.id, cwd: t.cwd, autoRunClaude: autoRun,
+                                                     port: hookPort, tmux: spec, remote: remote) else {
+                FV.log("headless: could not start a session for \(t.name) — is tmux installed?")
+                return
+            }
+            ctrl = h
+        } else {
+            ctrl = TerminalWindowController(termId: t.id, title: t.name, cwd: t.cwd,
                                             autoRunClaude: autoRun, port: hookPort, tmux: spec,
                                             fontSize: terminalFontSize)
+        }
         ctrl.onExit = { [weak self] id, _ in
             Task { @MainActor in self?.setStatus(id, .exited) }
         }

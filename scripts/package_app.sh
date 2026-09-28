@@ -25,6 +25,9 @@ echo "▸ Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/FleetView"
+# project-manager rides along: GET /pm runs it on this machine for a caller on another one, and an
+# installed app must not depend on the checkout it was built from still being where it was.
+cp "$ROOT/scripts/project-manager" "$APP/Contents/Resources/project-manager"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

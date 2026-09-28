@@ -4,7 +4,8 @@ description: >-
   Inspect and control the OTHER running FleetView agent terminals from the shell via the `project-manager`
   CLI: list every agent's live status/tokens/last prompt, read a terminal's recent output or locate
   its conversation transcript, inject a prompt, answer a Claude/Codex permission or menu prompt,
-  and detect sessions that ended in an error. Also the way into the user's PAST work on this Mac:
+  and detect sessions that ended in an error. Also the way into the user's PAST work on this Mac (or,
+  with -u, on another one):
   which projects they worked on recently, each project's Claude/Codex conversations with their
   transcript paths, what a conversation covered turn by turn, and search across all of it. Use
   whenever asked to monitor, supervise, coordinate, or drive other agents/terminals in the FleetView
@@ -47,7 +48,7 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 
 | Command | What it does |
 |---|---|
-| `project-manager whoami` | Which card *this* agent is on: terminal, project, project path, cwd. `-p`/`--path`/`--id` print one value for scripts |
+| `project-manager whoami` | Which card *this* agent is on: terminal, project, project path, cwd. `-p`/`--path`/`--id` print one value for scripts. Always answers from this Mac's instance, whatever `-u` says |
 | `project-manager ls [-p PROJ] [-g] [-m]` | Table of all terminals: id, name, cluster, project, agent, idle, tokens, status, last prompt. `-p` narrows to one project, `-g` groups by project, `-m` only marked cards (in full detail) |
 | `project-manager watch [-n SEC] [-p PROJ] [-g] [-m]` | Live-refreshing `ls` (Ctrl-C to stop) |
 | `project-manager show <id> [-l N]` | One terminal: status, cwd, transcript path, and the last N lines of output |
@@ -57,22 +58,23 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager choose <id> <n>` | Answer a numbered menu: sends digit `<n>` then Enter |
 | `project-manager check [<id>]` | Flag sessions that look error-terminated (API errors, tracebacks, exited, …) |
 | `project-manager ask <id> <q…>` | **"BTW" side-query**: ask the agent a question using its current context **without** touching/interrupting its live session (forked print-mode query; the answer is thrown away after printing). Takes ~10-40s |
-| `project-manager log <id> [-p\|-c\|-f]` | Locate the agent's transcript file; `-p` path only, `-c` cat, `-f` follow (tail -f) |
+| `project-manager log <id> [-p\|-c\|-f]` | Locate the agent's transcript file; `-p` path only, `-c` cat, `-f` follow (tail -f). With `-u` all three read the file on that machine |
 | `project-manager new <project> [label]` | Open a terminal in a project. `--claude` starts a permission-bypassed Claude session in it, `-c CMD` runs any other command |
-| `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project, `-n` to name the card, `--id` for the bare uuid on stdout, `--no-wait` to start the agent without sending the task |
+| `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project, `-n` to name the card, `--id` for the bare uuid on stdout, `--no-wait` to start the agent without sending the task. With `-u` and no `-p`: the project of the same name over there |
 | `project-manager rename <id> <name…>` | Relabel a terminal |
 | `project-manager rm <id>` | Remove a terminal (kills its session) |
 | `project-manager notes [-f Q] [-p]` | The sidebar Notes list — also the web dashboard's quick-command chips. `-f` filters, `-p` prints raw text for copying |
 | `project-manager notes add <text…>` | Append a note (newlines and quotes survive; use single quotes in zsh) |
 | `project-manager notes rm <note>` | Delete a note, selected by its number, id prefix, or a text substring. It prints the note back — that's the only undo |
 | `project-manager peers [--ports P] [--timeout S]` | Scan your subnets and online Tailscale peers; list every FleetView instance with its URL (for `-u`) |
-| `project-manager projects [-n N] [--days D] [-a]` | **History L0**: projects on this Mac by last activity, 2 lines each. `-a` adds scratch dirs and non-interactive runs |
+| `project-manager projects [-n N] [--days D] [-a]` | **History L0**: projects by last activity, 2 lines each — this Mac's, or with `-u` that machine's. `-a` adds scratch dirs and non-interactive runs |
 | `project-manager history [<project>] [-n N] [-a]` | **History L1**: a project's conversations — title, span, turns, transcript path (default: your own project) |
 | `project-manager session <id> [--all]` | **History L2**: one conversation, one line per turn, plus how it ended and how to resume it |
 | `project-manager session <id> -t N[-M] [--full]` | **History L3**: one turn (up to 5) in full — your prompt and the agent's answer |
 | `project-manager search <words…> [-p PROJ] [-n N] [--prompts\|--replies] [-a]` | Which conversations mention something, grouped by conversation, with turn numbers. `--prompts` only what the user typed, `--replies` only what agents said |
 | `project-manager session <id> --files` | The files a conversation **wrote/edited** (and, for Claude, read), grouped by folder; plus paths its shell commands created |
 | `project-manager memory [<project>]` | Notes earlier agents left about a project (Claude's per-project memory) — read these first |
+| `project-manager cat <path> [-n N] [--max BYTES]` | Print a file or list a folder. Locally just `cat`/`ls`; with `-u` it reads **that** machine's disk — how you open what history points at over there. Capped at 1 MB; binary files are described, not printed |
 | `project-manager open <folder> [-t\|--claude\|--codex] [-n NAME]` | Put a folder from `~/PycharmProjects` on the board (the web's 📂), optionally with a terminal/agent in it. Needs a FleetView new enough to have `/workspace` — an older one says so |
 
 ## Knowing which project you are in
@@ -295,8 +297,11 @@ project-manager search rubric 权重 -p qwen   # or jump straight to where somet
 - A conversation whose file Claude has since deleted still reads from FleetView's index; `session`
   marks it `[deleted]` and gives no resume command. Otherwise it prints the exact `claude --resume` /
   `codex resume` line.
-- **Local only**: this reads the transcripts and FleetView's search index on *this* Mac, so it refuses
-  `-u`. For another Mac's history, run it there.
+- **Whose history**: these read the transcripts and FleetView's search index of the machine they run
+  on. With `-u` the whole command runs *on that machine* (FleetView's `/pm` starts this same script
+  there), so it is that Mac's history, and every `next:` hint already carries the `-u`. `history` and
+  `memory` without a project mean the project of your own name over there. Needs that FleetView to be
+  new enough to have `/pm`; an older one says so.
 - Transcripts hold whatever the user typed, secrets included. Quote only what the task needs.
 
 ### Coming back to earlier work: finding the actual files
@@ -321,7 +326,8 @@ project-manager search 30 交付 -p qwen_fancy_web --prompts   # where the final
   say where the final version is — earlier copies (`stable_tasks/`, `fix1/`…) are usually superseded.
 - **Codex reads are not tracked** (it reads through shell commands); Codex writes are.
 - Point subagents at concrete paths once found, rather than at the project — history is for finding,
-  the files themselves are for reading.
+  the files themselves are for reading. On another machine, `project-manager -u <url> cat <path>` is
+  how you read them (and `cat <folder>` lists one).
 
 ### Opening a project from ~/PycharmProjects
 
@@ -355,9 +361,10 @@ Pitfalls I hit doing it the hard way — avoid them:
 - **A selector is per-instance.** `8f904256` on `192.168.2.2` means nothing locally — pass the same
   `-u`/`FLEETVIEW_URL` to *every* command in the sequence, and report the URL alongside the name.
 
-See the [[fleetview-peers]] skill for the full remote rules (what does not cross the network — the web
-terminal view, `log` paths, `ask`, the history commands — and the safety notes: there's no auth, so
-`send` lands in someone's live, permission-bypassed session). The CLI `open` command does work remotely.
+Every command works against a remote instance, the history ones included: they run on that machine
+and read its files. See the [[fleetview-peers]] skill for the details — what `ask` costs over there,
+how `whoami` and `subagent` pick "your" project, a FleetView running headless on an SSH-only Mac —
+and the safety notes: there's no auth, so `send` lands in someone's live, permission-bypassed session.
 
 ## Cautions
 
