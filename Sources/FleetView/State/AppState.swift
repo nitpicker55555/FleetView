@@ -2004,6 +2004,11 @@ final class AppState: ObservableObject {
 
     // MARK: - Token usage
 
+    /// One at a time. A first read of a long session is a second or more of parsing, and at launch
+    /// every terminal asks at once — on the shared concurrent queue those ran side by side and their
+    /// peaks added up. After the first read each one is incremental and takes milliseconds.
+    private static let tokenQueue = DispatchQueue(label: "ai.eigent.fleetview.tokens", qos: .utility)
+
     /// Re-read a terminal's transcript off the main thread and update its new-token curve + total.
     /// Cheap: debounced to ~1s (force-through on turn end), and skips the parse when the file is unchanged.
     func refreshTokens(_ termId: UUID, path: String, force: Bool = false) {
@@ -2011,7 +2016,7 @@ final class AppState: ObservableObject {
         if !force, let last = lastTokenRefreshAt[termId], now.timeIntervalSince(last) < 1.0 { return }
         lastTokenRefreshAt[termId] = now
         let prev = lastParsedTranscriptSize[termId]
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        Self.tokenQueue.async { [weak self] in
             let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int
             if let size, let prev, size == prev { return }
             let series = TokenUsage.series(path: path).map { TokenSample(t: $0.t, newTokens: $0.cumulativeNew) }
