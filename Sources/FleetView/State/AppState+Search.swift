@@ -33,7 +33,8 @@ extension AppState {
     /// come from any of the projects on disk, including one FleetView has never opened. So the
     /// project is created on demand — `addProject` already de-duplicates by path, so a known
     /// project is simply selected instead.
-    func openSearchPlan(_ plan: SearchOpen.Plan, joinClusterOf targetCard: UUID? = nil) {
+    func openSearchPlan(_ plan: SearchOpen.Plan, hit: SearchIndex.Hit,
+                        joinClusterOf targetCard: UUID? = nil) {
         let projectId: UUID
         if let existing = projects.first(where: { $0.path == plan.cwd }) {
             projectId = existing.id
@@ -47,7 +48,8 @@ extension AppState {
         }
         // Dropped onto a card: land in that card's cluster (same rule as a tree-panel drop).
         let clusterId = targetCard.flatMap { ensureCluster(for: $0) }
-        guard let terminal = newTerminal(projectId: projectId, name: plan.label,
+        let name = inheritedName(for: hit, forked: plan.synthesized) ?? plan.label
+        guard let terminal = newTerminal(projectId: projectId, name: name,
                                          clusterId: clusterId, autoRunClaude: false) else {
             FV.log("search open: no terminal for \(plan.cwd)")
             return
@@ -57,5 +59,25 @@ extension AppState {
         // a ready shell before anything is typed into it.
         typeIntoTerminal(terminal.id, plan.command, after: 1.4)
         closeSearch()
+    }
+
+    /// The name of the card this conversation last lived in, for the card that opens it again.
+    ///
+    /// A conversation pulled back out of search, or out of the drawer of removed cards, used to
+    /// come back as "⌕ " plus the first twelve characters of whichever message was hit, whatever
+    /// the card that held it had been called. A card still on the board wins over the drawer, and
+    /// newer wins over older. A fork (a node short of the end, written out as a new session) is
+    /// marked " ⑂", as a duplicated card is; a plain resume is the same conversation and keeps the
+    /// name unchanged. nil when no card ever held it, and the hit's own text is all there is.
+    func inheritedName(for hit: SearchIndex.Hit, forked: Bool) -> String? {
+        func same(_ path: String?, _ sid: String?) -> Bool {
+            path == hit.path || (!hit.session.isEmpty && sid == hit.session)
+        }
+        let live = terminals.filter { same($0.transcriptPath, $0.sessionId) }
+            .max { ($0.lastActivity ?? .distantPast) < ($1.lastActivity ?? .distantPast) }
+        let archived = terminalArchive.filter { same($0.transcriptPath, $0.sessionId) }
+            .max { $0.removedAt < $1.removedAt }
+        guard let name = live?.name ?? archived?.name, !name.isEmpty else { return nil }
+        return forked ? name + " ⑂" : name
     }
 }

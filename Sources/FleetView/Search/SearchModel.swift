@@ -422,7 +422,7 @@ final class SearchModel: ObservableObject {
                 let plan = try SearchOpen.plan(for: hit)
                 await MainActor.run {
                     self.preview = nil
-                    state.openSearchPlan(plan, joinClusterOf: card)
+                    state.openSearchPlan(plan, hit: hit, joinClusterOf: card)
                     self.opening = nil
                 }
             } catch {
