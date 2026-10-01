@@ -133,8 +133,10 @@ public struct HTTPRequestHead: Equatable, Sendable {
 /// events that matter. Kubernetes' audit policy calls this omitting "high-frequency, low-value read
 /// requests" — the counts still survive, in the periodic session rollup.
 public enum WebPathPolicy {
+    /// `/files` is the outbox listing the page re-reads every 4 s while it is open (29,022 requests
+    /// by 2026-10-01). What someone actually took from the outbox is `/file`, which is logged.
     public static let polled: Set<String> = [
-        "/state", "/panel-meta", "/panel-data", "/conversation", "/capture", "/tree",
+        "/state", "/panel-meta", "/panel-data", "/conversation", "/capture", "/tree", "/files",
     ]
 
     /// Static shell of the app: interesting the first time (it starts a session) and noise after.

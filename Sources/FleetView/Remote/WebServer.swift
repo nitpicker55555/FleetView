@@ -225,7 +225,12 @@ final class WebServer {
             let (status, result) = PMRunner.run(argv: argv, port: port, color: query["color"] == "1",
                                                 origin: query["origin"])
             let body = (try? JSONEncoder().encode(result)) ?? Data(#"{"code":1}"#.utf8)
-            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
+            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query,
+                                   facts: WebAudit.shared.pmFacts(argv: argv).merging([
+                                       "pm.exit_code": .int(Int(result.code)),
+                                       "pm.stdout_bytes": .int(result.stdout.utf8.count),
+                                       "pm.stderr_bytes": .int(result.stderr.utf8.count),
+                                   ]) { own, _ in own })
             self?.send(conn, status: status, type: "application/json", body: body,
                        setCookie: scope.setCookie)
         }
@@ -277,8 +282,8 @@ final class WebServer {
     /// anything that isn't an image is refused outright.
     private func handleUpload(_ conn: NWConnection, _ head: HTTPRequestHead?, _ body: Data,
                               _ query: [String: String], _ scope: WebAudit.Scope) {
-        func answer(_ status: String, _ type: String, _ data: Data) {
-            WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query)
+        func answer(_ status: String, _ type: String, _ data: Data, facts: [String: AuditValue] = [:]) {
+            WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query, facts: facts)
             send(conn, status: status, type: type, body: data, setCookie: scope.setCookie)
         }
         guard head?.method.uppercased() == "POST" else {
@@ -304,7 +309,12 @@ final class WebServer {
         FV.log("upload: \(body.count) bytes → \(url.lastPathComponent)")
         let payload = ["path": url.path, "name": url.lastPathComponent, "bytes": "\(body.count)"]
         let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
-        answer("200 OK", "application/json", data)
+        // The client's own filename is kept for the record only; the file on disk is named by us.
+        answer("200 OK", "application/json", data,
+               facts: AuditValue.compact(["file.name": query["name"].map { .string($0) },
+                                          "file.path": .string(url.path),
+                                          "file.bytes": .int(body.count),
+                                          "file.sha256": .string(AuditDigest.sha256(data: body))]))
     }
 
     // MARK: - Outbox (agent → phone)
@@ -337,8 +347,9 @@ final class WebServer {
 
     /// GET /file?id=<uuid> — the bytes of one offered file.
     private func handleFileGet(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
-        func answer(_ status: String, _ type: String, _ data: Data, disposition: String? = nil) {
-            WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query)
+        func answer(_ status: String, _ type: String, _ data: Data, disposition: String? = nil,
+                    facts: [String: AuditValue] = [:]) {
+            WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query, facts: facts)
             send(conn, status: status, type: type, body: data, setCookie: scope.setCookie,
                  disposition: disposition)
         }
@@ -361,7 +372,12 @@ final class WebServer {
         // anything else downloads, under the name the agent gave it.
         let inline = type != nil && query["dl"] != "1"
         answer("200 OK", type ?? "application/octet-stream", body,
-               disposition: "\(inline ? "inline" : "attachment"); filename=\"\(Self.headerSafe(name))\"")
+               disposition: "\(inline ? "inline" : "attachment"); filename=\"\(Self.headerSafe(name))\"",
+               facts: AuditValue.compact(["file.id": .string(id),
+                                          "file.name": .string(name),
+                                          "file.bytes": .int(body.count),
+                                          "file.from": (meta["from"] as? String).map { .string($0) },
+                                          "download": .bool(!inline)]))
     }
 
     // MARK: - Project file browser
@@ -403,8 +419,9 @@ final class WebServer {
     private func handleBrowse(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
         projectRoots(conn) { [weak self] roots in
             guard let self else { return }
-            func answer(_ status: String, _ data: Data) {
-                WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query)
+            func answer(_ status: String, _ data: Data, facts: [String: AuditValue] = [:]) {
+                WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query,
+                                       facts: facts)
                 self.send(conn, status: status, type: "application/json", body: data,
                           setCookie: scope.setCookie)
             }
@@ -416,7 +433,11 @@ final class WebServer {
                   isDir.boolValue else {
                 answer("404 Not Found", Data(#"{"error":"no such directory"}"#.utf8)); return
             }
-            answer("200 OK", Self.listing(target.url, root: target.root))
+            let listed = Self.listing(target.url, root: target.root)
+            answer("200 OK", listed.data,
+                   facts: ["dir.root": .string(target.root.path),
+                           "dir.entries": .int(listed.entries),
+                           "dir.truncated": .bool(listed.truncated)])
         }
     }
 
@@ -425,7 +446,7 @@ final class WebServer {
     /// Capped, because a project contains `node_modules` and a phone does not want ninety thousand
     /// rows — and the cap is reported rather than silently applied, so a short list can be trusted
     /// to be the whole list. The names are sorted before the cap so which 3000 you get is stable.
-    static func listing(_ dir: URL, root: URL) -> Data {
+    static func listing(_ dir: URL, root: URL) -> (data: Data, entries: Int, truncated: Bool) {
         struct Row { let name: String; let dir: Bool; let size: Int; let mtime: Int }
         let all = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
             .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
@@ -448,7 +469,8 @@ final class WebServer {
             "truncated": all.count > capped.count,
             "entries": ordered.map { ["name": $0.name, "dir": $0.dir, "size": $0.size, "mtime": $0.mtime] },
         ]
-        return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+        return ((try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8),
+                all.count, all.count > capped.count)
     }
 
     /// GET /read?path=<file> — the bytes of one file inside a project.

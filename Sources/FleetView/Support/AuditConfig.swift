@@ -29,7 +29,8 @@ struct AuditConfig: Codable {
     /// `full` — the redacted command line. `argv0` — only the program name. `off` — neither.
     var shellCommand = "full"
 
-    var retentionDays = 90
+    // No retention setting, by decision (2026-10-01): the audit log is kept forever, and nothing in
+    // FleetView deletes a log file. The `retentionDays = 90` that used to sit here was never read.
 
     /// Ask GitHub whether a newer FleetView has been released. On by default because being a
     /// version behind is its own cost, but it IS an outbound call — one unauthenticated GET every
@@ -50,4 +51,30 @@ struct AuditConfig: Codable {
     var wantsGeo: Bool { geo != "off" }
     var wantsBrowserLocation: Bool { wantsGeo && askBrowserLocation }
     var wantsPublicGeoLookup: Bool { geo == "city" && geoProvider != "none" }
+}
+
+extension AuditConfig {
+    /// Each key read on its own, falling back to its default when absent.
+    ///
+    /// Synthesised decoding treats a missing key as an error even for a property with a default,
+    /// so a logging.json that set only what it meant to change — `{"updates": false}`, exactly what
+    /// UpdateCheck tells people to write — failed to decode as a whole, and `load()` quietly
+    /// returned every default instead. The setting did nothing and nothing said so.
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func take<T: Decodable>(_ key: CodingKeys, _ value: inout T) {
+            if let v = try? c.decodeIfPresent(T.self, forKey: key) { value = v }
+        }
+        take(.enabled, &enabled)
+        take(.geo, &geo)
+        take(.geoProvider, &geoProvider)
+        take(.geoPrecisionDecimals, &geoPrecisionDecimals)
+        take(.askBrowserLocation, &askBrowserLocation)
+        take(.promptPreview, &promptPreview)
+        take(.promptPreviewChars, &promptPreviewChars)
+        take(.webInputPreview, &webInputPreview)
+        take(.shellCommand, &shellCommand)
+        take(.updates, &updates)
+    }
 }

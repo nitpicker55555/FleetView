@@ -94,14 +94,16 @@ final class WebRequestTests: XCTestCase {
 
     func testPolledEndpointsAreNotAuditedPerRequest() {
         // /state alone is ~2,400 requests per idle half-hour.
-        for path in ["/state", "/conversation", "/panel-meta", "/panel-data", "/capture", "/tree"] {
+        for path in ["/state", "/conversation", "/panel-meta", "/panel-data", "/capture", "/tree",
+                     "/files"] {
             XCTAssertTrue(WebPathPolicy.isPolled(path), "\(path) polls")
             XCTAssertFalse(WebPathPolicy.isAudited(path), "\(path) must not produce a line per request")
         }
     }
 
     func testMutatingEndpointsAreAudited() {
-        for path in ["/action", "/type", "/key", "/new", "/note", "/ask", "/open", "/select", "/scroll"] {
+        for path in ["/action", "/type", "/key", "/new", "/note", "/ask", "/open", "/select", "/scroll",
+                     "/upload", "/file", "/browse", "/read", "/pm", "/geo"] {
             XCTAssertTrue(WebPathPolicy.isAudited(path), "\(path) must be audited")
         }
     }

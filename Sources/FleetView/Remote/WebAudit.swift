@@ -136,7 +136,11 @@ final class WebAudit: @unchecked Sendable {
     }
 
     /// Called after the response is produced. Emits at most one record.
-    func finish(_ scope: Scope, status: String, bytes: Int, query: [String: String]) {
+    ///
+    /// `facts` is what only the handler knows — where an upload was written, how many bytes a
+    /// download was, a command's exit code — and goes into the record as is.
+    func finish(_ scope: Scope, status: String, bytes: Int, query: [String: String],
+                facts: [String: AuditValue] = [:]) {
         let ok = status.hasPrefix("2")
         let duration = Int(Date().timeIntervalSince(scope.startedAt) * 1_000_000_000)
 
@@ -156,19 +160,33 @@ final class WebAudit: @unchecked Sendable {
                                         "http.path": .string(scope.path),
                                         "http.status": .string(status),
                                         "id": query["id"].map { .string($0) },
-                                    ]),
+                                    ]).merging(facts) { own, _ in own },
                                     durationNanos: duration))
             return
         }
 
-        guard scope.isAudited, let event = requestEvent(scope, query: query, duration: duration) else { return }
+        guard scope.isAudited,
+              let event = requestEvent(scope, query: query, duration: duration, facts: facts) else { return }
         auditor.emit(event)
+    }
+
+    private let redaction = Redaction()
+
+    /// `/pm`'s command line for the record, through the same redaction as a shell command line: a
+    /// remote caller's `search` text or path is worth keeping, a token pasted into one is not.
+    /// Built by the handler, so a command `/pm` refuses is logged with what was attempted.
+    func pmFacts(argv: [String]) -> [String: AuditValue] {
+        let clean = argv.map { redaction.apply(to: $0).text }
+        var facts: [String: AuditValue] = ["pm.argv": .array(clean.map { .string($0) })]
+        if clean != argv { facts["pm.redacted"] = .bool(true) }
+        return facts
     }
 
     /// Only endpoints that change nothing get their own record. Anything that mutates state is
     /// already logged by the state diff, with this same actor attached — logging it here too would
     /// be the same fact written twice.
-    private func requestEvent(_ scope: Scope, query: [String: String], duration: Int) -> AuditEvent? {
+    private func requestEvent(_ scope: Scope, query: [String: String], duration: Int,
+                              facts: [String: AuditValue]) -> AuditEvent? {
         let config = AuditConfig.current
 
         let terminal = target(forTerminal: query["id"])
@@ -274,10 +292,39 @@ final class WebAudit: @unchecked Sendable {
                          AuditValue.compact(["path": query["path"].map { .string($0) },
                                              "download": .bool(query["dl"] == "1")]))
 
+        // The four below changed no app state, so the diff never saw them; until 2026-10-01 they
+        // were only a count in the five-minute rollup, with no file name or command attached.
+
+        case "/upload":
+            let name = facts["file.name"]?.displayString ?? "a file"
+            let saved = facts["file.path"]?.displayString.split(separator: "/").last.map(String.init) ?? "?"
+            return event("fleetview.web.file_uploaded", "uploaded \(name) → \(saved)", facts,
+                         categories: ["web", "file"])
+
+        case "/file":
+            let name = facts["file.name"]?.displayString ?? query["id"] ?? "?"
+            return AuditEvent(name: "fleetview.web.file_downloaded", categories: ["web", "file"],
+                              message: "took \(name) from the outbox",
+                              actor: scope.actor,
+                              // The terminal whose agent offered the file, when the offer says.
+                              target: target(forTerminal: facts["file.from"]?.displayString),
+                              trace: scope.trace, data: facts, durationNanos: duration)
+
+        case "/browse":
+            return event("fleetview.web.dir_browsed", "listed \(query["path"] ?? "?")",
+                         AuditValue.compact(["path": query["path"].map { .string($0) }])
+                            .merging(facts) { own, _ in own },
+                         categories: ["web", "file"])
+
+        case "/pm":
+            // Another Mac running `project-manager -u <this one>`: what it asked, and what it got.
+            var words: [String] = []
+            if case .array(let argv)? = facts["pm.argv"] { words = argv.map(\.displayString) }
+            return event("fleetview.web.pm_run", "ran project-manager \(words.joined(separator: " "))",
+                         facts, categories: ["web", "process"])
+
         default:
-            // Endpoints that mutate state (/action, /new, /note) are covered by the diff. Directory
-            // listings (/browse) are left to the per-session request rollup: one is emitted per tap
-            // while walking a tree, and the file that was actually opened is the fact worth keeping.
+            // Endpoints that mutate state (/action, /new, /note) are covered by the diff.
             return nil
         }
     }

@@ -2207,6 +2207,11 @@ final class AppState: ObservableObject {
             // "what were they looking at" would have to be guessed from a polling endpoint, whose
             // meaning would drift the moment the poll interval changed.
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/geo":
+            // The page's location report — a fix, a refusal, or "insecure context". WebAudit logs it
+            // only for a 2xx, and this route did not exist: every report since July came back 404
+            // and was filed as a denied request, so not one session_geo was ever written.
+            return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         case "/panel":
             // The agent-authored dynamic panel (self-contained HTML). Empty page if none written yet.
             // `?v=<uuid>` replays an archived version instead of the current one.

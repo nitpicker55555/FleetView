@@ -4,11 +4,13 @@
 |---|---|
 | **文档类型** | 设计文档（Design Doc） |
 | **创建日期** | 2026-07-27 |
-| **最后更新** | 2026-07-28 |
+| **最后更新** | 2026-10-01（见 §15） |
 | **状态** | 已实现 —— 见[实施文档](2026-07-28-audit-logging-implementation.md) |
 | **Schema 版本** | `fleetview.schema = 1` |
 | **对应代码版本** | `f54cc8a`（2026-07-27，文中行号以此为准） |
 | **待决事项** | 见 §13 |
+
+> **2026-10-01 修订**：日志改为永久保存；补记上传、下载、目录浏览、远程 project-manager 四类 web 请求；`/geo` 路由修复。见 §15。
 
 > **2026-07-28 修订**：实施阶段的调研发现，本规范默认的"观察状态变化"思路单独使用会**静默丢失不改变状态的操作**（点卡片提升窗口、发按键、以及所有失败的请求）。因此实现采用"**声明意图 + 状态 diff**"双层，理由与取舍见实施文档 §1。
 
@@ -69,7 +71,7 @@
 
 - **格式**：JSON Lines（每行一个完整 JSON 对象，UTF-8，无缩进，`\n` 结尾）。
 - **首行 header**（每个新文件写一次，`event.name = "fleetview.log.opened"`）：记录 schema 版本、app 版本、主机、实例 id、时区。
-- **轮转**：按天 + 单文件 64 MB 上限（`audit-2026-07-27.1.jsonl`）；次日 gzip；默认保留 **90 天**，可配置。
+- **轮转**：按天 + 单文件 64 MB 上限（`audit-2026-07-27.1.jsonl`）；次日 gzip；永久保存，不删除（2026-10-01 定，见 §15）。
 - **权限**：目录 `0700`，文件 `0600`（日志含 IP、命令行、cwd）。
 - **并发安全**：单次 `write(2)` 以 `O_APPEND` 写入，单行 **< 4096 字节**（PIPE_BUF）时 POSIX 保证原子追加 —— 这样**同时跑两个 FleetView 实例也不会串行**（你已知的"第二实例抢 hook 事件"场景，靠 `fleetview.instance.id` 区分来源）。超长行必须先截断再写（见 §6 规则 6）。
 - 每行只允许一次 `write`，不允许分段写。
@@ -400,7 +402,6 @@ FleetView 的 Web 端主要跑在 **LAN / Tailscale**，直接对 `192.168.x.x` 
   },
   "geo": { "mode": "city", "provider": "geolite2", "precision_decimals": 2 },
   "privacy": { "hash_ip_after_days": 7, "ip_salt": "<random>" },
-  "retention": { "days": 90, "max_total_mb": 512 },
   "redact": ["(?i)(api[_-]?key|token|secret|password|passwd|authorization)\\s*[=:]\\s*\\S+"]
 }
 ```
@@ -531,7 +532,7 @@ enum AuditLog {
 
 1. **`prompt.preview` / `web_input_preview` 默认开还是关**：开了日志可读性大增，但与 transcript 有轻微重叠（120 字符）。建议 prompt 开、web input 关。
 2. **地理位置精度**：默认 `city`（离线 GeoLite2，零外呼）；要精确坐标必须先给 Web 端上 HTTPS（`tailscale serve` 最省事）。
-3. **保留期**：默认 90 天 / 512 MB 上限。
+3. **保留期**：已定，永久保存，不删除（2026-10-01）。
 4. **是否要 asciicast 录制**：能完整回放终端画面，但体积大且与 transcript 重叠，建议默认关、按终端手动开。
 5. **Web 端是否加 token 鉴权**：目前 `/action`、`/type`、`/new`、`/ask` 全部无鉴权，只要在同一 LAN/tailnet 就能操作。有了审计日志会更明显地暴露这一点 —— 建议同期加一个共享 token。
 6. **Panel 归档保留**：默认**永久**（按需求）。是否要开 `max_versions` / `max_mb` 上限（默认关）？
@@ -651,3 +652,21 @@ printf '{"event":"PanelUpdate","term":"%s","payload":{"title":"CI 构建监控",
 | `UI/DynamicPanel.swift:34` | `reloadToken` 改用 uuid；加 `History ▾` 菜单 |
 | `Remote/WebDashboardPage.swift` | panel iframe 按 uuid 重载；历史版本入口 |
 | `.claude/skills/fleetview-panel/SKILL.md` | （可选）改原子写 `mv -f`；（可选）加 `PanelUpdate` 声明一行 |
+
+---
+
+# §15 2026-10-01 更新
+
+- 保留期：审计日志永久保存，FleetView 不删除任何日志文件。`AuditConfig.retentionDays` 已去掉，它从未被读取过。
+- `~/.fleetview/logging.json` 可以只写要改的键。之前合成的解码器遇到缺失的键就整体失败，`load()` 退回全部默认值，只写 `{"updates": false}` 不生效。
+- 新增四个 web 事件。这些请求不改 app 状态，状态 diff 看不到，之前只在 5 分钟的 `session_activity` 里计数。
+
+| event.name | 请求 | `fleetview.data` |
+|---|---|---|
+| `fleetview.web.file_uploaded` | `POST /upload` | `file.name`（客户端给的名字）、`file.path`（保存位置）、`file.bytes`、`file.sha256` |
+| `fleetview.web.file_downloaded` | `GET /file` | `file.id`、`file.name`、`file.bytes`、`file.from`（发出这个文件的终端）、`download` |
+| `fleetview.web.dir_browsed` | `GET /browse` | `path`、`dir.root`、`dir.entries`、`dir.truncated` |
+| `fleetview.web.pm_run` | `GET /pm` | `pm.argv`（按 shell 命令的规则脱敏）、`pm.exit_code`、`pm.stdout_bytes`、`pm.stderr_bytes` |
+
+- `/files` 是 outbox 列表，页面打开时每 4 秒读一次，归入轮询端点，只计数。
+- `/geo` 之前没有路由，页面的定位上报全部 404，被记成 `request_denied`，`fleetview.web.session_geo` 一次都没写过。现在有了路由，至少会记下拿不到坐标的原因。精确坐标仍然需要 HTTPS：浏览器只在安全上下文里提供 `navigator.geolocation`，而这个 tailnet 目前没有开 HTTPS 证书（`tailscale status --json` 的 `CertDomains` 为空），`tailscale serve` 还用不了。

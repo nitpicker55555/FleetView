@@ -8,7 +8,13 @@ import Foundation
 /// "this log line refers to that content" without the log ever holding the content itself.
 public enum AuditDigest {
     public static func sha256(_ content: String) -> String {
-        SHA256.hash(data: Data(content.utf8)).map { String(format: "%02x", $0) }.joined()
+        sha256(data: Data(content.utf8))
+    }
+
+    /// For bytes that are not text — an uploaded file — so the record can name exactly which
+    /// content landed, while the bytes themselves stay in the file.
+    public static func sha256(data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     /// First 16 hex characters — 64 bits, plenty to correlate two log lines, short enough to keep a
