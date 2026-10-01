@@ -835,9 +835,11 @@ final class AppState: ObservableObject {
 
     // MARK: - Terminals
 
+    /// `id` and `cwd` are for a card coming back (see `restoreConversation`): its own uuid, so the
+    /// audit trail and the hook pointer stay one terminal's, and the folder it was working in.
     @discardableResult
     func newTerminal(projectId: UUID, name: String? = nil, clusterId: UUID? = nil,
-                     autoRunClaude: Bool = false) -> TerminalSession? {
+                     autoRunClaude: Bool = false, id: UUID? = nil, cwd: String? = nil) -> TerminalSession? {
         guard let proj = project(projectId) else {
             audit.failure("fleetview.terminal.create_failed", reason: "unknown project",
                           categories: ["process"],
@@ -848,7 +850,8 @@ final class AppState: ObservableObject {
                                    data: ["name_source": .string(name == nil ? "auto" : "user")])) {
             var t = TerminalSession(projectId: projectId,
                                     name: name ?? defaultTerminalName(for: proj),
-                                    clusterId: clusterId, cwd: proj.path, autoRunClaude: autoRunClaude)
+                                    clusterId: clusterId, cwd: cwd ?? proj.path, autoRunClaude: autoRunClaude)
+            if let id { t.id = id }
             t.status = .shell
             terminals.append(t)
             openWindow(for: t)
@@ -864,11 +867,15 @@ final class AppState: ObservableObject {
     /// `claude` that has forgotten the last two hours is a worse answer than not reopening at all.
     /// A session that is still alive (FleetView was relaunched, the tmux session outlived it) is
     /// reattached instead, and nothing is typed — that terminal already has its agent.
-    func reopenTerminal(_ id: UUID) {
+    ///
+    /// `conversation` names the transcript to resume instead of the card's last one — a restore by
+    /// session id — and becomes the card's conversation from here on.
+    func reopenTerminal(_ id: UUID, resuming conversation: String? = nil) {
         if controllers[id] != nil { raiseTerminal(id); return }
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        if let conversation { terminals[idx].transcriptPath = conversation }
         let t = terminals[idx]
-        let resumeFrom = remote.sessionExists(id) ? nil : lastSessionFile(for: t)
+        let resumeFrom = remote.sessionExists(id) ? nil : (conversation ?? lastSessionFile(for: t))
         enterStatus(.shell, at: idx)
         // Suppress the automatic `claude` only when there is something to resume — otherwise a
         // terminal that never ran an agent would come back as a bare shell.
@@ -2207,6 +2214,11 @@ final class AppState: ObservableObject {
             // "what were they looking at" would have to be guessed from a polling endpoint, whose
             // meaning would drift the moment the poll interval changed.
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/restore":
+            // `project-manager restore <session-id>` (see restoreConversation).
+            let (status, body) = restoreConversation(query["sid"] ?? "")
+            return (status, "application/json",
+                    (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8))
         case "/geo":
             // The page's location report — a fix, a refusal, or "insecure context". WebAudit logs it
             // only for a 2xx, and this route did not exist: every report since July came back 404
@@ -2529,4 +2541,166 @@ final class AppState: ObservableObject {
     }
 
     func cluster(_ id: UUID?) -> Cluster? { clusters.first { $0.id == id } }
+}
+
+// MARK: - Restore a conversation by its session id
+
+extension AppState {
+
+    enum ConversationLookup {
+        case found(path: String, session: String)
+        case missing
+        case ambiguous([String])
+    }
+
+    /// The transcript of the conversation with this session id, or an unambiguous prefix of it
+    /// (8+ characters). Claude files one as `<sid>.jsonl` under its project's slug directory, Codex
+    /// as `rollout-<time>-<sid>.jsonl` under the day it started; both are looked through.
+    nonisolated static func conversationFile(_ wanted: String) -> ConversationLookup {
+        let fm = FileManager.default
+        let full = wanted.count == 36
+        var hits: [(path: String, sid: String)] = []
+        let claude = FV.home.appendingPathComponent(".claude/projects")
+        for dir in (try? fm.contentsOfDirectory(atPath: claude.path)) ?? [] {
+            let d = claude.appendingPathComponent(dir)
+            if full {
+                let p = d.appendingPathComponent("\(wanted).jsonl").path
+                if fm.fileExists(atPath: p) { hits.append((p, wanted)) }
+            } else {
+                for f in (try? fm.contentsOfDirectory(atPath: d.path)) ?? []
+                where f.hasPrefix(wanted) && f.hasSuffix(".jsonl") {
+                    hits.append((d.appendingPathComponent(f).path, String(f.dropLast(6))))
+                }
+            }
+        }
+        for p in CodexTree.rolloutPaths(root: CodexSession.sessionsDir) {
+            let id = CodexTree.sessionId(fromRollout: p)
+            if full ? id == wanted : id.hasPrefix(wanted) { hits.append((p, id)) }
+        }
+        let ids = Set(hits.map(\.sid))
+        if ids.isEmpty { return .missing }
+        if ids.count > 1 { return .ambiguous(ids.sorted()) }
+        return .found(path: hits[0].path, session: hits[0].sid)
+    }
+
+    /// The folder a Claude conversation ran in, as `--resume` will need it: the recorded cwd when it
+    /// slugifies to the directory the transcript is filed under, else that directory decoded.
+    nonisolated static func claudeConversationCwd(_ path: String) -> String? {
+        let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
+        let recorded = SessionForge.sessionCwd(transcriptPath: path)
+        if let recorded, SessionForge.slugify(recorded) == dir.lastPathComponent { return recorded }
+        return SessionForge.projectCwd(projectDir: dir) ?? recorded
+    }
+
+    /// The board project a folder belongs to — the deepest one containing it — added when none does.
+    private func boardProject(containing folder: String) -> UUID? {
+        if let p = projects
+            .filter({ !$0.path.isEmpty && (folder == $0.path || folder.hasPrefix($0.path + "/")) })
+            .max(by: { $0.path.count < $1.path.count }) { return p.id }
+        addProject(path: folder)
+        return projects.first { $0.path == folder }?.id
+    }
+
+    /// `project-manager restore <session-id>`: the conversation back on the board, in its terminal,
+    /// with its agent session resumed inside it.
+    ///
+    /// The card is looked for where it is most likely to be: one already showing this conversation
+    /// (then nothing happens — a second terminal on the same session would only fight the first
+    /// for the transcript), a closed card still on the board, a removed card in the drawer (it
+    /// comes back under its own name, id and project), and failing those a new card in the folder
+    /// the conversation ran in. A Codex worker id restores the conversation the worker belongs to.
+    func restoreConversation(_ raw: String) -> (status: String, body: [String: Any]) {
+        let wanted = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard wanted.count >= 8, wanted.allSatisfy({ $0.isHexDigit || $0 == "-" }) else {
+            return ("400 Bad Request", ["error": "give a session id: a uuid, or at least its first 8 characters"])
+        }
+        var path: String, sid: String
+        switch Self.conversationFile(wanted) {
+        case .missing:
+            return ("404 Not Found", ["error": "no Claude or Codex conversation \(wanted) on this Mac"])
+        case .ambiguous(let ids):
+            return ("409 Conflict", ["error": "\(wanted) matches \(ids.count) conversations; give more of the id",
+                                     "matches": Array(ids.prefix(10))])
+        case .found(let p, let s):
+            path = p; sid = s
+        }
+        var resolvedFrom: String?
+        if CodexTree.isWorkerRollout(path), let main = CodexTree.mainLineRollout(of: path) {
+            resolvedFrom = sid
+            path = main
+            sid = CodexTree.sessionId(fromRollout: main)
+        }
+        let codex = path.contains("/.codex/")
+
+        func done(_ action: String, _ id: UUID) -> (status: String, body: [String: Any]) {
+            let t = terminals.first { $0.id == id }
+            audit.emit("fleetview.terminal.restored", categories: ["process"],
+                       message: "\(action) \"\(t?.name ?? "?")\" — \(codex ? "codex" : "claude") session \(sid.prefix(8))",
+                       target: auditTarget(terminal: id),
+                       data: AuditValue.compact(["restore.action": .string(action),
+                                                 "agent.session.id": .string(sid),
+                                                 "transcript.path": .string(path),
+                                                 "restore.from": resolvedFrom.map { .string($0) }]))
+            var body: [String: Any] = ["ok": true, "action": action, "id": id.uuidString,
+                                       "name": t?.name ?? "", "project": project(t?.projectId)?.name ?? "",
+                                       "agent": codex ? "codex" : "claude", "session": sid,
+                                       "transcript": path]
+            if let resolvedFrom { body["resolvedFrom"] = resolvedFrom }
+            return ("200 OK", body)
+        }
+        func holds(_ t: TerminalSession) -> Bool {
+            t.transcriptPath == path || hookSessionPath(for: t.id) == path
+        }
+        // A new or returning card shows what it was doing, the way a reopened one does.
+        func bring(_ id: UUID, kind: AgentKind?, lastPrompt: String?) {
+            guard let i = terminals.firstIndex(where: { $0.id == id }) else { return }
+            terminals[i].transcriptPath = path
+            terminals[i].agentKind = kind ?? (codex ? .codex : .claude)
+            if let lastPrompt, !lastPrompt.isEmpty { terminals[i].lastPrompt = lastPrompt }
+            else { loadLatestPrompt(termId: id, path: path) }
+            resumeSession(terminals[i], transcript: path)
+            save()
+        }
+
+        // `exited` is as gone as `closed`: the process ended and only the card is left — though its
+        // window can still be up around the dead process, and reopening would then only raise
+        // that. So the window goes first, as a move does it. The tmux session is left alone: a
+        // card can read `exited` while its session (and agent) still run, and then reopening
+        // reattaches it instead of resuming anything.
+        func gone(_ t: TerminalSession) -> Bool { t.status == .closed || t.status == .exited }
+        if let t = terminals.first(where: { !gone($0) && holds($0) }) {
+            return done("already_open", t.id)
+        }
+        if let t = terminals.first(where: { gone($0) && holds($0) }) {
+            if let dead = controllers.removeValue(forKey: t.id) {
+                dead.onClose = nil
+                dead.closeWindow()
+                if !remote.sessionExists(t.id) { remote.stop(t.id) }   // its web view, if any
+            }
+            reopenTerminal(t.id, resuming: path)
+            return done("reopened", t.id)
+        }
+        if let row = terminalArchive.filter({ $0.transcriptPath == path || $0.sessionId == sid })
+            .max(by: { $0.removedAt < $1.removedAt }),
+           let pid = boardProject(containing: row.projectPath ?? row.cwd) {
+            let reuse = terminals.contains { $0.id == row.id } ? nil : row.id
+            let cwd = FileManager.default.fileExists(atPath: row.cwd) ? row.cwd : nil
+            guard let t = newTerminal(projectId: pid, name: row.name, id: reuse, cwd: cwd) else {
+                return ("500 Internal Server Error", ["error": "could not open a terminal for \(row.name)"])
+            }
+            // Back on the board, so out of the drawer of things that could be brought back.
+            terminalArchive.removeAll { $0.transcriptPath == path }
+            bring(t.id, kind: row.agentKind == .unknown ? nil : row.agentKind, lastPrompt: row.lastPrompt)
+            return done("restored", t.id)
+        }
+        let folder = (codex ? CodexSession.rolloutCwd(path) : Self.claudeConversationCwd(path)) ?? ""
+        guard !folder.isEmpty, let pid = boardProject(containing: folder) else {
+            return ("422 Unprocessable Entity", ["error": "could not tell which folder \(sid) ran in"])
+        }
+        guard let t = newTerminal(projectId: pid, name: "↺ " + String(sid.prefix(8))) else {
+            return ("500 Internal Server Error", ["error": "could not open a terminal"])
+        }
+        bring(t.id, kind: nil, lastPrompt: nil)
+        return done("created", t.id)
+    }
 }

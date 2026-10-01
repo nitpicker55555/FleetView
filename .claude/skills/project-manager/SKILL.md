@@ -63,6 +63,7 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project, `-n` to name the card, `--id` for the bare uuid on stdout, `--no-wait` to start the agent without sending the task. With `-u` and no `-p`: the project of the same name over there |
 | `project-manager rename <id> <name…>` | Relabel a terminal |
 | `project-manager rm <id>` | Remove a terminal (kills its session) |
+| `project-manager restore <session-id>` | Bring a closed conversation back by its session id (Claude or Codex, or its first 8+ characters): the card it was in — closed on the board, or removed and still in the drawer, under its old name — or a new card in the folder it ran in, with the agent resumed inside. Prints `already open` instead of opening a second terminal on a live conversation. A Codex worker id restores the conversation it belongs to. Waits for the agent to report in; `--no-wait` doesn't |
 | `project-manager notes [-f Q] [-p]` | The sidebar Notes list — also the web dashboard's quick-command chips. `-f` filters, `-p` prints raw text for copying |
 | `project-manager notes add <text…>` | Append a note (newlines and quotes survive; use single quotes in zsh) |
 | `project-manager notes rm <note>` | Delete a note, selected by its number, id prefix, or a text substring. It prints the note back — that's the only undo |

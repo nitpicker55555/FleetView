@@ -24,6 +24,8 @@ auto-discovers the local server via ~/.fleetview/web-port.
   project-manager subagent <task...>       open an agent terminal and deliver it a task (--codex, --id)
   project-manager rename <sel> <name...>   relabel a terminal
   project-manager rm <sel>                 remove a terminal (kills its session)
+  project-manager restore <session-id>     bring a conversation back: its card (the one it was in, or a
+                                           new one) and the agent resumed in it (--no-wait)
   project-manager open <folder> [--claude] put a ~/PycharmProjects folder on the board
   project-manager notes [-f Q] [-p]        the shared Notes list (the web's quick-command chips)
   project-manager notes add <text...>      append a note
@@ -1169,6 +1171,46 @@ def cmd_rm(a):
     t = resolve(state(), a.sel)
     api_json("/action?" + urllib.parse.urlencode({"id": t["id"], "do": "remove"}))
     print("removed %s" % t["name"])
+
+RESTORED = {"already_open": "already open:", "reopened": "reopened", "restored": "restored",
+            "created": "opened a new card:"}
+
+def cmd_restore(a):
+    """Bring a conversation back by its session id: its card on the board, its agent resumed in it.
+
+    FleetView decides where it lands — the card already showing it, a closed card, a removed card
+    from the drawer (same name, id and project), or a new card in the folder it ran in — so this
+    works the same against another Mac with -u.
+    """
+    try:
+        r = json.loads(_get("/restore?" + urllib.parse.urlencode({"sid": a.sid}), timeout=30))
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode("utf-8", "replace"))
+        except ValueError:
+            sys.exit("%s does not know `restore` (HTTP %d): its FleetView predates the command" % (BASE, e.code))
+        sys.exit(err.get("error", "HTTP %d" % e.code)
+                 + "".join("\n  " + m for m in err.get("matches", [])))
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach FleetView at %s (%s)." % (BASE, e))
+    print("%s %s  %s  %s · %s session %s" % (
+        RESTORED.get(r["action"], r["action"]), c("1", r["name"]), r["id"][:8].lower(),
+        r["project"], r["agent"], r["session"][:8]))
+    if r.get("resolvedFrom"):
+        print("  %s is a Codex worker; restored the conversation it belongs to" % r["resolvedFrom"][:8])
+    if a.no_wait or r["action"] == "already_open":
+        return
+    # Up means its hook reported in. A card stays on `shell` until then — and for good if Codex has
+    # not been told to trust FleetView's hooks, which is worth saying rather than waiting forever.
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        t = next((t for t in state()["terminals"] if t["id"].lower() == r["id"].lower()), None)
+        if t and t.get("status") in ("idle", "working", "needsYou"):
+            print("  %s is back (%s)" % (r["agent"], t.get("statusLabel") or t["status"]))
+            return
+        time.sleep(1)
+    print("  the terminal is open and the resume was typed, but no agent has reported in yet — "
+          "look with: %s" % _cmd("project-manager show %s" % r["id"][:8].lower()))
 
 def cmd_notes(a):
     """The sidebar Notes list, which is also the web dashboard's quick-command chips.
@@ -2453,6 +2495,11 @@ def main():
     s = sub.add_parser("rename", help="relabel a terminal")
     s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_rename)
     s = sub.add_parser("rm", help="remove a terminal (kills its session)"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
+    s = sub.add_parser("restore", help="bring a conversation back by its session id: its card, "
+                                       "and the agent resumed in it")
+    s.add_argument("sid", help="the conversation's session id (Claude or Codex), or its first 8+ characters")
+    s.add_argument("--no-wait", action="store_true", help="do not wait for the agent to come back up")
+    s.set_defaults(fn=cmd_restore)
     s = sub.add_parser("projects", help="history L0: projects by last activity (this Mac)")
     s.add_argument("-n", type=int, default=12, help="how many projects (default 12)")
     s.add_argument("--days", type=int, help="only projects active in the last N days")
