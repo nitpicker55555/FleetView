@@ -72,15 +72,29 @@ enum CodexHookInstaller {
         return lines.joined(separator: "\n")
     }
 
-    /// Remove our fenced block (inclusive) line-by-line, leaving the user's own content intact.
+    /// Remove our fenced block (inclusive) line-by-line, leaving the user's own content intact —
+    /// including whatever Codex itself has written inside the fence.
+    ///
+    /// Codex records which hooks you trusted in this same file, as `[hooks.state."<key>"]` tables
+    /// holding a `trusted_hash`, and its TOML editor files a new table after its siblings: after
+    /// our `[[hooks.*]]` tables, so inside the fence. That alone made the file differ from what
+    /// `install()` writes, so the next launch rewrote it and stripping the fence whole threw the
+    /// trust away: all six hooks came back "untrusted" (Codex's own hooks/list said so after the
+    /// 2026-10-01 relaunch), Codex skips those without a word, and FleetView heard nothing from a
+    /// new Codex session until someone reviewed the hooks in Codex again. So inside the fence only
+    /// our own `[[hooks.*]]` tables go; any other table, and its lines, stays.
     private static func stripFence(_ s: String) -> String {
         guard s.contains(fenceStart) else { return s }
         var out: [String] = []
         var inside = false
+        var foreign = false
         for line in s.components(separatedBy: "\n") {
-            if line.contains(fenceStart) { inside = true; continue }
+            if line.contains(fenceStart) { inside = true; foreign = false; continue }
             if line.contains(fenceEnd) { inside = false; continue }
-            if !inside { out.append(line) }
+            if !inside { out.append(line); continue }
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("[") { foreign = !t.hasPrefix("[[hooks.") }
+            if foreign { out.append(line) }
         }
         while let last = out.last, last.trimmingCharacters(in: .whitespaces).isEmpty { out.removeLast() }
         return out.joined(separator: "\n")
