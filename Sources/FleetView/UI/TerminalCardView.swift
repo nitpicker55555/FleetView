@@ -382,23 +382,16 @@ struct TerminalCardView: View {
 
 struct StatusDot: View {
     let status: TermStatus
-    @State private var pulse = false
 
     var body: some View {
         ZStack {
             if status == .working {
-                Circle().fill(Theme.statusColor(status).opacity(0.35))
+                PulseRing(color: Theme.statusColor(.working), alpha: 0.35,
+                          scale: 0.5...1.0, opacity: 0.6, duration: 1.1)
                     .frame(width: 18, height: 18)
-                    .scaleEffect(pulse ? 1.0 : 0.5)
-                    .opacity(pulse ? 0.0 : 0.6)
             }
             Circle().fill(Theme.statusColor(status)).frame(width: 9, height: 9)
         }
         .frame(width: 18, height: 18)
-        .onAppear {
-            if status == .working {
-                withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { pulse = true }
-            }
-        }
     }
 }

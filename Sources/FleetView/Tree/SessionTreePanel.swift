@@ -519,16 +519,10 @@ struct TreeRailView: View {
 
 /// The current-leaf pulse ring (same animation language as StatusDot).
 struct LeafPulse: View {
-    @State private var pulse = false
     var body: some View {
-        Circle()
-            .stroke(Theme.accent.opacity(0.5), lineWidth: 2)
+        PulseRing(color: Theme.accent, alpha: 0.5, lineWidth: 2,
+                  scale: 0.5...1.15, opacity: 0.8, duration: 1.4)
             .frame(width: 18, height: 18)
-            .scaleEffect(pulse ? 1.15 : 0.5)
-            .opacity(pulse ? 0 : 0.8)
-            .onAppear {
-                withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) { pulse = true }
-            }
             .allowsHitTesting(false)
     }
 }
