@@ -2260,51 +2260,19 @@ final class AppState: ObservableObject {
                 "uuid": PanelVersions.shared.currentUUID ?? "",
             ])
             return ("200 OK", "application/json", body ?? Data(#"{"exists":0,"mtime":0}"#.utf8))
-        case "/conversation":
-            // Structured conversation for the web view — renders as chat with native scrolling,
-            // which is how you read history on a phone (the terminal mirror can't scroll a TUI).
-            guard let s = query["id"], let id = UUID(uuidString: s) else {
-                return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
-            }
-            guard let path = transcriptPath(for: id) else {
-                // No agent conversation (a plain shell, or one that hasn't started yet): the pane's
-                // own scrollback is the readable content, and it scrolls natively on a phone.
-                var info = ConvInfo()
-                info.status = terminals.first(where: { $0.id == id })?.status.rawValue
-                info.shell = true
-                let body = (try? JSONEncoder().encode(ConvResult(messages: [], info: info)))
-                    ?? Data(#"{"messages":[],"info":{"shell":true}}"#.utf8)
-                return ("200 OK", "application/json", body)
-            }
-            let limit = min(400, Int(query["limit"] ?? "") ?? 120)
-            let t = terminals.first(where: { $0.id == id })
-            var result = Conversation.parse(path: path, cwd: t?.cwd ?? "", limit: limit,
-                                            ownPrompt: t?.lastPrompt ?? "")
-            result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
-                                                                  used: result.info.contextTokens)
-            result.info.status = t?.status.rawValue
-            result.info.session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-            result.info.shared = terminalsSharing(path)
-            // Read the choices off the live screen so a prompt can be answered with real buttons.
-            // Gated on the picker's cursor rather than on status, because trust/menu prompts don't
-            // always raise "needs you" — the cursor is what actually means "waiting on you".
-            if let screen = remote.capture(id, lines: 40) {
-                let parsed = Conversation.options(fromScreen: screen)
-                result.info.options = parsed.options
-                result.info.question = parsed.question
-            }
-            let body = (try? JSONEncoder().encode(result)) ?? Data(#"{"messages":[]}"#.utf8)
-            return ("200 OK", "application/json", body)
-        case "/capture":
-            // Recent screen + scrollback of a terminal (for `fleetctl` conversation view / error scan).
-            guard let s = query["id"], let id = UUID(uuidString: s) else {
-                return ("400 Bad Request", "text/plain", Data("bad id".utf8))
-            }
-            let n = Int(query["lines"] ?? "") ?? 200
-            return ("200 OK", "text/plain; charset=utf-8", Data((remote.capture(id, lines: n) ?? "").utf8))
         default:
             return ("404 Not Found", "text/plain", Data("not found".utf8))
         }
+    }
+
+    /// What `/conversation` needs from app state. Only this runs on the main actor: reading the
+    /// transcript and the screen and encoding the answer are done off it (`ConversationSpec`).
+    func conversationSpec(_ id: UUID) -> ConversationSpec {
+        let t = terminals.first(where: { $0.id == id })
+        let path = transcriptPath(for: id)
+        return ConversationSpec(path: path, cwd: t?.cwd ?? "", ownPrompt: t?.lastPrompt ?? "",
+                                status: t?.status.rawValue, shared: path.map(terminalsSharing) ?? 0,
+                                tmuxPath: remote.tmuxPath, tmuxSession: RemoteServer.sessionName(for: id))
     }
 
     /// Resolve what `/ask` needs for a terminal: the agent session id (from its transcript), cwd, and

@@ -148,6 +148,8 @@ final class WebServer {
         if path == "/file" { handleFileGet(conn, params, scope); return }
         if path == "/browse" { handleBrowse(conn, params, scope); return }
         if path == "/read" { handleRead(conn, params, scope); return }
+        if path == "/conversation" { handleConversation(conn, params, scope); return }  // parsing; off it
+        if path == "/capture" { handleCapture(conn, params, scope); return }            // tmux; off it
 
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
@@ -225,6 +227,55 @@ final class WebServer {
             DispatchQueue.global(qos: .userInitiated).async {
                 let reply = RemoteServer.ask(spec, question: q)
                 answer("200 OK", "text/plain; charset=utf-8", Data(reply.utf8))
+            }
+        }
+    }
+
+    /// GET /conversation?id=&limit= — a terminal's transcript as chat, which renders with native
+    /// scrolling: how you read history on a phone, where the terminal mirror cannot scroll a TUI.
+    /// The main actor only says which transcript and screen; reading them happens here.
+    private func handleConversation(_ conn: NWConnection, _ query: [String: String],
+                                    _ scope: WebAudit.Scope) {
+        func answer(_ status: String, _ body: Data) {
+            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
+            send(conn, status: status, type: "application/json", body: body, setCookie: scope.setCookie)
+        }
+        guard let s = query["id"], let id = UUID(uuidString: s) else {
+            answer("400 Bad Request", Data(#"{"error":"bad id"}"#.utf8)); return
+        }
+        let limit = min(400, Int(query["limit"] ?? "") ?? 120)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
+            }
+            let spec = MainActor.assumeIsolated { app.conversationSpec(id) }
+            DispatchQueue.global(qos: .userInitiated).async {
+                answer("200 OK", spec.respond(limit: limit))
+            }
+        }
+    }
+
+    /// GET /capture?id=&lines= — a terminal's screen and recent scrollback as text, for
+    /// `project-manager show`, its submit check and its error scan.
+    private func handleCapture(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        func answer(_ status: String, _ type: String, _ body: Data) {
+            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
+            send(conn, status: status, type: type, body: body, setCookie: scope.setCookie)
+        }
+        guard let s = query["id"], let id = UUID(uuidString: s) else {
+            answer("400 Bad Request", "text/plain", Data("bad id".utf8)); return
+        }
+        let lines = Int(query["lines"] ?? "") ?? 200
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
+            }
+            let (tmux, session) = MainActor.assumeIsolated {
+                (app.remote.tmuxPath, RemoteServer.sessionName(for: id))
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let text = tmux.flatMap { RemoteServer.capturePane($0, session: session, lines: lines) } ?? ""
+                answer("200 OK", "text/plain; charset=utf-8", Data(text.utf8))
             }
         }
     }

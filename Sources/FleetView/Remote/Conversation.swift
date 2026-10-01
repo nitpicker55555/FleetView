@@ -56,6 +56,48 @@ struct ConvResult: Codable {
     var info: ConvInfo
 }
 
+/// What `GET /conversation` needs from app state, taken on the main actor (`AppState
+/// .conversationSpec`). Everything after that — the transcript, the screen, the encoding — is done
+/// off it by `respond`: an open web chat asks every 3 s, and parsing a long session's tail on the
+/// main thread was 20–75 ms of a frozen board each time, 126–375 ms when the machine was busy.
+struct ConversationSpec: Sendable {
+    /// nil: no agent conversation — a plain shell, or one that has not started yet.
+    var path: String?
+    var cwd: String
+    var ownPrompt: String
+    var status: String?
+    var shared: Int
+    var tmuxPath: String?
+    var tmuxSession: String
+
+    func respond(limit: Int) -> Data {
+        guard let path else {
+            // The pane's own scrollback is the readable content then, and it scrolls natively on
+            // a phone.
+            var info = ConvInfo()
+            info.status = status
+            info.shell = true
+            return (try? JSONEncoder().encode(ConvResult(messages: [], info: info)))
+                ?? Data(#"{"messages":[],"info":{"shell":true}}"#.utf8)
+        }
+        var result = Conversation.parseCached(path: path, cwd: cwd, limit: limit, ownPrompt: ownPrompt)
+        result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
+                                                              used: result.info.contextTokens)
+        result.info.status = status
+        result.info.session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        result.info.shared = shared
+        // Read the choices off the live screen so a prompt can be answered with real buttons.
+        // Gated on the picker's cursor rather than on status, because trust/menu prompts don't
+        // always raise "needs you" — the cursor is what actually means "waiting on you".
+        if let tmuxPath, let screen = RemoteServer.capturePane(tmuxPath, session: tmuxSession, lines: 40) {
+            let parsed = Conversation.options(fromScreen: screen)
+            result.info.options = parsed.options
+            result.info.question = parsed.question
+        }
+        return (try? JSONEncoder().encode(result)) ?? Data(#"{"messages":[]}"#.utf8)
+    }
+}
+
 /// Reads an agent transcript (Claude Code `.jsonl` or Codex rollout `.jsonl`) and turns it into a
 /// plain list of messages for the web "conversation" view. This is what makes remote reading work on
 /// a phone: structured messages render with native scrolling instead of mirroring a full-screen TUI.
@@ -241,6 +283,51 @@ enum Conversation {
     }
     private static func isoString(_ ms: Double) -> String {
         isoParser.string(from: Date(timeIntervalSince1970: ms / 1000))
+    }
+
+    /// The last parse of each transcript, handed back while nothing it was read from has changed.
+    ///
+    /// The web chat re-asks every 3 s, and every answer was a fresh parse of up to 1.5 MB of JSON
+    /// even when the agent had not written a line in an hour. The key is everything `parse` reads:
+    /// the transcript (an append moves its size and mtime, a rewrite its inode), the prompt history
+    /// that queued prompts come from, and the arguments.
+    private struct ParseKey: Equatable {
+        let size: UInt64, mtime: Double, inode: UInt64
+        let historySize: UInt64, historyMtime: Double
+        let cwd: String, limit: Int, ownPrompt: String
+    }
+    private static var parsed: [String: (key: ParseKey, result: ConvResult, used: Date)] = [:]
+    private static let parsedLock = NSLock()
+
+    static func parseCached(path: String, cwd: String, limit: Int, ownPrompt: String) -> ConvResult {
+        func stat(_ p: String) -> (size: UInt64, mtime: Double, inode: UInt64) {
+            let a = try? FileManager.default.attributesOfItem(atPath: p)
+            return ((a?[.size] as? NSNumber)?.uint64Value ?? 0,
+                    (a?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
+                    (a?[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0)
+        }
+        let file = stat(path)
+        let history = stat(FV.home.appendingPathComponent(".claude/history.jsonl").path)
+        let key = ParseKey(size: file.size, mtime: file.mtime, inode: file.inode,
+                           historySize: history.size, historyMtime: history.mtime,
+                           cwd: cwd, limit: limit, ownPrompt: ownPrompt)
+        parsedLock.lock()
+        if let hit = parsed[path], hit.key == key {
+            parsed[path]?.used = Date()
+            parsedLock.unlock()
+            return hit.result
+        }
+        parsedLock.unlock()
+
+        let result = parse(path: path, cwd: cwd, limit: limit, ownPrompt: ownPrompt)
+        parsedLock.lock()
+        parsed[path] = (key, result, Date())
+        // A handful of chats open at once is the most there is; past that, drop the stalest.
+        if parsed.count > 8, let stale = parsed.min(by: { $0.value.used < $1.value.used })?.key {
+            parsed[stale] = nil
+        }
+        parsedLock.unlock()
+        return result
     }
 
     static func parse(path: String, cwd: String = "", limit: Int = 120,

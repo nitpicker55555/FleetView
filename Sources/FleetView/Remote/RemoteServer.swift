@@ -258,21 +258,26 @@ final class RemoteServer {
         return e.isEmpty ? "(no answer)" : e
     }
 
-    /// Capture the terminal's visible screen + `lines` of scrollback as plain text (for `fleetctl`
-    /// to show the conversation and scan for error-terminated sessions).
-    func capture(_ id: UUID, lines: Int) -> String? {
-        guard let tmuxPath else { return nil }
+    /// Capture a terminal's visible screen + `lines` of scrollback as plain text (for `fleetctl`
+    /// to show the conversation and scan for error-terminated sessions, and for the web chat's
+    /// answer buttons). Static and nonisolated because both callers run off the main actor; capped
+    /// like every other tmux call, because it had no limit at all when it ran on the main thread,
+    /// where a tmux that stopped answering would have frozen the board with it.
+    nonisolated static func capturePane(_ tmuxPath: String, session: String, lines: Int) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: tmuxPath)
-        p.arguments = ["-L", RemoteServer.socket, "capture-pane", "-p", "-t",
-                       RemoteServer.sessionName(for: id), "-S", "-\(max(0, lines))"]
+        p.arguments = ["-L", RemoteServer.socket, "capture-pane", "-p", "-t", session,
+                       "-S", "-\(max(0, lines))"]
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { return nil }
+        let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + tmuxTimeout, execute: killer)
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
+        killer.cancel()
+        guard p.terminationReason == .exit, p.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
