@@ -146,4 +146,4 @@ audit log 里每次 FleetView 启动之后收到的 Codex prompt 和 session 事
 - 状态轮询在 hook 认领 rollout 之前仍按 cwd 猜。hook 指针比候选 rollout 新时，应该优先用指针。
 - 由终端里的 agent 启动的 `codex exec` 也继承 `FLEETVIEW_TERM_ID`，历史里有 10 次改绑到 exec 的 rollout。可以用 session_meta 的 `source: "exec"` 同样处理。
 - Codex 卡的 token 数现在只算会话本身，不含 subagent，Claude 卡含 subagent。要一致需要把子 rollout 的 token 加进来。
-- 没有 subagent 时 state.json 的写入也接近限额。9-27 到 9-28 的报告是 27.25 KB/s，238 步里 216 步在 `saveNow()`。state.json 462 KB 里约 60% 是 `terminalArchive`（304 行），每次 hook 事件之后都整份重写。
+- 没有 subagent 时 state.json 的写入也接近限额。9-27 到 9-28 的报告是 27.25 KB/s，238 步里 216 步在 `saveNow()`。state.json 463 KB 里 448 KB 是 `terminalArchive`（339 行，每行带最后一条 prompt），每次 hook 事件之后都整份重写。（这里原先写的"约 60%"是按带空格的 JSON 估的，不对。）后来的处理见 `AppState.persist`：归档移到 `~/.fleetview/archive.json`，只在变化时写；状态字段不再存；内容没变不写；只有活跃时间和 token 数变化时最多 2 分钟写一次。

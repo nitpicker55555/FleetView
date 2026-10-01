@@ -1543,10 +1543,17 @@ class _History:
                 st = json.load(f)
         except (OSError, ValueError):
             st = {}
+        # The archive has its own file now; a state.json from an older FleetView still carries it.
+        archive = list(st.get("terminalArchive") or [])
+        try:
+            with open(os.path.join(FV_DIR, "archive.json")) as f:
+                archive += json.load(f) or []
+        except (OSError, ValueError):
+            pass
         for p in st.get("projects") or []:
             if p.get("path"):
                 self.named[p["path"].rstrip("/")] = p.get("name") or os.path.basename(p["path"])
-        for t in st.get("terminalArchive") or []:
+        for t in archive:
             if t.get("projectPath"):
                 anchors.add(t["projectPath"].rstrip("/"))
             if t.get("transcriptPath"):

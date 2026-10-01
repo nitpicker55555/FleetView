@@ -464,6 +464,11 @@ final class AppState: ObservableObject {
     private var workerNeedsYou: Set<UUID> = []
     /// The pending debounced save (see `save()`).
     private var saveWork: DispatchWorkItem?
+    /// What was last written, so a save that would write the same thing again doesn't (`persist`).
+    private var savedState: Persisted?
+    private var savedArchive: [TerminalArchive]?
+    /// A write of nothing but soft changes, waiting its turn (see `Persisted.hard`).
+    private var softSaveWork: DispatchWorkItem?
 
     /// Watch `~/.fleetview/ui/panel.html` so an agent can create / update / remove the panel *while*
     /// FleetView runs — it appears, reloads and disappears live, no relaunch. The polling lives here
@@ -558,7 +563,7 @@ final class AppState: ObservableObject {
 
     // MARK: - Persistence
 
-    private struct Persisted: Codable {
+    private struct Persisted: Codable, Equatable {
         var projects: [Project] = []
         var terminals: [TerminalSession] = []
         var clusters: [Cluster] = []
@@ -620,6 +625,20 @@ final class AppState: ObservableObject {
             self.collapsedProjects = collapsedProjects; self.terminalFontSize = terminalFontSize
             self.terminalArchive = terminalArchive; self.showRecentStrip = showRecentStrip
         }
+
+        /// This with the soft fields blanked: what is left is what a crash must not lose. Soft is
+        /// when a terminal last did something, its token total and how long its last run took —
+        /// moved by nearly every hook event, and worth nothing after a crash: the token total is
+        /// rebuilt from the transcript at launch, and a clean quit writes them all.
+        var hard: Persisted {
+            var h = self
+            for i in h.terminals.indices {
+                h.terminals[i].lastActivity = nil
+                h.terminals[i].newTokens = 0
+                h.terminals[i].lastRunSeconds = nil
+            }
+            return h
+        }
     }
 
     /// A first run — no `state.json` at all — opens the checkout this bundle was built from, so a
@@ -655,7 +674,7 @@ final class AppState: ObservableObject {
         clusters = p.clusters
         // Rows without a transcript predate the rule that stopped recording shell-only cards.
         // Dropped on the way in rather than filtered forever, so the stored file converges too.
-        terminalArchive = (p.terminalArchive ?? []).filter { $0.transcriptPath != nil }
+        terminalArchive = loadArchive(carried: p.terminalArchive).filter { $0.transcriptPath != nil }
         // Re-attach rows written before the path was recorded. Their project id may already be
         // dead — closing and reopening a folder mints a new one — so they are matched by the
         // deepest project their terminal's cwd sits inside, which is where that terminal ran.
@@ -702,24 +721,49 @@ final class AppState: ObservableObject {
     /// Persist soon, not now.
     ///
     /// Every hook event ends in a save, and a save is a JSONEncoder pass over the whole model plus a
-    /// 20KB write — on the main actor, in the middle of a burst of events, while you are scrolling.
+    /// write — on the main actor, in the middle of a burst of events, while you are scrolling.
     /// Nothing reads this file until the next launch, so the only real requirements are "soon" and
     /// "definitely before we quit"; `saveNow()` is the second one and is called from
     /// applicationWillTerminate.
     func save() {
         saveWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.saveNow() }
+        let work = DispatchWorkItem { [weak self] in self?.persist(deferSoft: true) }
         saveWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }
 
-    func saveNow() {
+    /// Everything, now: for quitting, where nothing can be left for later.
+    func saveNow() { persist(deferSoft: false) }
+
+    /// How long a change to nothing but soft fields (`Persisted.hard`) may wait to be written.
+    private static let softSaveDelay: TimeInterval = 120
+
+    /// Write what changed, and only that.
+    ///
+    /// macOS flagged FleetView twice for writing more than its disk budget (24.86 KB/s over a day):
+    /// 81.79 KB/s and 27.25 KB/s, with `saveNow` in 185 of 204 and 216 of 238 of the sampled
+    /// stacks. Every save rewrote the whole of state.json, 463 KB, of which 448 KB was the archive
+    /// of removed cards — 339 rows, each with its last prompt — which changes only when a card is
+    /// removed or restored. And a save came after every hook event, though most of them changed
+    /// nothing a relaunch keeps: a status, which `load` resets, or a soft field. So the archive
+    /// has a file of its own, written when it changes; the status fields are not stored; a write
+    /// that would put the same bytes back is skipped; and soft changes wait their turn.
+    private func persist(deferSoft: Bool) {
         saveWork?.cancel()
         saveWork = nil
         FV.ensureSupportDir()
+        // The archive before state.json. The other order, with a crash between the two, leaves a
+        // removed card in neither file; this one at worst leaves it in both.
+        if terminalArchive != savedArchive,
+           let data = try? JSONEncoder().encode(terminalArchive),
+           (try? data.write(to: FV.archiveFile, options: .atomic)) != nil {
+            savedArchive = terminalArchive
+        }
         let snapshot = terminals.map { t -> TerminalSession in
             var c = t
-            if controllers[t.id] == nil { c.status = .closed; c.runningSince = nil }
+            c.status = .closed        // all three are reset by `load`, so storing them only
+            c.runningSince = nil      // turned every status change into a write
+            c.sessionId = nil
             return c
         }
         let p = Persisted(projects: projects, terminals: snapshot,
@@ -730,11 +774,57 @@ final class AppState: ObservableObject {
                           closeTerminalsOnQuit: closeTerminalsOnQuit,
                           collapsedProjects: Array(collapsedProjects),
                           terminalFontSize: terminalFontSize,
-                          terminalArchive: terminalArchive,
+                          // Still carried here while archive.json does not hold it, so that a
+                          // failed write can never be what drops it.
+                          terminalArchive: savedArchive == terminalArchive ? nil : terminalArchive,
                           showRecentStrip: showRecentStrip)
+        if p == savedState {
+            softSaveWork?.cancel()
+            softSaveWork = nil
+            return
+        }
+        if deferSoft, let saved = savedState, p.hard == saved.hard {
+            if softSaveWork == nil {
+                let work = DispatchWorkItem { [weak self] in
+                    self?.softSaveWork = nil
+                    self?.persist(deferSoft: false)
+                }
+                softSaveWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.softSaveDelay, execute: work)
+            }
+            return
+        }
+        softSaveWork?.cancel()
+        softSaveWork = nil
         // .atomic: without it a crash or a full disk mid-write leaves a truncated state.json, and
         // that file IS the board — every project, terminal and cluster.
-        if let data = try? JSONEncoder().encode(p) { try? data.write(to: FV.stateFile, options: .atomic) }
+        if let data = try? JSONEncoder().encode(p),
+           (try? data.write(to: FV.stateFile, options: .atomic)) != nil {
+            savedState = p
+        }
+    }
+
+    /// The archive from archive.json, together with any a state.json still carries: one written
+    /// before the archive moved out, one written while archive.json could not be, or one from an
+    /// older build after a downgrade — which knows nothing of archive.json and so starts its archive
+    /// again from nothing. A row that is in both is the same row.
+    private func loadArchive(carried: [TerminalArchive]?) -> [TerminalArchive] {
+        var own: [TerminalArchive]?
+        if let data = try? Data(contentsOf: FV.archiveFile) {
+            own = try? JSONDecoder().decode([TerminalArchive].self, from: data)
+            if own == nil {
+                // Not a fresh start. Read as one, the next save would write an empty archive over
+                // rows nobody can read back; moved aside, they can still be recovered by hand.
+                let aside = FV.supportDir.appendingPathComponent(
+                    "archive.unreadable-\(Int(Date().timeIntervalSince1970)).json")
+                try? FileManager.default.moveItem(at: FV.archiveFile, to: aside)
+                FV.log("archive.json did not decode; moved it to \(aside.lastPathComponent)")
+            }
+        }
+        guard let carried, !carried.isEmpty else { return own ?? [] }
+        guard let own else { return carried }
+        let ids = Set(carried.map(\.id))
+        return (carried + own.filter { !ids.contains($0.id) }).sorted { $0.removedAt > $1.removedAt }
     }
 
     // MARK: - Projects

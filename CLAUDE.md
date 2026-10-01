@@ -16,7 +16,7 @@ operational files from being swept into a commit by whoever runs `git add -A` ne
 | `Tests/FleetViewAuditTests/` | `swift run FleetViewAuditTests` (not `swift test` — see Package.swift) |
 | `docs/design/` | design notes, dated |
 | `scripts/`, `examples/` | **ignored by default** — see below |
-| `~/.fleetview/` | all runtime state: `state.json`, logs, `ui/panel.html`, `sessions/`, `search.db` |
+| `~/.fleetview/` | all runtime state: `state.json`, `archive.json` (removed cards), logs, `ui/panel.html`, `sessions/`, `search.db` |
 
 ### scripts/ and examples/ are whitelisted, not open
 

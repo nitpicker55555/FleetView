@@ -6,6 +6,9 @@ enum FV {
 
     static var supportDir: URL { home.appendingPathComponent(".fleetview", isDirectory: true) }
     static var stateFile: URL { supportDir.appendingPathComponent("state.json") }
+    /// Removed cards, kept per project (`AppState.terminalArchive`). Out of state.json because it is
+    /// most of its size and changes far less often than the rest (see `AppState.persist`).
+    static var archiveFile: URL { supportDir.appendingPathComponent("archive.json") }
     static var portFile: URL { supportDir.appendingPathComponent("port") }
     static var hookScript: URL { supportDir.appendingPathComponent("hook.sh") }
     static var logFile: URL { supportDir.appendingPathComponent("fleetview.log") }
