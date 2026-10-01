@@ -30,7 +30,11 @@ nodes requires treeflow to be installed.
 
 Press **⌘K** to search local Claude Code and Codex history. **Tab** switches the scope between
 terminals on the board, the current conversation, and all history. Drag a search result onto the
-board to continue the conversation from that point.
+board to continue the conversation from that point. The new card takes the name of the card the
+conversation was in, marked ` ⑂` when it continues from an earlier point as a new branch.
+
+Removed cards are kept per project. The clock button in a project's header lists them in the same
+panel; drag one back onto the board to resume it.
 
 The search index retains indexed conversations even after their source transcripts have been
 deleted. Those conversations remain searchable and readable, and can be rebuilt into sessions.
@@ -53,7 +57,13 @@ project-manager show <sel> -l 60      # Read a terminal's recent output
 project-manager send <sel> "continue" # Send an instruction
 project-manager whoami               # Identify the current terminal
 project-manager check                # Find sessions that ended in an error
+project-manager restore <session-id> # Bring a closed conversation back, agent resumed
 ```
+
+`restore` takes a Claude or Codex session id, or its first 8 characters, and puts that
+conversation back on the board with the agent resumed: in the card it was in, whether that card was
+closed or removed, or otherwise in a new card in the folder it ran in. A conversation that is still
+open is reported, not opened twice.
 
 You can use the same commands with FleetView on another Mac. `project-manager peers` discovers
 instances on the network; `-u <url>` selects the instance a command should use.
@@ -93,6 +103,10 @@ account or a separate server.
 Conversations appear as chat, so you can read an agent's work, respond to permission prompts, and
 send replies from a small screen. You can also open the live terminal to use a CLI picker, inspect
 a diff, or type directly into the TUI.
+
+The header shows signal bars and the round-trip time to the Mac, and reads offline when the Mac
+stops answering. Tap it to see how you are connected: on the same Mac, over the LAN, or through
+Tailscale, directly or via a relay.
 
 Files can be sent in both directions. Attach a photo or file from your phone to a prompt, or run
 `fleetview-send report.pdf` on the Mac to make an agent's output available in the dashboard's
@@ -134,8 +148,17 @@ By default, tmux sessions keep running when you quit FleetView and reconnect whe
 again. Closing a terminal stops its running session. You can also enable the option to close all
 terminals when quitting.
 
-FleetView installs status hooks for Claude Code and Codex. To remove them, use
-**FleetView → Uninstall Status Hooks**.
+`~/.fleetview/logs/` holds an audit log, one JSON Lines file per day, which FleetView never
+deletes. It records what happened on the board and through the dashboard: terminals created,
+opened, renamed and removed; the first 120 characters of each prompt; commands typed in FleetView's
+shells, with tokens masked; and for each browser or CLI, the device, its address, and what it did,
+including uploads, downloads, files read, folders browsed, and `project-manager` runs from another
+Mac. `~/.fleetview/logging.json` changes what is kept, for example `"promptPreview": false` or
+`"shellCommand": "argv0"`. Set only the keys you want to change.
+
+FleetView installs status hooks for Claude Code and Codex. Codex runs them only after you have
+trusted them in Codex, and FleetView keeps that trust when it rewrites its hook entries. To remove
+the hooks, use **FleetView → Uninstall Status Hooks**.
 
 ## Network access
 

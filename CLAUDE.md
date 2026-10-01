@@ -75,8 +75,14 @@ directory outside the repo when you have one.
 - **Closing a terminal destroys its session.** Closing the window, Close All Terminals and Remove
   Terminal all kill the tmux session — a card that says "closed" means the agent behind it is
   stopped. Clicking a closed card reopens it and types `--resume` for the session it last had
-  (`AppState.reopenTerminal`), which is what keeps that recoverable. The only thing that reattaches
-  to a still-live session is `reconnectLiveTerminals()` on launch.
+  (`AppState.reopenTerminal`), which is what keeps that recoverable. `project-manager restore
+  <session-id>` does the same from a session id, for a removed card too (`restoreConversation`).
+  The only thing that reattaches to a still-live session is `reconnectLiveTerminals()` on launch.
+- **Codex keeps its hook trust inside FleetView's block in `~/.codex/config.toml`.** It appends the
+  `[hooks.state."…"] trusted_hash` tables after its siblings, which is inside our fence, so
+  `CodexHookInstaller.stripFence` must only ever remove our own `[[hooks.*]]` tables. Stripping the
+  whole fence untrusted every hook on each launch and Codex stopped reporting without a word — see
+  [`docs/design/2026-10-01-codex-worker-hooks.md`](docs/design/2026-10-01-codex-worker-hooks.md).
 - Two agent backends, two transcript formats: Claude
   `~/.claude/projects/<slug>/…` (branches via `parentUuid`), Codex
   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (branches via `forked_from_id`). Anything that

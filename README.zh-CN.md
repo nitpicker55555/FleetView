@@ -23,7 +23,9 @@ FleetView 把多个 agent 会话放在同一个看板上，按项目分组。哪
 [treeflow](https://github.com/nitpicker55555/Agent-Treeflow) 的分支算法；从 Codex 历史节点继续则需要安装 treeflow。
 
 按 **⌘K** 搜索本机的 Claude Code 和 Codex 对话记录，按 **Tab** 在看板终端、当前对话和全部历史之间切换搜索范围。
-把搜索结果拖到看板上，就能从对应位置继续对话。
+把搜索结果拖到看板上，就能从对应位置继续对话。新卡片沿用这段对话原来所在卡片的名字；从较早的位置另开分支时，名字后面加 ` ⑂`。
+
+删除的卡片按项目保留。点项目标题栏上的时钟按钮，会在同一个面板里列出它们，拖回看板即可继续。
 
 搜索索引会保留已收录的对话内容。即使原始记录后来被删除，仍然可以搜索、阅读，并重建成可继续使用的会话。
 
@@ -43,7 +45,12 @@ project-manager show <sel> -l 60   # 查看终端最近的输出
 project-manager send <sel> "继续"   # 发送指令
 project-manager whoami             # 查看当前所在的终端
 project-manager check              # 找出以报错结束的会话
+project-manager restore <会话 id>   # 恢复已关闭的对话，并接着运行 agent
 ```
+
+`restore` 接受 Claude 或 Codex 的会话 id，也可以只给前 8 位，把这段对话放回看板并恢复 agent：
+原来的卡片不管是关闭了还是删除了，都在那张卡片里恢复；没有卡片的，在对话当时所在的文件夹新建一张。
+对话还开着时只会提示，不会再开一个。
 
 这些命令也能连接另一台 Mac 上的 FleetView。用 `project-manager peers` 发现网络中的实例，
 再通过 `-u <url>` 指定要连接的地址。
@@ -77,6 +84,9 @@ FleetView 在 Mac 上提供 Web 仪表盘，通过局域网或 Tailscale 就能�
 
 对话以聊天形式显示，方便在手机上阅读 agent 的执行过程、回应权限询问和发送新消息。
 需要操作 CLI 选择器、查看 diff 或直接输入时，也可以打开实时终端界面。
+
+页面顶部显示信号格和到 Mac 的往返延迟，Mac 没有响应时显示「离线」。点一下可以看到连接方式：本机、局域网，
+还是经 Tailscale 直连或中转。
 
 文件支持双向传递：从手机上传照片或文件作为 prompt 的附件；在 Mac 上运行 `fleetview-send report.pdf`，
 则会把文件放入仪表盘的文件托盘，方便在手机上查看 agent 生成的报告或其他产物。
@@ -114,8 +124,14 @@ FleetView 将应用状态、搜索索引、日志、传输的文件和自定义�
 默认情况下，退出 FleetView 后 tmux 会话会继续运行，下次启动时重新连接。关闭终端会停止其中运行的会话。
 如果希望退出应用时一并关闭所有终端，可以在设置中开启该选项。
 
-FleetView 会为 Claude Code 和 Codex 安装状态 hook，可以通过
-**FleetView → Uninstall Status Hooks** 移除。
+`~/.fleetview/logs/` 中是审计日志，每天一个 JSON Lines 文件，FleetView 不会删除。它记录看板上和通过仪表盘发生的操作：
+终端的创建、打开、改名和删除；每条 prompt 的前 120 个字符；在 FleetView 终端里输入的命令（token 会被遮盖）；
+以及每个浏览器或命令行客户端的设备、地址和所做的操作，包括上传、下载、读取的文件、浏览的目录，
+以及从另一台 Mac 运行的 `project-manager` 命令。可以在 `~/.fleetview/logging.json` 中调整记录内容，
+例如 `"promptPreview": false` 或 `"shellCommand": "argv0"`，只写需要修改的项即可。
+
+FleetView 会为 Claude Code 和 Codex 安装状态 hook。Codex 要在你信任这些 hook 之后才会运行它们，
+FleetView 重写 hook 配置时会保留这份信任。可以通过 **FleetView → Uninstall Status Hooks** 移除 hook。
 
 ## 网络访问
 

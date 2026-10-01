@@ -51,8 +51,9 @@ project-manager -u http://192.168.2.2:8080 send cosy "继续"
 `-u` applies to every subcommand; `FLEETVIEW_URL` does the same thing if you would rather export it
 once. Every command in the [[project-manager]] skill works against a remote instance — the terminal
 ones (`ls`, `watch`, `show`, `tail`, `send`, `key`, `choose`, `check`, `new`, `rename`, `rm`,
-`notes`, `open` for a folder in *that* Mac's `~/PycharmProjects`) through the HTTP API, and the ones
-that read files through `/pm`, below.
+`notes`, `open` for a folder in *that* Mac's `~/PycharmProjects`, `restore` for a conversation on
+*that* Mac) through the HTTP API, and the ones that read files through `/pm`, below. A peer whose
+FleetView predates `restore` says so instead of restoring.
 
 `send` reports whether the prompt actually left the agent's input box. A peer running an older
 FleetView cannot answer that, so the CLI checks the pane itself — same verdicts, same exit codes.
@@ -128,7 +129,8 @@ What follows from that, for you:
   继续 to `cosy voice-1`" is ambiguous across machines; "…on `192.168.2.2:8080`" is not.
 - **Never `rm` on a remote instance without being asked to.** Removing a terminal destroys its tmux
   session and whatever was running in it. On your own machine that is recoverable knowledge; on
-  another one you cannot see what you took.
+  another one you cannot see what you took. `restore <session-id>` can bring the conversation back,
+  not the work that was in flight when it was killed.
 - **Do not scan networks you were not asked to.** `peers` looks at the local subnet, which is fine
   at home and is not fine on a café or office network. If the user is somewhere shared, ask first.
 
