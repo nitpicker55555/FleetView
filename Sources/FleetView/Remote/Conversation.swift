@@ -23,7 +23,7 @@ struct ConvMsg: Codable {
     var edits: [ConvEdit]? = nil  // Edit / MultiEdit / Write → rendered as a diff
     var patch: String? = nil      // Codex apply_patch → already a patch, just colourised
     var pending: Bool = false     // tool call with no result yet → still running, or awaiting approval
-    var queued: Bool = false      // typed mid-turn: recovered from prompt history, not the transcript
+    var queued: Bool = false      // typed mid-turn: a queued_command in the transcript, or else prompt history
 }
 
 /// One tappable choice parsed off the agent's on-screen prompt (e.g. "1. Yes"), so a permission
@@ -287,6 +287,7 @@ enum Conversation {
         let sessionId = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         // Prompts from every branch in the file, so a compacted-away one is still recognised.
         let everSaid: [String] = records.compactMap { obj in
+            if let q = queuedCommand(obj) { return flatten(q.text) }
             guard (obj["type"] as? String) == "user",
                   let m = obj["message"] as? [String: Any] else { return nil }
             if let str = m["content"] as? String { return flatten(str) }
@@ -466,6 +467,10 @@ enum Conversation {
     private static func parseClaude(_ obj: [String: Any], into msgs: inout [ConvMsg],
                                     toolIndex: inout [String: Int], cwd: String = "") {
         let type = obj["type"] as? String
+        if type == "attachment" {
+            if let queued = queuedCommand(obj) { append(&msgs, queued) }
+            return
+        }
         guard type == "user" || type == "assistant" else { return }
         guard let message = obj["message"] as? [String: Any] else { return }
         let role = (message["role"] as? String) ?? type ?? "user"
@@ -511,6 +516,34 @@ enum Conversation {
                 continue
             }
         }
+    }
+
+    /// A prompt you typed while the agent was mid-turn.
+    ///
+    /// Claude does not write those as user messages. It records a `queued_command` attachment at
+    /// the point in the chain where the agent picked the prompt up, which is where it belongs on
+    /// screen: above the reply it got. Read only from history.jsonl, a prompt had no position, and
+    /// one sent in the last turn was appended at the very end, under its own answer. Background
+    /// task notifications arrive the same way with `commandMode: "task-notification"`; they are not
+    /// something you said and are left out.
+    private static func queuedCommand(_ obj: [String: Any]) -> ConvMsg? {
+        guard let a = obj["attachment"] as? [String: Any],
+              (a["type"] as? String) == "queued_command",
+              (a["commandMode"] as? String) == "prompt" else { return nil }
+        let text: String
+        if let s = a["prompt"] as? String {
+            text = s
+        } else if let blocks = a["prompt"] as? [[String: Any]] {
+            text = blocks.compactMap { ($0["type"] as? String) == "text" ? $0["text"] as? String : nil }
+                .joined(separator: "\n")
+        } else {
+            return nil
+        }
+        guard !trim(text).isEmpty else { return nil }
+        return ConvMsg(role: "user", kind: "text", text: trim(text), tool: nil, cat: nil,
+                       detail: nil, output: nil, ok: nil,
+                       ts: (obj["timestamp"] as? String) ?? (a["timestamp"] as? String),
+                       sub: (obj["isSidechain"] as? Bool) ?? false, queued: true)
     }
 
     // MARK: - Codex
