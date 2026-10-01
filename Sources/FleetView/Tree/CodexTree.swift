@@ -28,11 +28,16 @@ enum CodexTree {
         let cwd: String
         let started: String       // ISO8601 from the head record; also the sort key
         let forkedFrom: String?
-        /// Set when this rollout is a worker spawned by another thread, never when it is a
-        /// conversation someone typed into. Kept rather than dropped so a terminal that has been
-        /// attributed to a worker can still be walked back to the conversation it belongs to.
+        /// The thread that spawned this one, when it is a worker. Kept rather than dropped so a
+        /// terminal that has been attributed to a worker can still be walked back to the
+        /// conversation it belongs to.
         let parentThread: String?
-        var isMainLine: Bool { parentThread == nil }
+        /// A thread another thread spawned — a multi-agent worker — never a conversation someone
+        /// typed into. Not the same test as `parentThread != nil`: Codex 0.136 marked its workers
+        /// only inside `source`, with no top-level parent id, so 139 of them here read as
+        /// conversations of their own.
+        let isWorker: Bool
+        var isMainLine: Bool { !isWorker }
     }
 
     // MARK: - The rollout index
@@ -68,8 +73,7 @@ enum CodexTree {
     ///
     /// Sub-threads are excluded the way Claude's builder drops sidechains: a multi-agent run spawns
     /// a rollout per worker (1775 of the 2068 here), each of which would root its own mini-tree in
-    /// a panel that is supposed to be showing one conversation. `parent_thread_id` is the marker and
-    /// it is never a session's own id, so its mere presence means "this thread has a parent".
+    /// a panel that is supposed to be showing one conversation. `Meta.isWorker` is the marker.
     static func sessions(cwd: String, root: URL) -> [Meta] {
         guard !cwd.isEmpty else { return [] }
         var out: [Meta] = []
@@ -87,24 +91,86 @@ enum CodexTree {
         if let hit = metaCache[path] { lock.unlock(); return hit }
         lock.unlock()
 
-        let parsed = readMeta(path)
+        // Not cached when there is no complete first line yet. A hook names a worker's rollout the
+        // moment the worker acts, which can be before Codex has finished writing the head, and that
+        // is "not yet", not "not a rollout" — cached, it would stay unclassified for good.
+        guard let line = headLine(path) else { return nil }
+        let parsed = readMeta((try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+                              path: path)
         lock.lock(); metaCache[path] = parsed; lock.unlock()
         return parsed
     }
 
-    private static func readMeta(_ path: String) -> Meta? {
-        guard let obj = headObject(path),
+    private static func readMeta(_ obj: [String: Any]?, path: String) -> Meta? {
+        guard let obj,
               (obj["type"] as? String) == "session_meta",
               let payload = obj["payload"] as? [String: Any],
               let cwd = payload["cwd"] as? String else { return nil }
         let sid = (payload["id"] as? String)
             ?? (payload["session_id"] as? String)
             ?? sessionId(fromRollout: path)
+        // Where Codex says "this is a worker, and whose" has moved between versions: 0.153 says it
+        // three ways, 0.141 has the top-level `parent_thread_id`, 0.136 has it only inside `source`.
+        let subagent = (payload["source"] as? [String: Any])?["subagent"]
+        let spawn = (subagent as? [String: Any])?["thread_spawn"] as? [String: Any]
+        let parent = (payload["parent_thread_id"] as? String)
+            ?? (spawn?["parent_thread_id"] as? String)
         return Meta(path: path, sid: sid, cwd: cwd,
                     started: (payload["timestamp"] as? String)
                         ?? (obj["timestamp"] as? String) ?? "",
                     forkedFrom: payload["forked_from_id"] as? String,
-                    parentThread: payload["parent_thread_id"] as? String)
+                    parentThread: parent,
+                    isWorker: parent != nil || subagent != nil
+                        || (payload["thread_source"] as? String) == "subagent")
+    }
+
+    /// Whether `path` is a worker's rollout rather than a conversation's. False for anything that
+    /// is not a Codex rollout, and for one whose head is not readable yet.
+    static func isWorkerRollout(_ path: String) -> Bool {
+        path.contains("/.codex/") && meta(path)?.isWorker == true
+    }
+
+    /// The conversation's rollout for any rollout in it: `path` itself unless that is a worker, else
+    /// the first thread above it that is not. nil when the chain runs into a rollout that is not on
+    /// disk, which is better than answering with the worker.
+    ///
+    /// Where `mainLineSession` answers with an id and indexes every head to do it, this follows the
+    /// chain by filename alone — it sits on paths that run every second (`hookSessionPath`, the
+    /// status poll) and only ever needs the two or three heads on the way up.
+    static func mainLineRollout(of path: String) -> String? {
+        var cur = path
+        var seen: Set<String> = []
+        while let m = meta(cur), m.isWorker {
+            guard let up = m.parentThread, seen.insert(cur).inserted,
+                  let next = rolloutPath(ofThread: up, near: cur) else { return nil }
+            cur = next
+        }
+        return cur
+    }
+
+    private static var threadPaths: [String: String] = [:]
+    private static var threadMisses: [String: Date] = [:]
+
+    /// The rollout whose filename carries thread `id`. Its own day directory is tried first — a
+    /// worker is almost always spawned the day its parent is busy — and only then the whole tree.
+    /// A miss is remembered for a minute, so a parent that was deleted does not cost a full walk on
+    /// every poll.
+    static func rolloutPath(ofThread id: String, near sibling: String) -> String? {
+        lock.lock()
+        if let hit = threadPaths[id] { lock.unlock(); return hit }
+        if let at = threadMisses[id], Date().timeIntervalSince(at) < 60 { lock.unlock(); return nil }
+        lock.unlock()
+
+        let suffix = "-\(id).jsonl"
+        let dir = (sibling as NSString).deletingLastPathComponent
+        let near = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
+            .first { $0.hasSuffix(suffix) }.map { (dir as NSString).appendingPathComponent($0) }
+        let found = near ?? rolloutPaths(root: CodexSession.sessionsDir).first { $0.hasSuffix(suffix) }
+
+        lock.lock()
+        if let found { threadPaths[id] = found } else { threadMisses[id] = Date() }
+        lock.unlock()
+        return found
     }
 
     /// The conversation a rollout belongs to: itself if someone typed in it, otherwise the thread
@@ -113,8 +179,10 @@ enum CodexTree {
     /// This is not a corner case. A multi-agent run writes one rollout per worker — 637 of them
     /// against this project, versus 47 real conversations — and they share the project's cwd, so
     /// "the newest rollout in this directory" (how a Codex terminal is attributed at all, see
-    /// `CodexSession.currentRollout`) lands on a worker most of the time while a run is going. A
-    /// tree opened on such a terminal has to show the conversation, not nothing.
+    /// `CodexSession.currentRollout`) used to land on a worker most of the time while a run was
+    /// going, and every worker's hook still reports as the terminal that started it. That no longer
+    /// rebinds a terminal, but `state.json` written before it still names workers, and a tree opened
+    /// on such a terminal has to show the conversation, not nothing.
     static func mainLineSession(of sid: String, root: URL) -> String? {
         var index: [String: Meta] = [:]
         for p in rolloutPaths(root: root) {
@@ -130,7 +198,10 @@ enum CodexTree {
 
     /// The first line, read in chunks: `session_meta` carries the whole base-instruction block and
     /// runs past any fixed-size read, and a truncated line parses as nothing at all.
-    private static func headObject(_ path: String) -> [String: Any]? {
+    ///
+    /// nil while that line has no end yet, so the caller can tell "still being written" from "read
+    /// and is not a head". A megabyte with no newline is the second kind and comes back to fail.
+    private static func headLine(_ path: String) -> Data? {
         guard let h = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
         defer { try? h.close() }
         var buf = Data()
@@ -139,9 +210,8 @@ enum CodexTree {
             buf.append(chunk)
             if buf.firstIndex(of: 0x0A) != nil { break }
         }
-        let end = buf.firstIndex(of: 0x0A) ?? buf.endIndex
-        return (try? JSONSerialization.jsonObject(with: buf.subdata(in: buf.startIndex..<end)))
-            as? [String: Any]
+        if let nl = buf.firstIndex(of: 0x0A) { return buf.subdata(in: buf.startIndex..<nl) }
+        return buf.count >= 1_048_576 ? buf : nil
     }
 
     /// `rollout-2026-07-19T02-14-32-<uuid>.jsonl` → `<uuid>`. Same rule as SearchIndex's, so the

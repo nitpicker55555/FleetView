@@ -22,35 +22,26 @@ enum CodexSession {
 
     // MARK: - Which rollout
 
-    /// A rollout's `cwd`, from the `session_meta` record at its head. Cached by path because it is
-    /// fixed for the life of the file, and resolving a terminal must not re-read every candidate.
-    private static var cwdCache: [String: String] = [:]
+    /// A rollout's `cwd`, and whether it is a worker's, from the `session_meta` record at its head.
+    /// Cached by path because both are fixed for the life of the file, and resolving a terminal must
+    /// not re-read every candidate.
+    ///
+    /// Its own cache rather than `CodexTree.meta`'s, which the tree panel empties whenever a rollout
+    /// appears — every few seconds during a multi-agent run — while this is asked once a second for
+    /// every Codex terminal.
+    private static var headCache: [String: (cwd: String, isWorker: Bool)] = [:]
     private static let lock = NSLock()
 
-    static func rolloutCwd(_ path: String) -> String? {
+    static func rolloutCwd(_ path: String) -> String? { rolloutHead(path)?.cwd }
+
+    private static func rolloutHead(_ path: String) -> (cwd: String, isWorker: Bool)? {
         lock.lock()
-        if let c = cwdCache[path] { lock.unlock(); return c }
+        if let c = headCache[path] { lock.unlock(); return c }
         lock.unlock()
 
-        guard let h = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
-        defer { try? h.close() }
-        // session_meta is the first record, but it is not small — it carries the whole system prompt
-        // and runs to ~19 KB, so a fixed small read truncates the line and the parse silently fails.
-        // Read in chunks until the line actually ends.
-        var buf = Data()
-        while buf.count < 1_048_576 {
-            guard let chunk = try? h.read(upToCount: 65_536), !chunk.isEmpty else { break }
-            buf.append(chunk)
-            if buf.firstIndex(of: 0x0A) != nil { break }
-        }
-        guard let nl = buf.firstIndex(of: 0x0A) else { return nil }
-        guard let obj = (try? JSONSerialization.jsonObject(
-                with: buf.subdata(in: buf.startIndex..<nl))) as? [String: Any],
-              (obj["type"] as? String) == "session_meta",
-              let payload = obj["payload"] as? [String: Any],
-              let cwd = payload["cwd"] as? String else { return nil }
-        lock.lock(); cwdCache[path] = cwd; lock.unlock()
-        return cwd
+        guard let m = CodexTree.meta(path) else { return nil }
+        lock.lock(); headCache[path] = (m.cwd, m.isWorker); lock.unlock()
+        return (m.cwd, m.isWorker)
     }
 
     /// The last walk, and when it was taken. The scan stats every rollout under `~/.codex/sessions`
@@ -111,7 +102,12 @@ enum CodexSession {
     static func currentRollout(cwd: String, excluding claimed: Set<String>) -> String? {
         guard !cwd.isEmpty else { return nil }
         for (path, _) in recentRollouts() where !claimed.contains(path) {
-            if rolloutCwd(path) == cwd { return path }
+            // Never a worker. Workers share the cwd of the conversation that spawned them, are
+            // written to constantly while a run is going and are claimed by no terminal, so they
+            // always won this — and a Codex terminal idle in that directory took a busy worker's
+            // turn for its own and showed "working" until the whole run was over.
+            guard let head = rolloutHead(path), !head.isWorker, head.cwd == cwd else { continue }
+            return path
         }
         return nil
     }

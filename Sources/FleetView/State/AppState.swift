@@ -459,6 +459,9 @@ final class AppState: ObservableObject {
     /// A Codex status refresh is out on a background queue. Not @Published — nothing draws it, and
     /// a flag that re-renders the board every second would undo the point of moving the work off.
     private var codexRefreshInFlight = false
+    /// Terminals whose "needs you" a Codex worker raised, and so only a worker may clear (see
+    /// `applyWorkerEvent`). In memory only: an approval does not outlive the process asking for it.
+    private var workerNeedsYou: Set<UUID> = []
     /// The pending debounced save (see `save()`).
     private var saveWork: DispatchWorkItem?
 
@@ -662,6 +665,16 @@ final class AppState: ObservableObject {
                 .filter { !$0.path.isEmpty && (cwd == $0.path || cwd.hasPrefix($0.path + "/")) }
                 .max { $0.path.count < $1.path.count }
             if let owner { terminalArchive[i].projectPath = owner.path }
+        }
+        // Builds before `applyWorkerEvent` saved whichever Codex worker spoke last as the card's
+        // transcript, and a reopen resumes what is saved here. Put back on the conversation.
+        func conversation(_ p: String?) -> String? {
+            guard let p, CodexTree.isWorkerRollout(p) else { return p }
+            return CodexTree.mainLineRollout(of: p) ?? p
+        }
+        for i in terminals.indices { terminals[i].transcriptPath = conversation(terminals[i].transcriptPath) }
+        for i in terminalArchive.indices {
+            terminalArchive[i].transcriptPath = conversation(terminalArchive[i].transcriptPath)
         }
         selectedProjectId = p.selectedProjectId
         if let w = p.sidebarWidth { sidebarWidth = min(520, max(180, w)) }
@@ -1835,25 +1848,66 @@ final class AppState: ObservableObject {
     func handleHookEvent(_ ev: EventWatcher.Event) {
         guard let uid = UUID(uuidString: ev.term),
               let idx = terminals.firstIndex(where: { $0.id == uid }) else { return }
+        // A Codex multi-agent worker is a thread inside this terminal's own codex process, so it
+        // inherits FLEETVIEW_TERM_ID and its hooks arrive as this terminal's — carrying the
+        // conversation's session_id but the WORKER's rollout as transcript_path. Only that
+        // rollout's head tells them apart; hook.sh cannot, and neither can the session id.
+        let worker = ev.transcriptPath.map(CodexTree.isWorkerRollout) ?? false
         // Everything this hook provokes is the agent's (or the shell's) doing, not the user's at the
         // keyboard — declaring it once here attributes the whole cascade correctly.
         AuditContext.with(hookActor(ev, terminal: terminals[idx])) {
-            auditHookEvent(ev, terminal: uid)
-            applyHookEvent(ev, uid: uid, idx: idx)
+            auditHookEvent(ev, terminal: uid, worker: worker)
+            if worker { applyWorkerEvent(ev, idx: idx) } else { applyHookEvent(ev, uid: uid, idx: idx) }
+        }
+    }
+
+    /// A hook fired → real agent/shell activity in this terminal. Written at a 5s granularity,
+    /// because `terminals` is @Published and a fresh Date is never value-equal: writing it on
+    /// every event re-rendered the WHOLE board, and PreToolUse/PostToolUse arrive in bursts many
+    /// times a second (they are ~95% of the event log). Nothing displays it more finely than
+    /// that — it is rendered through RelativeTime.short inside a 15s TimelineView.
+    private func noteHookActivity(at idx: Int) {
+        let now = Date()
+        if terminals[idx].lastActivity.map({ now.timeIntervalSince($0) >= 5 }) ?? true {
+            terminals[idx].lastActivity = now
+        }
+    }
+
+    /// A hook from one of the terminal's Codex workers: activity, and nothing else.
+    ///
+    /// Applied like any other hook, a worker's event rebound the card to the worker's rollout and
+    /// set it "working", so the card's conversation, status, token count and resume target followed
+    /// whichever worker had acted last. One run on 2026-09-24 rebound its card 20,477 times in two
+    /// days, every event also queuing a rewrite of state.json. The card belongs to the conversation;
+    /// the conversation's own hooks and rollout keep deciding all of that.
+    ///
+    /// The one thing a worker can need is you: an approval it waits on is shown, and only that
+    /// worker's next tool call — not the conversation's, which carries on meanwhile — clears it.
+    private func applyWorkerEvent(_ ev: EventWatcher.Event, idx: Int) {
+        let id = terminals[idx].id
+        let thread = ev.transcriptPath.map { CodexTree.sessionId(fromRollout: $0) } ?? "-"
+        FV.log("evt=\(ev.event) term=\(terminals[idx].name) worker=\(thread.prefix(8))")
+        noteHookActivity(at: idx)
+        switch ev.event {
+        case "PermissionRequest":
+            guard terminals[idx].status != .needsYou else { break }
+            enterStatus(.needsYou, at: idx)
+            workerNeedsYou.insert(id)
+            save()
+        case "PreToolUse", "PostToolUse":
+            // Through to `working` rather than to a guess: the status poll settles working/idle
+            // from the conversation's rollout within the second.
+            guard workerNeedsYou.remove(id) != nil, terminals[idx].status == .needsYou else { break }
+            enterStatus(.working, at: idx)
+            save()
+        default:
+            break
         }
     }
 
     private func applyHookEvent(_ ev: EventWatcher.Event, uid: UUID, idx: Int) {
         FV.log("evt=\(ev.event) term=\(terminals[idx].name) src=\(ev.source ?? "-") msg=\(ev.message ?? "-")")
-        // A hook fired → real agent/shell activity in this terminal. Written at a 5s granularity,
-        // because `terminals` is @Published and a fresh Date is never value-equal: writing it on
-        // every event re-rendered the WHOLE board, and PreToolUse/PostToolUse arrive in bursts many
-        // times a second (they are ~95% of the event log). Nothing displays it more finely than
-        // that — it is rendered through RelativeTime.short inside a 15s TimelineView.
-        let now = Date()
-        if terminals[idx].lastActivity.map({ now.timeIntervalSince($0) >= 5 }) ?? true {
-            terminals[idx].lastActivity = now
-        }
+        noteHookActivity(at: idx)
         if let sid = ev.sessionId { terminals[idx].sessionId = sid }
         if let tp = ev.transcriptPath {
             terminals[idx].transcriptPath = tp
@@ -1881,6 +1935,8 @@ final class AppState: ObservableObject {
             if terminals[idx].status != .working { enterStatus(.working, at: idx) }
         case "PermissionRequest":
             // Codex fires this before an approval prompt (Claude uses "Notification", handled below).
+            // The conversation's own approval now — a worker's tool call must not be what clears it.
+            workerNeedsYou.remove(uid)
             enterStatus(.needsYou, at: idx)
         case "Stop":
             enterStatus(.idle, at: idx)
@@ -2281,12 +2337,16 @@ final class AppState: ObservableObject {
     /// The transcript this terminal's agent is writing *right now*, per the pointer its own hook
     /// maintains at ~/.fleetview/sessions/<termId>.json. nil when the terminal has never run an
     /// agent, or the file it names has since been removed.
+    ///
+    /// hook.sh rewrites that pointer on every event, a Codex worker's included, so after a
+    /// multi-agent run it names whichever worker acted last. Read back as is, that sent a reopen to
+    /// `codex resume` the worker and a fork to fork it; it is walked up to the conversation instead.
     func hookSessionPath(for id: UUID) -> String? {
         guard let data = try? Data(contentsOf: FV.sessionPointer(for: id)),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let path = obj["transcript_path"] as? String,
               FileManager.default.fileExists(atPath: path) else { return nil }
-        return path
+        return path.contains("/.codex/") ? CodexTree.mainLineRollout(of: path) : path
     }
 
     /// How many terminals point at the same transcript. >1 means the conversation genuinely belongs

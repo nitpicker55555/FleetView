@@ -163,10 +163,16 @@ extension AppState {
     /// preview and a pointer to the transcript that holds the real thing. Tool calls are not logged
     /// at all — the transcript already has every one of them — except that a tool writing the panel
     /// is remembered, so the archive can say which conversation produced it.
-    func auditHookEvent(_ ev: EventWatcher.Event, terminal id: UUID) {
+    ///
+    /// A Codex worker's events (`worker`) are the terminal's only as far as approvals and panel
+    /// writes go. Its `Stop` would close the turn the conversation opened — with the token total of
+    /// a conversation that is still mid-turn — so turns, prompts and sessions are the
+    /// conversation's own hooks to report.
+    func auditHookEvent(_ ev: EventWatcher.Event, terminal id: UUID, worker: Bool = false) {
         guard let t = terminals.first(where: { $0.id == id }) else { return }
         let config = AuditConfig.current
         let target = auditTarget(terminal: id)
+        if worker, ["SessionStart", "UserPromptSubmit", "Stop"].contains(ev.event) { return }
 
         switch ev.event {
         case "SessionStart":
