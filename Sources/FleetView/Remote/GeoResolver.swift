@@ -77,6 +77,18 @@ final class GeoResolver: @unchecked Sendable {
         return out
     }
 
+    /// How a client reaches this Mac, for the page's signal indicator: the network scope, and for a
+    /// tailnet peer its name and whether the path is direct or relayed. From cache; never blocks.
+    func connection(ip: String) -> [String: Any] {
+        let scope = IPScope.classify(ip)
+        var out: [String: Any] = ["scope": scope.rawValue]
+        guard scope == .tailscale, let peer = tailscalePeer(for: ip) else { return out }
+        if case .string(let node)? = peer["fleetview.web.peer.node"] { out["node"] = node }
+        if case .bool(let direct)? = peer["fleetview.web.peer.direct"] { out["direct"] = direct }
+        if case .string(let relay)? = peer["fleetview.web.peer.derp_region"] { out["relay"] = relay }
+        return out
+    }
+
     /// This Mac's egress location, refreshed hourly. Requires an explicit opt-in because resolving
     /// it means asking a third party where our own public address is.
     private func hostGeo() -> [String: AuditValue] {
@@ -167,6 +179,11 @@ final class GeoResolver: @unchecked Sendable {
             if let relay = node["Relay"] as? String, !relay.isEmpty {
                 // The DERP region a peer is homed to is a coarse but genuine location signal.
                 fields["fleetview.web.peer.derp_region"] = .string(relay)
+            }
+            // A current address means a direct path; without one the traffic goes through DERP,
+            // which is usually what a slow reading on the dashboard's signal indicator comes down to.
+            if node["Online"] as? Bool == true {
+                fields["fleetview.web.peer.direct"] = .bool(!((node["CurAddr"] as? String) ?? "").isEmpty)
             }
             if let userID = node["UserID"] as? Int,
                let user = users["\(userID)"] as? [String: Any],

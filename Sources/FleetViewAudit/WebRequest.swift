@@ -17,6 +17,9 @@ public enum IPScope: String, Sendable {
         let address = ip.hasPrefix("::ffff:") ? String(ip.dropFirst(7)) : ip
 
         if address == "::1" || address.hasPrefix("127.") { return .loopback }
+        // Tailscale's IPv6 range sits inside fd00::/8, so it has to be picked out before the
+        // private-range rule below takes every fd… address for the LAN.
+        if address.lowercased().hasPrefix("fd7a:115c:a1e0:") { return .tailscale }
         if address.hasPrefix("fe80:") || address.hasPrefix("fc") || address.hasPrefix("fd") { return .lan }
 
         let parts = address.split(separator: ".").compactMap { Int($0) }
@@ -135,8 +138,10 @@ public struct HTTPRequestHead: Equatable, Sendable {
 public enum WebPathPolicy {
     /// `/files` is the outbox listing the page re-reads every 4 s while it is open (29,022 requests
     /// by 2026-10-01). What someone actually took from the outbox is `/file`, which is logged.
+    /// `/ping` is the page's latency probe, every 2 s.
     public static let polled: Set<String> = [
         "/state", "/panel-meta", "/panel-data", "/conversation", "/capture", "/tree", "/files",
+        "/ping",
     ]
 
     /// Static shell of the app: interesting the first time (it starts a session) and noise after.

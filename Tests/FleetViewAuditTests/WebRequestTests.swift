@@ -24,6 +24,10 @@ final class WebRequestTests: XCTestCase {
         XCTAssertEqual(IPScope.classify("100.101.7.23"), .tailscale)
         XCTAssertEqual(IPScope.classify("100.64.0.1"), .tailscale)
         XCTAssertEqual(IPScope.classify("100.127.255.255"), .tailscale)
+        // Tailscale's IPv6 range is inside fd00::/8 and must not be taken for the LAN.
+        XCTAssertEqual(IPScope.classify("fd7a:115c:a1e0::13a:7b33"), .tailscale)
+        XCTAssertEqual(IPScope.classify("FD7A:115C:A1E0:ab12::1"), .tailscale)
+        XCTAssertEqual(IPScope.classify("fd12:3456::1"), .lan)
     }
 
     func testAddressesJustOutsideCGNATAreNotTailscale() {
@@ -95,7 +99,7 @@ final class WebRequestTests: XCTestCase {
     func testPolledEndpointsAreNotAuditedPerRequest() {
         // /state alone is ~2,400 requests per idle half-hour.
         for path in ["/state", "/conversation", "/panel-meta", "/panel-data", "/capture", "/tree",
-                     "/files"] {
+                     "/files", "/ping"] {
             XCTAssertTrue(WebPathPolicy.isPolled(path), "\(path) polls")
             XCTAssertFalse(WebPathPolicy.isAudited(path), "\(path) must not produce a line per request")
         }

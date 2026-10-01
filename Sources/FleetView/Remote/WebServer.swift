@@ -137,6 +137,7 @@ final class WebServer {
         let client = Self.clientAddress(conn)
         let scope = WebAudit.shared.begin(request: request, ip: client.ip, port: client.port)
 
+        if path == "/ping" { handlePing(conn, client.ip, params, scope); return }  // never the main actor
         if path == "/ask" { handleAsk(conn, params, scope); return }   // long-running; off the main thread
         if path == "/pm" { handlePM(conn, params, scope); return }     // runs a script; off it too
         if path == "/type", params["wait"] == "1" { handleTypeAndWait(conn, params, scope); return }
@@ -185,6 +186,20 @@ final class WebServer {
         }
         // IPv6 literals arrive with a scope zone ("fe80::1%en0"); the address is the part we want.
         return raw.split(separator: "%").first.map(String.init) ?? raw
+    }
+
+    /// GET /ping — the page's latency probe, behind its signal indicator.
+    ///
+    /// Answered here, on the server's queue, so the round trip it times is the network's: `/state`
+    /// waits for the main actor, and a busy board would read as a bad connection. The answer says
+    /// how this device reaches the Mac — same machine, LAN, or Tailscale direct or relayed — which
+    /// is most of what explains the number.
+    private func handlePing(_ conn: NWConnection, _ ip: String, _ query: [String: String],
+                            _ scope: WebAudit.Scope) {
+        let body = (try? JSONSerialization.data(withJSONObject: GeoResolver.shared.connection(ip: ip)))
+            ?? Data("{}".utf8)
+        WebAudit.shared.finish(scope, status: "200 OK", bytes: body.count, query: query)
+        send(conn, status: "200 OK", type: "application/json", body: body, setCookie: scope.setCookie)
     }
 
     /// GET /ask?id=&q= — a "BTW" side query: ask the agent using its context without touching the live

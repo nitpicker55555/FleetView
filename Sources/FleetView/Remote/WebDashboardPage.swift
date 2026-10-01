@@ -125,7 +125,19 @@ enum WebDashboardPage {
   .pill{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px}
   .spacer{flex:1}
   .dot{width:9px;height:9px;border-radius:50%;flex:none}
-  .refresh{font-size:11px;color:var(--sub)}
+  /* Connection: signal bars and round-trip time, from the /ping probe (see ping()). */
+  .netsig{display:inline-flex;align-items:center;gap:5px;background:none;border:0;padding:4px 2px;
+    font:inherit;font-size:11px;color:var(--sub);cursor:pointer;font-variant-numeric:tabular-nums}
+  .bars{display:inline-flex;align-items:flex-end;gap:2px;height:12px}
+  .bars i{width:3px;border-radius:1px;background:var(--stroke)}
+  .bars i:nth-child(1){height:4px}.bars i:nth-child(2){height:6px}
+  .bars i:nth-child(3){height:9px}.bars i:nth-child(4){height:12px}
+  .bars.l4 i,.bars.l3 i:nth-child(-n+3){background:var(--green)}
+  .bars.l2 i:nth-child(-n+2){background:var(--amber)}
+  .bars.l1 i:nth-child(1){background:var(--red)}
+  .netsig.off .ms{color:var(--red)}
+  /* In the conversation's header: the bars over the number, in the width of an icon button. */
+  .tsig{flex:none;width:40px;flex-direction:column;gap:2px;padding:0;font-size:9.5px}
   main{padding:16px;max-width:1200px;margin:0 auto;padding-bottom:120px;
     padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
   .proj{margin-bottom:26px}
@@ -760,7 +772,7 @@ enum WebDashboardPage {
   <button id="schemebtn" onclick="cycleScheme()">🖥</button>
   <button id="projbtn" onclick="toggleProjects()" title="Open a project from ~/PycharmProjects">📂</button>
   <button id="traybtn" onclick="toggleTray()" title="Files agents have sent you">📥<span id="traybadge"></span></button>
-  <span class="refresh" id="refresh"></span>
+  <button class="netsig" id="netsig" onclick="netToast()" aria-label="Connection"></button>
 </header>
 <div id="tray"><div id="traylist"></div></div>
 <div id="projs">
@@ -780,6 +792,7 @@ enum WebDashboardPage {
     <div id="termbar">
       <button class="ib" onclick="closeTerm()" aria-label="Back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
       <div class="ttl"><span class="tname" id="termname"></span><div id="sinfo"></div></div>
+      <button class="netsig tsig" id="tnetsig" onclick="netToast()" aria-label="Connection"></button>
       <div id="tabs">
         <button id="tabChat" class="on" onclick="setView('chat')">Chat</button>
         <button id="tabTerm" onclick="setView('term')">Terminal</button>
@@ -2773,6 +2786,8 @@ function cycleScheme(){
 /* Before the first /state lands, so a saved choice is on the page it paints rather than one poll
    later — and so the button carries the right glyph from the start. */
 applyScheme();
+/* Connection state for the signal indicator; filled by ping() and tick() (see renderNet). */
+const net={rtts:[],fails:0,via:null,stateAt:0};
 async function tick(){
   if(dragging)return;
   try{
@@ -2781,13 +2796,74 @@ async function tick(){
     // browser that is following the Mac, flipping the Mac's theme and watching the phone stay dark
     // reads as broken. Redrawing the board behind the overlay is not: that is the guard below.
     applyScheme(state.dark);
+    net.stateAt=Date.now();
     if(termOpen()){watchTermAlive(state);return;}
     render(state);
     reportLocation(state);   // once per browser; no-op until the page is served over HTTPS
-    document.getElementById('refresh').textContent='updated '+new Date().toLocaleTimeString();
-  }catch(e){document.getElementById('refresh').textContent='offline — retrying…';}
+  }catch(e){}                // the signal indicator says offline; ping() is what decides that
 }
 tick();setInterval(tick,1500);
+
+/* ---------- connection: signal bars and latency ----------
+   A tiny request every 2 s, answered off the Mac's main thread, so the number is the network's and
+   not the board's (a /state round trip includes the Mac drawing the board). The bars follow the
+   median of the last five round trips, so one slow sample does not make them flicker; two failures
+   in a row read as offline. The answer also says how this device reaches the Mac — same machine,
+   LAN, or Tailscale direct or through a relay — which is most of what explains a slow number. */
+async function ping(){
+  if(document.hidden) return;              // nothing is on screen to update
+  const ctl=new AbortController(), timer=setTimeout(()=>ctl.abort(),5000);
+  const t0=performance.now();
+  try{
+    const r=await fetch('/ping',{cache:'no-store',signal:ctl.signal});
+    const j=await r.json();
+    net.rtts.push(performance.now()-t0); if(net.rtts.length>5) net.rtts.shift();
+    net.fails=0; net.via=j;
+  }catch(e){
+    // Gone: what the line was like before says nothing about it once it is back.
+    if(++net.fails>=2) net.rtts=[];
+  }
+  finally{ clearTimeout(timer); }
+  renderNet();
+}
+function netMedian(){
+  if(!net.rtts.length) return null;
+  const s=[...net.rtts].sort((a,b)=>a-b); return s[Math.floor(s.length/2)];
+}
+function netRoute(){
+  const v=net.via||{};
+  if(v.scope==='loopback') return '本机';
+  if(v.scope==='lan') return '局域网';
+  if(v.scope==='tailscale') return 'Tailscale '+(v.direct===true?'直连':v.direct===false?'中转'+(v.relay?'（'+v.relay+'）':''):'');
+  if(v.scope==='public') return '外网';
+  return '';
+}
+function renderNet(){
+  const off=net.fails>=2, ms=netMedian();
+  const lvl=off||ms==null?0:ms<80?4:ms<200?3:ms<500?2:1;
+  const text=off?'离线':ms==null?'…':Math.round(ms)+'ms';
+  const html='<span class="bars l'+lvl+'"><i></i><i></i><i></i><i></i></span><span class="ms">'+text+'</span>';
+  for(const id of ['netsig','tnetsig']){
+    const el=document.getElementById(id); if(!el) continue;
+    el.innerHTML=html; el.classList.toggle('off',off);
+    el.title=netRoute()+(ms==null?'':' · '+Math.round(ms)+' ms');
+  }
+}
+/* Tapping the bars says what they mean: a phone has no hover for the title. */
+function netToast(){
+  const ms=netMedian(), route=netRoute();
+  if(net.fails>=2){ toast('连不上 Mac，正在重试'+(route?'（上次：'+route+'）':''),3500); return; }
+  const parts=[route||'连接'];
+  if(ms!=null){
+    const lo=Math.round(Math.min(...net.rtts)), hi=Math.round(Math.max(...net.rtts));
+    parts.push('延迟 '+Math.round(ms)+' ms'+(net.rtts.length>1?'（最近 '+net.rtts.length+' 次 '+lo+'–'+hi+' ms）':''));
+  }
+  if(net.via&&net.via.node) parts.push('本设备：'+net.via.node);
+  if(net.stateAt) parts.push('看板 '+Math.max(0,Math.round((Date.now()-net.stateAt)/1000))+' 秒前刷新');
+  toast(parts.join(' · '),4500);
+}
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) ping(); });
+renderNet();ping();setInterval(ping,2000);
 
 // ---------- agent-authored dynamic panel (top region) ----------
 let panelMtime=-1;
