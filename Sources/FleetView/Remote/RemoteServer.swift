@@ -93,8 +93,8 @@ final class RemoteServer {
         p.arguments = ["-L", RemoteServer.socket, "has-session", "-t", RemoteServer.sessionName(for: id)]
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return false }
-        p.waitUntilExit()
+        guard let waitForExit = try? p.runForExit() else { return false }
+        waitForExit()
         return p.terminationStatus == 0
     }
 
@@ -271,11 +271,11 @@ final class RemoteServer {
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return nil }
+        guard let waitForExit = try? p.runForExit() else { return nil }
         let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + tmuxTimeout, execute: killer)
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
+        waitForExit()
         killer.cancel()
         guard p.terminationReason == .exit, p.terminationStatus == 0 else { return nil }
         return String(data: data, encoding: .utf8)
@@ -413,7 +413,7 @@ final class RemoteServer {
         let pipe = capture ? Pipe() : nil
         p.standardOutput = pipe ?? FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return "" }
+        guard let waitForExit = try? p.runForExit() else { return "" }
         let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
         var out = ""
@@ -421,7 +421,7 @@ final class RemoteServer {
             let d = pipe.fileHandleForReading.readDataToEndOfFile()
             out = String(data: d, encoding: .utf8) ?? ""
         }
-        p.waitUntilExit()
+        waitForExit()
         killer.cancel()
         return out
     }
