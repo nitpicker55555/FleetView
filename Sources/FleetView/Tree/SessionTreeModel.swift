@@ -43,7 +43,15 @@ final class SessionTreeModel: ObservableObject {
         case claude(projectDir: URL)
         case codex(cwd: String)
     }
-    private(set) var source: Source?
+    private(set) var source: Source? {
+        // The parse cache keeps an open panel's project however long it goes unchanged, and lets
+        // everything else expire (`SessionTreeBuilder.pin`).
+        didSet {
+            guard source != oldValue else { return }
+            if case .claude(let dir) = oldValue { SessionTreeBuilder.unpin(dir) }
+            if case .claude(let dir) = source { SessionTreeBuilder.pin(dir) }
+        }
+    }
     /// The Claude project directory, when that is what this tree is. Callers that can only mean
     /// Claude (fork synthesis) ask for it and get nil otherwise, rather than guessing.
     var projectDir: URL? { if case .claude(let d) = source { return d }; return nil }

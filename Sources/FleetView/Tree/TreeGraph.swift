@@ -132,19 +132,68 @@ enum SessionTreeBuilder {
     // MARK: File parsing (cached)
 
     private struct FileCache { let size: Int64; let mtime: TimeInterval
-                               let records: [SlimRecord]; let leaf: String? }
+                               let records: [SlimRecord]; let leaf: String?
+                               var used: Date }
     private static var cache: [String: FileCache] = [:]
     private static let cacheLock = NSLock()
 
+    /// The cache is for an open panel's refresh ticks and for a fork right after a build, not for
+    /// keeping every transcript FleetView ever looked at. It had no eviction at all: a search
+    /// opened or a branch forked from the FleetView project parsed 580 MB of transcripts, every
+    /// subagent's included, and the records stayed for the life of the app. So an entry nobody has
+    /// asked for in this long goes — unless its directory is the one an open panel is showing
+    /// (`pin`), which rebuilds only when a file changes and could otherwise sit unchanged past it.
+    private static let cacheIdle: TimeInterval = 60
+    private static var pinned: Set<String> = []
+    private static var sweepScheduled = false
+
+    /// Keep this directory's files cached while a panel shows it, however long it goes unchanged.
+    static func pin(_ dir: URL) {
+        cacheLock.lock(); pinned.insert(dir.standardizedFileURL.path); cacheLock.unlock()
+    }
+
+    static func unpin(_ dir: URL) {
+        cacheLock.lock(); pinned.remove(dir.standardizedFileURL.path); cacheLock.unlock()
+        scheduleSweep()
+    }
+
+    private static func scheduleSweep() {
+        cacheLock.lock()
+        let start = !sweepScheduled && !cache.isEmpty
+        if start { sweepScheduled = true }
+        cacheLock.unlock()
+        guard start else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + cacheIdle) {
+            cacheLock.lock()
+            let cutoff = Date().addingTimeInterval(-cacheIdle)
+            cache = cache.filter { path, entry in
+                entry.used > cutoff
+                    || pinned.contains((path as NSString).deletingLastPathComponent)
+            }
+            sweepScheduled = false
+            cacheLock.unlock()
+            scheduleSweep()                 // again while anything is left to expire
+        }
+    }
+
     /// Parse one session file into slim records (+ its last `last-prompt` leaf pointer),
     /// cached by (size, mtime) so reopening the panel and refresh ticks are cheap.
+    ///
+    /// Read a megabyte at a time, each line parsed inside its own autorelease pool. It used to load
+    /// the whole file and decode it to one String first: two copies of a 42 MB transcript, which
+    /// the allocator keeps once freed, plus every line's JSON objects alive until the parse ended.
+    /// One build of the FleetView project's tree (54 files, 196 MB) left the process at 463 MB, 177
+    /// MB of it freed large blocks; read this way, 57 MB. The records are the same, compared field
+    /// by field over 868 files of this machine's history.
     static func parseFile(_ url: URL) -> (records: [SlimRecord], leaf: String?, bytes: Int64) {
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
         let size = (attrs?[.size] as? Int64) ?? 0
         let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
 
         cacheLock.lock()
-        if let c = cache[url.path], c.size == size, c.mtime == mtime {
+        if var c = cache[url.path], c.size == size, c.mtime == mtime {
+            c.used = Date()
+            cache[url.path] = c
             cacheLock.unlock()
             return (c.records, c.leaf, size)
         }
@@ -152,43 +201,66 @@ enum SessionTreeBuilder {
 
         var records: [SlimRecord] = []
         var leaf: String?
-        guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else { return ([], nil, size) }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard line.first == "{", let d = line.data(using: .utf8),
-                  let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { continue }
-            let type = obj["type"] as? String
-            if type == "last-prompt", let l = obj["leafUuid"] as? String { leaf = l; continue }
-            guard let uuid = obj["uuid"] as? String else { continue }
-            let msg = obj["message"] as? [String: Any]
-            let content = msg?["content"]
-            let isUser = type == "user"
-            let isAssistant = type == "assistant"
-            var isPrompt = false
-            var text = ""
-            if isUser {
-                isPrompt = isUserPrompt(content)
-                if isPrompt {
-                    text = clip(userText(content), promptCap)
-                    if isMetaPrompt(text) { isPrompt = false; text = "" }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return ([], nil, size) }
+        defer { try? handle.close() }
+
+        func take(_ line: Data) {
+            autoreleasepool {
+                guard line.first == UInt8(ascii: "{"),
+                      let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
+                let type = obj["type"] as? String
+                if type == "last-prompt", let l = obj["leafUuid"] as? String { leaf = l; return }
+                guard let uuid = obj["uuid"] as? String else { return }
+                let msg = obj["message"] as? [String: Any]
+                let content = msg?["content"]
+                let isUser = type == "user"
+                let isAssistant = type == "assistant"
+                var isPrompt = false
+                var text = ""
+                if isUser {
+                    isPrompt = isUserPrompt(content)
+                    if isPrompt {
+                        text = clip(userText(content), promptCap)
+                        if isMetaPrompt(text) { isPrompt = false; text = "" }
+                    }
+                } else if isAssistant {
+                    text = clip(userText(content), answerCap)   // same extraction: text blocks joined
                 }
-            } else if isAssistant {
-                text = clip(userText(content), answerCap)   // same extraction: text blocks joined
+                let boundary = (obj["subtype"] as? String) == "compact_boundary"
+                records.append(SlimRecord(uuid: uuid,
+                                          parent: obj["parentUuid"] as? String,
+                                          isPrompt: isPrompt,
+                                          isAssistant: isAssistant,
+                                          sidechain: (obj["isSidechain"] as? Bool) ?? false,
+                                          ts: (obj["timestamp"] as? String) ?? "",
+                                          text: text,
+                                          logicalParent: boundary ? obj["logicalParentUuid"] as? String
+                                                                  : nil))
             }
-            let boundary = (obj["subtype"] as? String) == "compact_boundary"
-            records.append(SlimRecord(uuid: uuid,
-                                      parent: obj["parentUuid"] as? String,
-                                      isPrompt: isPrompt,
-                                      isAssistant: isAssistant,
-                                      sidechain: (obj["isSidechain"] as? Bool) ?? false,
-                                      ts: (obj["timestamp"] as? String) ?? "",
-                                      text: text,
-                                      logicalParent: boundary ? obj["logicalParentUuid"] as? String
-                                                              : nil))
         }
+
+        var carry = Data()
+        while true {
+            let more: Bool = autoreleasepool {
+                guard let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty else { return false }
+                var buf = carry
+                buf.append(chunk)
+                var lineStart = buf.startIndex
+                while let nl = buf[lineStart...].firstIndex(of: 0x0A) {
+                    if nl > lineStart { take(buf[lineStart..<nl]) }
+                    lineStart = buf.index(after: nl)
+                }
+                carry = Data(buf[lineStart...])
+                return true
+            }
+            if !more { break }
+        }
+        if !carry.isEmpty { take(carry) }    // a last line with no newline after it
+
         cacheLock.lock()
-        cache[url.path] = FileCache(size: size, mtime: mtime, records: records, leaf: leaf)
+        cache[url.path] = FileCache(size: size, mtime: mtime, records: records, leaf: leaf, used: Date())
         cacheLock.unlock()
+        scheduleSweep()
         return (records, leaf, size)
     }
 
