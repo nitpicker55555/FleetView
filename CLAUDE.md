@@ -77,7 +77,11 @@ directory outside the repo when you have one.
   stopped. Clicking a closed card reopens it and types `--resume` for the session it last had
   (`AppState.reopenTerminal`), which is what keeps that recoverable. `project-manager restore
   <session-id>` does the same from a session id, for a removed card too (`restoreConversation`).
-  The only thing that reattaches to a still-live session is `reconnectLiveTerminals()` on launch.
+  The only things that reattach to a still-live session are `reconnectLiveTerminals()` on launch
+  and showing a hidden window. **Hiding** (`AppState.hideTerminal`, the title bar's 隐藏 button) is
+  the non-destructive way to get a window off screen: the window and its tmux client go, the
+  session stays, a `HeadlessTerminal` stands in for the window, and the card is marked hidden
+  (`windowHidden`, which survives a relaunch) until a click on it brings the window back.
 - **Codex keeps its hook trust inside FleetView's block in `~/.codex/config.toml`.** It appends the
   `[hooks.state."…"] trusted_hash` tables after its siblings, which is inside our fence, so
   `CodexHookInstaller.stripFence` must only ever remove our own `[[hooks.*]]` tables. Stripping the

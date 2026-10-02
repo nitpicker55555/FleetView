@@ -69,6 +69,8 @@ final class AppState: ObservableObject {
 
     private var controllers: [UUID: TerminalHost] = [:]
     private var cascadePoint = NSPoint(x: 60, y: 60)
+    /// Where each hidden terminal's window was, to put it back there (`showTerminal`).
+    private var hiddenFrames: [UUID: NSRect] = [:]
     var hookPort: Int? = nil
 
     /// Serves terminals to other devices over the LAN (tmux + ttyd). Terminals run under tmux only
@@ -1265,13 +1267,28 @@ final class AppState: ObservableObject {
     /// attached to the exact same session — no `claude` is re-typed (the session already exists).
     /// Terminals whose shell had exited leave no session and are simply left `closed`.
     func reconnectLiveTerminals() {
+        defer {
+            // Hidden when FleetView quit but its session did not survive: a closed card now.
+            for i in terminals.indices
+            where terminals[i].windowHidden == true && controllers[terminals[i].id] == nil {
+                terminals[i].windowHidden = nil
+            }
+        }
         guard remote.available else { return }
         let live = remote.liveSessions()
         guard !live.isEmpty else { return }
         var reattached = 0
         for t in terminals where controllers[t.id] == nil
               && live.contains(RemoteServer.sessionName(for: t.id)) {
-            openWindow(for: t)
+            // A terminal hidden when FleetView quit comes back hidden: putting every window back on
+            // screen at launch is exactly what hiding it was for.
+            if t.windowHidden == true, !Headless.active, let spec = remote.tmuxSpec(for: t.id),
+               let stand = HeadlessTerminal(termId: t.id, cwd: t.cwd, autoRunClaude: false,
+                                            port: hookPort, tmux: spec, remote: remote) {
+                adopt(stand, for: t.id)
+            } else {
+                openWindow(for: t)
+            }
             if let i = terminals.firstIndex(where: { $0.id == t.id }) {
                 // A reconnected agent is most likely idle (waiting); a plain shell shows as shell.
                 // Live hook events refine this within a turn.
@@ -1346,13 +1363,16 @@ final class AppState: ObservableObject {
         // Raising changes no model state, so the audit diff cannot see it — clicking a card would
         // vanish from the log without this declared intent.
         let wasOpen = controllers[id] != nil
+        let wasHidden = windowState(id) == .hidden
         audited(AuditIntent("terminal.raise",
                             event: "fleetview.terminal.raised",
                             categories: ["process"],
                             target: auditTarget(terminal: id),
-                            data: ["was_open": .bool(wasOpen)],
+                            data: ["was_open": .bool(wasOpen), "was_hidden": .bool(wasHidden)],
                             message: "raised \(terminals.first { $0.id == id }?.name ?? "terminal")")) {
-            if let c = controllers[id] { c.raise() } else { reopenTerminal(id) }
+            if wasHidden { revealHidden(id) }
+            else if let c = controllers[id] { c.raise() }
+            else { reopenTerminal(id) }
         }
     }
 
@@ -2469,6 +2489,8 @@ final class AppState: ObservableObject {
         case "remove":       removeTerminal(id)
         case "leaveCluster": removeFromCluster(id)
         case "rename":       if let n = name?.trimmingCharacters(in: .whitespacesAndNewlines), !n.isEmpty { renameTerminal(id, to: n) }
+        case "hide":         hideTerminal(id)
+        case "show":         showTerminal(id)
         default:             break
         }
     }
@@ -2493,7 +2515,8 @@ final class AppState: ObservableObject {
                                  : -1,
                              lastRun: t.lastRunSeconds ?? -1,
                              cwd: t.cwd,
-                             transcript: t.transcriptPath)
+                             transcript: t.transcriptPath,
+                             window: windowState(t.id).rawValue)
         }
         return WebSnapshot(
             projects: projects.map { .init(id: $0.id.uuidString, name: $0.name, path: $0.path) },
@@ -2519,7 +2542,7 @@ final class AppState: ObservableObject {
 
     /// `autoRun` overrides the terminal's own setting — a reopen that is about to type a `--resume`
     /// command has to make sure nothing else is typed first.
-    private func openWindow(for t: TerminalSession, autoRun: Bool? = nil) {
+    private func openWindow(for t: TerminalSession, autoRun: Bool? = nil, frame: NSRect? = nil) {
         // Run under tmux when remote access is available (so the web view can attach to the same
         // session). Only auto-type `claude` when we're *creating* the session — re-attaching to a
         // persisted one (reopen after the window was closed) would spawn a second claude.
@@ -2536,10 +2559,26 @@ final class AppState: ObservableObject {
             }
             ctrl = h
         } else {
-            ctrl = TerminalWindowController(termId: t.id, title: t.name, cwd: t.cwd,
-                                            autoRunClaude: autoRun, port: hookPort, tmux: spec,
-                                            fontSize: terminalFontSize)
+            let window = TerminalWindowController(termId: t.id, title: t.name, cwd: t.cwd,
+                                                  autoRunClaude: autoRun, port: hookPort, tmux: spec,
+                                                  fontSize: terminalFontSize)
+            window.onHide = { [weak self] id in
+                Task { @MainActor in self?.hideTerminal(id) }
+            }
+            ctrl = window
         }
+        adopt(ctrl, for: t.id)
+        // A window on screen is not hidden, whichever path put it there.
+        if !Headless.active, let i = terminals.firstIndex(where: { $0.id == t.id }) {
+            terminals[i].windowHidden = nil
+        }
+        ctrl.show(cascadeFrom: &cascadePoint)
+        // After `show`, which cascades: placing it first would only have been moved again.
+        if let frame { (ctrl as? TerminalWindowController)?.place(at: frame) }
+    }
+
+    /// Put a terminal host on the board's books: its exit, close, interrupt and zoom report here.
+    private func adopt(_ ctrl: TerminalHost, for id: UUID) {
         ctrl.onExit = { [weak self] id, _ in
             Task { @MainActor in self?.setStatus(id, .exited) }
         }
@@ -2552,8 +2591,71 @@ final class AppState: ObservableObject {
         ctrl.onZoomed = { [weak self] size in
             Task { @MainActor in self?.setTerminalFontSize(size) }
         }
-        controllers[t.id] = ctrl
-        ctrl.show(cascadeFrom: &cascadePoint)
+        controllers[id] = ctrl
+    }
+
+    // MARK: - Hidden windows
+
+    /// A terminal's window, as the board and the web need to know it: on screen, hidden with the
+    /// agent still running, or none (a closed card, or a Mac with no screen at all).
+    enum WindowState: String { case open, hidden, none }
+
+    func windowState(_ id: UUID) -> WindowState {
+        guard !Headless.active, let c = controllers[id] else { return .none }
+        return c is HeadlessTerminal ? .hidden : .open
+    }
+
+    /// Hide a terminal's window and leave its agent running.
+    ///
+    /// A window costs memory and drawing whether or not anyone is looking at it: a backing surface
+    /// of 9–18 MB, a tmux client, and a full repaint for every line its agent prints. Hidden, the
+    /// window and its client go and the session stays; a HeadlessTerminal stands in for the window
+    /// exactly as it does on a Mac with no screen, so the card's status, typing from the web and
+    /// `project-manager`, and noticing the shell exit all carry on. Clicking the card brings the
+    /// window back (`showTerminal`). Not a close: closing still ends the agent.
+    func hideTerminal(_ id: UUID) {
+        audited(AuditIntent("terminal.hide")) { hideUnaudited(id) }
+    }
+
+    func showTerminal(_ id: UUID) {
+        audited(AuditIntent("terminal.show")) { revealHidden(id) }
+    }
+
+    private func hideUnaudited(_ id: UUID) {
+        // Under tmux only, and only with the session still there: otherwise the window is all there
+        // is of the shell, and closing it would end the agent this was meant to keep.
+        guard !Headless.active, let idx = terminals.firstIndex(where: { $0.id == id }),
+              let window = controllers[id] as? TerminalWindowController,
+              let spec = remote.tmuxSpec(for: id), remote.sessionExists(id),
+              let stand = HeadlessTerminal(termId: id, cwd: terminals[idx].cwd, autoRunClaude: false,
+                                           port: hookPort, tmux: spec, remote: remote) else { return }
+        hiddenFrames[id] = window.frame
+        // Off the books before the window goes: its close is reported through `onClose`, and that
+        // is what kills a terminal's session.
+        window.onClose = nil
+        window.onExit = nil
+        window.closeWindow()          // ends this window's tmux client; the session runs on
+        adopt(stand, for: id)
+        terminals[idx].windowHidden = true
+        save()
+    }
+
+    /// Put a hidden terminal's window back, attached to the session it left running.
+    private func revealHidden(_ id: UUID) {
+        guard !Headless.active, let stand = controllers[id] as? HeadlessTerminal,
+              let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        stand.detach()
+        controllers[id] = nil
+        terminals[idx].windowHidden = nil
+        let frame = hiddenFrames.removeValue(forKey: id)
+        guard remote.sessionExists(id) else {
+            // The agent ended while its window was hidden. The card is a closed one now, and
+            // clicking a closed card means carrying on with its conversation.
+            reopenTerminal(id)
+            return
+        }
+        openWindow(for: terminals[idx], frame: frame)     // the session exists: nothing is typed
+        save()
     }
 
     /// Adopt a terminal font size for the whole fleet: every open window, and every one opened from
@@ -2582,8 +2684,10 @@ final class AppState: ObservableObject {
     private func handleWindowClosed(_ id: UUID) {
         let wasTracked = controllers.removeValue(forKey: id) != nil
         if wasTracked && !isQuitting { remote.stop(id) }
-        if let idx = terminals.firstIndex(where: { $0.id == id }), terminals[idx].status != .exited {
-            enterStatus(.closed, at: idx)
+        hiddenFrames[id] = nil
+        if let idx = terminals.firstIndex(where: { $0.id == id }) {
+            if !isQuitting { terminals[idx].windowHidden = nil }   // a closed card is not a hidden one
+            if terminals[idx].status != .exited { enterStatus(.closed, at: idx) }
         }
         save()
     }

@@ -21,6 +21,7 @@ struct WebSnapshot: Codable {
         let lastRun: Int          // seconds the last finished run took, -1 if it has never run
         let cwd: String
         let transcript: String?   // agent conversation-history file (Claude/Codex), if a hook reported it
+        let window: String        // its desktop window: "open", "hidden" (agent running unseen), "none"
     }
     struct Proj: Codable { let id: String; let name: String; let path: String }
     struct Clust: Codable { let id: String; let name: String }

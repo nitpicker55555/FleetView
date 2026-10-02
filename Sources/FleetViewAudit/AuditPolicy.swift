@@ -95,6 +95,8 @@ extension AuditPolicy {
                                                fromKey: "transcript.from", toKey: "transcript.to"),
                     "sessionId": Semantic(event: "fleetview.terminal.transcript_bound",
                                           fromKey: "session.from", toKey: "session.to"),
+                    "windowHidden": Semantic(event: "fleetview.terminal.window_hidden",
+                                             fromKey: "hidden.from", toKey: "hidden.to"),
                 ]),
             "cluster": EntityRule(
                 categories: ["configuration"],

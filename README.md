@@ -45,6 +45,12 @@ Each terminal has a card showing its status, last prompt, token usage, and run t
 grouped by project. Drag one card onto another to group related terminals into a cluster, or move
 a card to another project with its conversation.
 
+A terminal you are not watching can be hidden with the 隐藏 button in its title bar. The window
+closes and the agent keeps running in the background: the card shows its status as before, with an
+eye-slash mark, and clicking the card opens the window again where it was, on the same session. A
+hidden terminal costs no drawing and no window memory, and stays hidden across restarts. Closing a
+window, by contrast, still stops its agent.
+
 The included `project-manager` CLI uses FleetView's HTTP API to list terminals, read their output,
 and send input. An agent can use it to check another agent's progress, respond to a permission
 prompt, or pass on the next task. The repository includes skills for these workflows in

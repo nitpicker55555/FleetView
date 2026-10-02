@@ -207,7 +207,8 @@
 |---|---|---|
 | `fleetview.terminal.created` | M | `origin`: `ui` \| `web` \| `cli` \| `duplicate` \| `restore`；`duplicate_of`(uuid)；`name_source`: `auto`\|`user`；`cwd`, `auto_run_claude`, `cluster.id`, `tmux_session`, `window.id` |
 | `fleetview.terminal.opened` | M | `mode`: `new_window` \| `reopen` \| `reattach`；`tmux_session`, `window.id` |
-| `fleetview.terminal.raised` | M | 点击卡片 / Raise 按钮把窗口提到最前；`origin`: `card_tap`\|`raise_button`；`was_open`(bool)。⚠️ 它**不** bump `lastActivity`（保持现有语义），但"什么时候点了哪个终端"是审计事实，必须记 —— 见 §5.10 |
+| `fleetview.terminal.raised` | M | 点击卡片 / Raise 按钮把窗口提到最前；`origin`: `card_tap`\|`raise_button`；`was_open`(bool)；`was_hidden`(bool，窗口原先是隐藏的，这次点击把它打开)。⚠️ 它**不** bump `lastActivity`（保持现有语义），但"什么时候点了哪个终端"是审计事实，必须记 —— 见 §5.10 |
+| `fleetview.terminal.window_hidden` | M | 窗口隐藏 / 重新显示（2026-10-02 加）：`hidden.from`, `hidden.to`。隐藏只关窗口和它的 tmux 客户端，会话和 agent 继续运行；关窗口仍然结束会话 |
 | `fleetview.terminal.renamed` | M | `name.from`, `name.to` |
 | `fleetview.terminal.duplicated` | M | `from.id`, `to.id`, `to.name` |
 | `fleetview.terminal.removed` | M | `reason`: `user` \| `project_removed` \| `window_closed`；`lifetime_ms`, `tokens_total`, `commands_run` |

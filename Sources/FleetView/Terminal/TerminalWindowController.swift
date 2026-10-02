@@ -179,6 +179,13 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     var onInterrupt: ((UUID) -> Void)?   // user pressed Escape (Claude's interrupt key)
     /// A pinch finished on this window, at this point size — the fleet's cue to follow.
     var onZoomed: ((Double) -> Void)?
+    /// The title bar's 隐藏 button (see `AppState.hideTerminal`). Only offered under tmux: without a
+    /// session to outlive it, the window is the shell, and hiding it would end the agent.
+    var onHide: ((UUID) -> Void)?
+
+    /// Where the window was, so a hidden one comes back to the same place rather than cascaded.
+    var frame: NSRect { window.frame }
+    func place(at frame: NSRect) { window.setFrame(frame, display: false) }
 
     /// Read from the system rather than written down, because it is the same expression SwiftTerm
     /// builds its own default font from — pinning a number here would silently stop meaning
@@ -275,6 +282,7 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
         // pixel by pixel came out within one level.
         win.colorSpace = .sRGB
         self.window = win
+        if tmux != nil { addHideButton() }
 
         // Report Escape (Claude's interrupt) so a stuck "working" card clears immediately. A local
         // monitor is used because SwiftTerm's keyDown isn't overridable; the key still reaches the shell.
@@ -352,6 +360,26 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
     }
 
     func setTitle(_ title: String) { window.title = title }
+
+    private func addHideButton() {
+        let button = NSButton(title: "隐藏", target: self, action: #selector(hideClicked))
+        button.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: "隐藏窗口")
+        button.imagePosition = .imageLeading
+        button.bezelStyle = .accessoryBarAction
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        button.toolTip = "隐藏窗口：agent 在后台继续运行，不再绘制。点看板上的卡片重新打开。"
+        button.sizeToFit()
+        let bar = NSView(frame: NSRect(x: 0, y: 0, width: button.frame.width + 10, height: 28))
+        button.setFrameOrigin(NSPoint(x: 2, y: (28 - button.frame.height) / 2))
+        bar.addSubview(button)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = bar
+        accessory.layoutAttribute = .trailing
+        window.addTitlebarAccessoryViewController(accessory)
+    }
+
+    @objc private func hideClicked() { onHide?(termId) }
 
     func type(_ s: String) {
         let bytes = Array(s.utf8)

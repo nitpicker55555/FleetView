@@ -64,6 +64,11 @@ struct TerminalCardView: View {
             Button("Duplicate (fork session)") { state.duplicateTerminal(terminal.id) }
             Button("Duplicate blank") { state.duplicateTerminal(terminal.id, blank: true) }
             Button(done ? "Unmark" : "Mark") { state.toggleSubtaskDone(terminal.id) }
+            if terminal.windowHidden == true {
+                Button("Show Window") { state.showTerminal(terminal.id) }
+            } else if state.windowState(terminal.id) == .open {
+                Button("Hide Window (keeps running)") { state.hideTerminal(terminal.id) }
+            }
             if terminal.clusterId != nil {
                 Button("Remove from Cluster") { state.removeFromCluster(terminal.id) }
             }
@@ -91,6 +96,9 @@ struct TerminalCardView: View {
             }
             if done {
                 Image(systemName: "bookmark.fill").font(.system(size: 11)).foregroundColor(Theme.markTint)
+            }
+            if terminal.windowHidden == true {        // window hidden, agent running: a click opens it
+                Image(systemName: "eye.slash").font(.system(size: 11)).foregroundColor(Theme.subtext)
             }
             Text(terminal.status.label)
                 .font(.system(size: 11, weight: .medium))

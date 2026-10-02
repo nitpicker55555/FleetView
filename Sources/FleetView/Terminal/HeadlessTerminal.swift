@@ -113,6 +113,15 @@ final class HeadlessTerminal: TerminalHost {
         }
     }
 
+    /// Stop standing in for the window without ending anything: a hidden terminal's window is
+    /// coming back (`AppState.showTerminal`) and attaches to the session itself. `closeWindow` would
+    /// report a close, and a close kills the session.
+    func detach() {
+        closed = true
+        watch?.invalidate()
+        watch = nil
+    }
+
     /// What closing the window does: AppState's onClose kills the session.
     func closeWindow() {
         guard !closed else { return }

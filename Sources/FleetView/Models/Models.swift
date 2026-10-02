@@ -119,6 +119,12 @@ struct TerminalSession: Identifiable, Codable, Hashable {
     /// one thing a transcript never records — it says what happened, never how long it took. The
     /// next run replaces it.
     var lastRunSeconds: Int? = nil
+
+    /// The window is hidden and the agent carries on in its tmux session with nothing drawing it
+    /// (`AppState.hideTerminal`). Kept across a relaunch, so a hidden terminal is not put back on
+    /// screen by the reconnect. nil rather than false when shown: this struct is in state.json,
+    /// and a non-optional field would make every row already there fail to decode (CLAUDE.md).
+    var windowHidden: Bool? = nil
 }
 
 struct Cluster: Identifiable, Codable, Hashable {

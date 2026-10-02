@@ -2484,15 +2484,19 @@ function endDrag(){
   document.getElementById('chip').style.display='none';
   document.getElementById('dock').style.display='none';
 }
-function zonesFor(cluster,done){
+function zonesFor(cluster,done,win){
   const z=[{k:'done',t:done?'Unmark':'🔖 Mark'},{k:'duplicate',t:'⧉ Duplicate'},{k:'rename',t:'✎ Rename'}];
+  /* The Mac's window for this terminal, not anything on this page: hiding keeps the agent running
+     with nothing drawing it on the desktop; showing puts the window back there. */
+  if(win==='open')z.push({k:'hide',t:'🙈 Hide window'});
+  if(win==='hidden')z.push({k:'show',t:'👁 Show window'});
   if(cluster)z.push({k:'leaveCluster',t:'⇤ Leave'});
   z.push({k:'remove',t:'🗑 Remove',danger:true});
   return z;
 }
-function buildDock(cluster,done){
+function buildDock(cluster,done,win){
   const dock=document.getElementById('dock');
-  dock.innerHTML=zonesFor(cluster,done).map(z=>`<div class="zone${z.danger?' danger':''}" data-zone="${z.k}">${z.t}</div>`).join('');
+  dock.innerHTML=zonesFor(cluster,done,win).map(z=>`<div class="zone${z.danger?' danger':''}" data-zone="${z.k}">${z.t}</div>`).join('');
 }
 function zoneAt(x,y){
   for(const el of document.querySelectorAll('#dock .zone')){
@@ -2508,7 +2512,7 @@ function onDown(e){
   if(e.target.closest('.uid'))return;
   const card=e.target.closest('.card');if(!card)return;
   drag.id=card.dataset.id;drag.name=card.dataset.name;drag.cluster=card.dataset.cluster==='1';
-  drag.done=card.dataset.done==='1';drag.canopen=card.dataset.canopen==='1';drag.card=card;
+  drag.done=card.dataset.done==='1';drag.canopen=card.dataset.canopen==='1';drag.win=card.dataset.win;drag.card=card;
   drag.sx=e.clientX;drag.sy=e.clientY;drag.active=false;drag.live=true;drag.y0=window.scrollY;
   // A finger can't both scroll the list and drag a card, so touch has to say which it means:
   // hold still for a moment and the card arms for dragging, otherwise the swipe stays a scroll.
@@ -2542,7 +2546,7 @@ function onMove(e){
   if(!drag.active&&Math.hypot(dx,dy)<9)return;
   if(!drag.active){
     drag.active=true;dragging=true;drag.card.classList.add('dragging');
-    buildDock(drag.cluster,drag.done);
+    buildDock(drag.cluster,drag.done,drag.win);
     document.getElementById('dock').style.display='flex';
     const chip=document.getElementById('chip');chip.textContent=drag.name;chip.style.display='block';
   }
@@ -2611,8 +2615,8 @@ function card(t){
   const sig=t.status==='shell'?'$':'›';
   const agent=t.agent?`<span class="agent" style="color:${t.agent==='codex'?'var(--codex)':'var(--claude)'};background:${t.agent==='codex'?'rgba(102,204,217,.16)':'rgba(230,148,89,.16)'}">${t.agent}</span>`:'';
   const tok=t.tokens>0?`<span style="font-size:10px;color:var(--accent);margin-left:5px">${short(t.tokens)} tok</span>`:'';
-  const dn=t.done?'🔖 ':'';
-  return `<div class="card ${locked?'locked':''} ${t.done?'done':''}" data-id="${t.id}" data-name="${esc(t.name)}" data-cluster="${t.clusterId?'1':'0'}" data-canopen="${t.canOpen?'1':'0'}" data-done="${t.done?'1':'0'}">
+  const dn=(t.done?'🔖 ':'')+(t.window==='hidden'?'<span title="Its window on the Mac is hidden; the agent keeps running">🙈</span> ':'');
+  return `<div class="card ${locked?'locked':''} ${t.done?'done':''}" data-id="${t.id}" data-name="${esc(t.name)}" data-cluster="${t.clusterId?'1':'0'}" data-canopen="${t.canOpen?'1':'0'}" data-done="${t.done?'1':'0'}" data-win="${t.window||'none'}">
     <div class="cardtop">
       <span class="dot" style="background:${COLORS[t.status]||COLORS.closed}"></span>
       <span class="name">${dn}${esc(t.name)}</span>${agent}
