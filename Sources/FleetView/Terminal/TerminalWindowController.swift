@@ -225,6 +225,13 @@ final class TerminalWindowController: NSObject, NSWindowDelegate, @preconcurrenc
         win.delegate = self
         win.isReleasedWhenClosed = false
         win.minSize = NSSize(width: 480, height: 300)
+        // On a display that can show extended range, AppKit backs a window with 16-bit float
+        // pixels unless told otherwise, and SwiftTerm setting its layer to 8-bit does not change
+        // that. Measured here: every terminal window held a 2072x1120 RGBA-half surface of 17.8 MB,
+        // 196 MB for ten windows, the largest thing in the process. A terminal draws sRGB colours
+        // and nothing else; in sRGB the surface is half that, and the same palette and text compared
+        // pixel by pixel came out within one level.
+        win.colorSpace = .sRGB
         self.window = win
 
         // Report Escape (Claude's interrupt) so a stuck "working" card clears immediately. A local
