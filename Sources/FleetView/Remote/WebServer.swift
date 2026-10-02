@@ -52,34 +52,88 @@ final class WebServer {
     private(set) var port: Int = 0
     weak var app: AppState?
 
-    /// Bind the first free port at/after `preferredPort` and start listening on all interfaces.
+    /// Listen on `preferredPort`, or the next port that will have us, on all interfaces.
+    ///
+    /// A relaunch — a deploy, or the self-update handing off — can come up while the instance it
+    /// replaces is still letting go of its listener, and the dashboard used to move to 8081 for good,
+    /// stranding every phone bookmarked on 8080. The fix was to wait up to 3 s for the port when it
+    /// was this app's last time, probing with a plain bind first. That was not enough: on 2026-10-02,
+    /// relaunched straight after a quit with the load average at 34, the dashboard came up on 8081
+    /// again, and nothing held 8080 by the time anyone looked. So the probe is gone — the listener
+    /// itself is the test — and our own port gets 20 s, retried off the main thread, before the
+    /// next one is taken. The app finishes launching meanwhile; only the dashboard waits.
     func start(preferredPort: Int = 8080) {
-        var p = preferredPort, tries = 0
-        // A relaunch — a deploy, or the self-update handing off — can come up while the instance it
-        // replaces is still letting go of its listener. The port reads busy for a moment, and the
-        // dashboard used to move to 8081 for good, stranding every phone bookmarked on 8080. So if
-        // the busy port is the one this app was on last time, give it a few seconds first.
+        stateLock.lock(); stopped = false; stateLock.unlock()
         let lastPort = (try? String(contentsOf: FV.webPortFile, encoding: .utf8))
             .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        if lastPort == p, !Tooling.isPortFree(p) {
-            for _ in 0..<12 where !Tooling.isPortFree(p) { usleep(250_000) }
-        }
-        while !Tooling.isPortFree(p) && tries < 100 { p += 1; tries += 1 }
-        guard let nwPort = NWEndpoint.Port(rawValue: UInt16(p)) else { return }
+        // What the board shows until the listener says otherwise. It is what we will almost always
+        // end up on, and a 0 would hide the panel and the dashboard links in the meantime.
+        port = preferredPort
+        portCeiling = preferredPort + 100
+        queue.async { self.listen(on: preferredPort, ownPort: lastPort == preferredPort, tries: 0) }
+    }
+
+    /// Guards `listener` and `stopped`: the listen runs on `queue`, `stop` on the main thread at quit.
+    private let stateLock = NSLock()
+    /// While a listen is retried or the next port tried, `stop` must be able to end it.
+    private var stopped = false
+    private var isStopped: Bool { stateLock.lock(); defer { stateLock.unlock() }; return stopped }
+
+    private func listen(on p: Int, ownPort: Bool, tries: Int) {
+        guard !isStopped, p < portCeiling, let nwPort = NWEndpoint.Port(rawValue: UInt16(p)) else { return }
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
-        guard let l = try? NWListener(using: params, on: nwPort) else { return }
+        guard let l = try? NWListener(using: params, on: nwPort) else {
+            listen(on: p + 1, ownPort: false, tries: 0)
+            return
+        }
         l.newConnectionHandler = { [weak self] conn in
             conn.start(queue: self?.queue ?? .global())
             self?.receive(conn, buffer: Data())
         }
+        // Holds `l` until it fails or is stopped; a listener that is ready is the server from then on.
+        l.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                guard !self.isStopped else { l.cancel(); return }
+                DispatchQueue.main.async { self.port = p }
+                try? "\(p)".write(to: FV.webPortFile, atomically: true, encoding: .utf8)   // let fleetctl find us
+                if p + 100 != self.portCeiling || tries > 0 {
+                    FV.log("web: listening on \(p)" + (tries > 0 ? " after \(tries) retries" : ""))
+                }
+            case .failed, .waiting:
+                l.stateUpdateHandler = nil
+                l.cancel()
+                if ownPort && tries < Self.ownPortRetries {
+                    self.queue.asyncAfter(deadline: .now() + 0.5) {
+                        self.listen(on: p, ownPort: true, tries: tries + 1)
+                    }
+                } else {
+                    self.listen(on: p + 1, ownPort: false, tries: 0)
+                }
+            default:
+                break
+            }
+        }
+        stateLock.lock(); listener = l; stateLock.unlock()
         l.start(queue: queue)
-        listener = l
-        port = p
-        try? "\(p)".write(to: FV.webPortFile, atomically: true, encoding: .utf8)   // let fleetctl find us
     }
 
-    func stop() { listener?.cancel(); listener = nil }
+    /// 0.5 s apart: 20 s for the port this app had last time to come free.
+    private static let ownPortRetries = 40
+    /// How far the search for a free port goes, as before: a hundred ports past the preferred one.
+    private var portCeiling = 0
+
+    func stop() {
+        stateLock.lock()
+        stopped = true
+        let l = listener
+        listener = nil
+        stateLock.unlock()
+        l?.stateUpdateHandler = nil
+        l?.cancel()
+    }
 
     // MARK: - Request handling
 
