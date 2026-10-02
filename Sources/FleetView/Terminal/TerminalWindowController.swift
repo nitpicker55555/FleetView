@@ -118,6 +118,48 @@ private final class ThemedTerminalView: LocalProcessTerminalView {
         }
         feed(byteArray: adapted[...])
     }
+
+    /// A redraw asked for while the window could not be seen, owed for when it can.
+    private var redrawOwed = false
+    private var occlusionObserver: NSObjectProtocol?
+
+    /// Output is still parsed while the window is out of sight; it is only not drawn.
+    ///
+    /// AppKit draws a window that nothing can see exactly as often as one in front of you, and
+    /// SwiftTerm repaints the whole view for every line an agent prints. The board covers most of
+    /// the screen, so the terminal windows behind it are usually invisible, and each working agent
+    /// cost about 5% of a core to draw for nobody (measured: three covered windows repainting at
+    /// 10 fps took 12.5% of a core, 0.1% with this). This is where SwiftTerm asks for its redraws.
+    override func setNeedsDisplay(_ invalidRect: NSRect) {
+        if let window, !window.occlusionState.contains(.visible) {
+            redrawOwed = true
+            return
+        }
+        super.setNeedsDisplay(invalidRect)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let o = occlusionObserver { NotificationCenter.default.removeObserver(o) }
+        occlusionObserver = nil
+        guard let window else { return }
+        // Nothing strong in the block: the centre keeps it until it is removed, and a captured
+        // window would keep itself, this view and the whole scrollback alive after closing.
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.redrawOwed,
+                      self.window?.occlusionState.contains(.visible) == true else { return }
+                self.redrawOwed = false
+                self.needsDisplay = true      // the whole grid: whatever arrived meanwhile is in it
+            }
+        }
+    }
+
+    deinit {
+        if let o = occlusionObserver { NotificationCenter.default.removeObserver(o) }
+    }
 }
 
 /// One independent terminal window (its own NSWindow hosting a SwiftTerm view), running an
