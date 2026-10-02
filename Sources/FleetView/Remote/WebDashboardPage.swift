@@ -700,14 +700,20 @@ enum WebDashboardPage {
     border-bottom:1px solid var(--stroke);max-height:min(60vh,420px);overflow-y:auto;
     padding:8px 12px}
   #tray.on{display:block}
-  #tray .f{display:flex;align-items:center;gap:10px;padding:9px 10px;margin-bottom:6px;
+  #tray .f{display:flex;align-items:flex-start;gap:10px;padding:9px 10px;margin-bottom:6px;
     background:var(--card);border:1px solid var(--stroke);border-radius:10px;
     color:var(--text);text-decoration:none}
   #tray .f:active{background:var(--accent);color:var(--onAccent)}
-  #tray .f .fi{flex:none;font-size:17px;line-height:1}
-  #tray .f .fb{flex:1;min-width:0}
-  #tray .f .fn{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #tray .f .fm{font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #tray .f .fi{flex:none;font-size:17px;line-height:1;padding-top:1px}
+  /* Name, facts and note each on a line of their own. They were inline spans, so the name and
+     everything after it ran together as one line, past the card's edge — and an inline box
+     ignores text-overflow, so nothing was ever clipped with an ellipsis either. */
+  #tray .f .fb{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  #tray .f .fn{display:block;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #tray .f .fm{display:block;font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #tray .f .fd{font-variant-numeric:tabular-nums}
+  #tray .f .fnote{font-size:11px;color:var(--sub);overflow:hidden;overflow-wrap:anywhere;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
   #tray .tnone{color:var(--sub);font-size:12px;padding:10px 4px}
   /* project file browser — the project's own directory, walkable from the phone. An agent says "see
      Sources/FleetView/Remote/WebServer.swift:120" and until now there was no way to look. */
@@ -2054,6 +2060,18 @@ async function loadFiles(){
   btn.classList.toggle('has',trayFiles.length>0);
   if(document.getElementById('tray').classList.contains('on')) renderTray();
 }
+/* When a file was sent, in this device's time: 今天 14:15, 昨天 21:03, 9月26日 22:15, and the year
+   only once it is not this one. `ts` is UTC as fleetview-send writes it. */
+function fileWhen(ts){
+  const d=new Date(ts||'');
+  if(isNaN(d)) return '';
+  const p=n=>String(n).padStart(2,'0'), now=new Date(), hm=p(d.getHours())+':'+p(d.getMinutes());
+  const day=x=>x.getFullYear()+'-'+x.getMonth()+'-'+x.getDate();
+  const yest=new Date(now); yest.setDate(now.getDate()-1);
+  if(day(d)===day(now)) return '今天 '+hm;
+  if(day(d)===day(yest)) return '昨天 '+hm;
+  return (d.getFullYear()===now.getFullYear()?'':d.getFullYear()+'年')+(d.getMonth()+1)+'月'+d.getDate()+'日 '+hm;
+}
 function renderTray(){
   const el=document.getElementById('traylist');
   if(!trayFiles.length){ el.innerHTML='<div class="tnone">nothing yet</div>'; return; }
@@ -2061,13 +2079,18 @@ function renderTray(){
      already knows every terminal from /state. */
   const names={};
   for(const t of (state?.terminals||[])) names[t.id]=t.name;
-  el.innerHTML=trayFiles.map(f=>{
-    const who=names[f.from]||'';
-    const bits=[kb(f.bytes||0), who, f.note||''].filter(Boolean).join(' · ');
-    return '<a class="f" href="/file?id='+encodeURIComponent(f.id)+'" target="_blank" rel="noopener">'
+  // Newest first. The server sends them in that order already; an older FleetView does not.
+  const files=[...trayFiles].sort((a,b)=>(b.ts||'').localeCompare(a.ts||'')||(a.name||'').localeCompare(b.name||''));
+  el.innerHTML=files.map(f=>{
+    const when=fileWhen(f.ts);
+    const facts=[kb(f.bytes||0), names[f.from]||''].filter(Boolean).join(' · ');
+    const full=[when&&new Date(f.ts).toLocaleString(), f.note||''].filter(Boolean).join('\n');
+    return '<a class="f" href="/file?id='+encodeURIComponent(f.id)+'" target="_blank" rel="noopener" title="'+att(full)+'">'
       +'<span class="fi">'+fileIcon((f.ext||'').toLowerCase())+'</span>'
       +'<span class="fb"><span class="fn">'+esc(f.name||f.id)+'</span>'
-      +'<span class="fm">'+esc(bits)+'</span></span></a>';
+      +'<span class="fm">'+(when?'<span class="fd">'+esc(when)+'</span>'+(facts?' · ':''):'')+esc(facts)+'</span>'
+      +(f.note?'<span class="fnote">'+esc(f.note)+'</span>':'')
+      +'</span></a>';
   }).join('');
 }
 function toggleTray(){
