@@ -13,6 +13,10 @@ enum SessionForge {
         let sessionId: String
         let wroteFile: URL?       // nil ⇒ native resume, no file written
         let chainLength: Int
+        /// The session the target turn was recorded in — `sessionId` itself for a native resume.
+        /// A written fork is a new session with no history of its own yet, and which CLI resumes it
+        /// is that conversation's call (`AgentHome.resuming`).
+        var sourceSessionId: String? = nil
     }
 
     enum ForgeError: LocalizedError {
@@ -31,7 +35,7 @@ enum SessionForge {
     /// Resolve a node into a resumable session id. Runs file IO — call off the main thread.
     static func fork(projectDir: URL, targetUuid: String, nativeSessionId: String?) throws -> ForkResult {
         if let sid = nativeSessionId {
-            return ForkResult(sessionId: sid, wroteFile: nil, chainLength: 0)
+            return ForkResult(sessionId: sid, wroteFile: nil, chainLength: 0, sourceSessionId: sid)
         }
 
         // Every layout `claudeProjectDir` accepts, in the order the dedup below needs: top level
@@ -145,7 +149,12 @@ enum SessionForge {
         } catch {
             throw ForgeError.writeFailed(error.localizedDescription)
         }
-        return ForkResult(sessionId: newSid, wroteFile: dest, chainLength: chainLength)
+        // The copied records keep the `sessionId` they were written under.
+        let source = rawLine[targetUuid]
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }?["sessionId"] as? String
+        return ForkResult(sessionId: newSid, wroteFile: dest, chainLength: chainLength,
+                          sourceSessionId: source)
     }
 
     // MARK: - Resume command
@@ -163,10 +172,13 @@ enum SessionForge {
     /// `cwd` matters: Claude resolves `--resume <sid>` against the *current directory's* project
     /// slug, so a session recorded elsewhere (an agent started after `cd`) is invisible unless we
     /// cd back first — otherwise the fork opens with "No conversation found".
+    ///
+    /// `command` is `claude` or `sp-claude` (`AgentHome.command`); the wrapper passes every flag
+    /// here through to the CLI untouched.
     static func resumeCommand(sessionId: String, inheritedFlags: [String],
                               forkSession: Bool = false, skipPermissions: Bool = false,
-                              cwd: String? = nil) -> String {
-        var parts = ["claude", "--resume", sessionId]
+                              cwd: String? = nil, command: String = "claude") -> String {
+        var parts = [command, "--resume", sessionId]
         if forkSession { parts.append("--fork-session") }
         parts.append(contentsOf: skipPermissions ? forcingSkipPermissions(inheritedFlags)
                                                  : inheritedFlags)

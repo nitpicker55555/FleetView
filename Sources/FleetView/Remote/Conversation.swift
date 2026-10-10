@@ -151,11 +151,25 @@ enum Conversation {
     private static var historyCache: (size: Int, mtime: TimeInterval, lines: [HistoryLine])?
     private static let historyLock = NSLock()
 
+    /// `sp-claude` keeps its own input history in sub-pool's home, beside the rest of its state (see
+    /// AgentHome), so a prompt queued in an `sp-claude` session is only ever written there.
+    private static var historyFiles: [URL] {
+        var seen = Set<String>()
+        return [AgentHome.claude, .subPoolClaude].map { $0.dir.appendingPathComponent("history.jsonl") }
+            .filter { seen.insert($0.resolvingSymlinksInPath().path).inserted }
+    }
+
+    /// What tells that some history file changed: sizes summed, newest mtime.
+    private static func historySignature() -> (size: Int, mtime: TimeInterval) {
+        historyFiles.reduce(into: (0, 0)) { acc, url in
+            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+            acc.0 += (attrs?[.size] as? Int) ?? 0
+            acc.1 = max(acc.1, (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
+        }
+    }
+
     private static func historyLines() -> [HistoryLine] {
-        let url = FV.home.appendingPathComponent(".claude/history.jsonl")
-        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let size = (attrs?[.size] as? Int) ?? 0
-        let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let (size, mtime) = historySignature()
 
         historyLock.lock()
         if let c = historyCache, c.size == size, c.mtime == mtime {
@@ -164,7 +178,9 @@ enum Conversation {
         }
         historyLock.unlock()
 
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let text = historyFiles.compactMap { try? String(contentsOf: $0, encoding: .utf8) }
+            .joined(separator: "\n")
+        guard !text.isEmpty else { return [] }
         var out: [HistoryLine] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard line.first == "{", let d = line.data(using: .utf8),
@@ -307,9 +323,9 @@ enum Conversation {
                     (a?[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0)
         }
         let file = stat(path)
-        let history = stat(FV.home.appendingPathComponent(".claude/history.jsonl").path)
+        let history = historySignature()
         let key = ParseKey(size: file.size, mtime: file.mtime, inode: file.inode,
-                           historySize: history.size, historyMtime: history.mtime,
+                           historySize: UInt64(history.size), historyMtime: history.mtime,
                            cwd: cwd, limit: limit, ownPrompt: ownPrompt)
         parsedLock.lock()
         if let hit = parsed[path], hit.key == key {

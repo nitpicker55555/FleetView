@@ -218,7 +218,7 @@ final class AppState: ObservableObject {
             treeModel.showEmpty("此终端还没有 agent 会话\n发一条消息后再打开")
             return
         }
-        if path.contains("/.codex/") {
+        if AgentHome.isCodex(path) {
             // Codex has no project directory to scope by — its rollouts are filed by date — so the
             // conversation is identified by the cwd the session itself recorded, not by the
             // terminal's, which may have moved since (see CodexTree).
@@ -265,7 +265,7 @@ final class AppState: ObservableObject {
     private func codexSessionsInfo(cwd: String) -> [String: [(name: String, status: TermStatus)]] {
         var out: [String: [(String, TermStatus)]] = [:]
         for t in terminals {
-            guard let p = transcriptPath(for: t.id), p.contains("/.codex/"),
+            guard let p = transcriptPath(for: t.id), AgentHome.isCodex(p),
                   CodexSession.rolloutCwd(p) == cwd else { continue }
             out[CodexTree.sessionId(fromRollout: p), default: []].append((t.name, t.status))
         }
@@ -363,9 +363,11 @@ final class AppState: ObservableObject {
         // same call the search panel already makes for a Codex hit — there is no second copy of
         // that logic here, and none of SessionForge's Claude-shaped fork synthesis applies.
         if case .codex(let cwd) = source {
+            let srcSubPool = src.subPool
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 do {
-                    let plan = try SearchOpen.planCodexNode(node: nodeUuid, cwd: cwd, label: name)
+                    let plan = try SearchOpen.planCodexNode(node: nodeUuid, cwd: cwd, label: name,
+                                                            subPool: srcSubPool)
                     Task { @MainActor in
                         guard let self else { return }
                         FV.log("tree fork: \(plan.detail)")
@@ -395,6 +397,7 @@ final class AppState: ObservableObject {
         let srcSession = RemoteServer.sessionName(for: srcId)
         let srcTranscript = transcriptPath(for: srcId)
         let termCwd = src.cwd
+        let srcSubPool = src.subPool
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let flags = tmuxPath.map {
                 SessionForge.inheritedFlags(tmuxPath: $0, tmuxSocket: RemoteServer.socket,
@@ -413,9 +416,14 @@ final class AppState: ObservableObject {
                 let sessionCwd = (recorded.map {
                     SessionForge.slugify($0) == dir.lastPathComponent
                 } == true) ? recorded : (SessionForge.projectCwd(projectDir: dir) ?? recorded)
+                // The fork lands beside its source, so whichever CLI resumes the source resumes it.
+                let home = AgentHome.resuming(dir.appendingPathComponent("\(fork.sessionId).jsonl").path,
+                                              kind: .claude, subPool: srcSubPool,
+                                              forkedFrom: fork.sourceSessionId)
                 let cmd = SessionForge.resumeCommand(sessionId: fork.sessionId, inheritedFlags: flags,
                                                      skipPermissions: true,
-                                                     cwd: sessionCwd == termCwd ? nil : sessionCwd)
+                                                     cwd: sessionCwd == termCwd ? nil : sessionCwd,
+                                                     command: home.command)
                 Task { @MainActor in
                     guard let self else { return }
                     FV.log("tree fork: node=\(nodeUuid.prefix(8)) sid=\(fork.sessionId.prefix(8)) " +
@@ -513,7 +521,8 @@ final class AppState: ObservableObject {
         let targets = terminals.filter {
             $0.agentKind == .codex && $0.status != .closed && $0.status != .needsYou
         }.map { t in
-            (id: t.id, cwd: t.cwd, hook: hookSessionPath(for: t.id), stored: t.transcriptPath)
+            (id: t.id, cwd: t.cwd, hook: hookSessionPath(for: t.id), stored: t.transcriptPath,
+             home: t.subPool.map { AgentHome(kind: .codex, subPool: $0) })
         }
         guard !targets.isEmpty else { return }
         let claimed = Set(terminals.compactMap { $0.transcriptPath })
@@ -522,7 +531,8 @@ final class AppState: ObservableObject {
             var verdicts: [(UUID, Bool)] = []
             for t in targets {
                 let path = CodexSession.currentRollout(cwd: t.cwd,
-                                                       excluding: claimed.subtracting([t.stored].compactMap { $0 }))
+                                                       excluding: claimed.subtracting([t.stored].compactMap { $0 }),
+                                                       home: t.home)
                     ?? t.hook ?? t.stored
                 guard let path, let working = CodexSession.isWorking(rollout: path) else { continue }
                 verdicts.append((t.id, working))
@@ -993,12 +1003,13 @@ final class AppState: ObservableObject {
                                pinnedCwd: String? = nil) {
         let createdAt = Date()
         let kind = t.agentKind
+        let subPool = t.subPool
         let termCwd = t.cwd
         let id = t.id
         let name = t.name
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let cmd = AppState.resumeCommand(transcript: path, kind: kind, termCwd: termCwd,
-                                                   pinnedCwd: pinnedCwd) else {
+            guard let cmd = AppState.resumeCommand(transcript: path, kind: kind, subPool: subPool,
+                                                   termCwd: termCwd, pinnedCwd: pinnedCwd) else {
                 FV.log("reopen: nothing resumable for \(name) (\(path))")
                 return
             }
@@ -1020,8 +1031,13 @@ final class AppState: ObservableObject {
     /// One function for both verbs so the two cannot drift: a rollout is named
     /// `rollout-<timestamp>-<uuid>.jsonl` and the CLI wants the UUID alone — handing it the whole
     /// filename opens the session picker instead, which looks like the command being ignored.
+    ///
+    /// `codex` or `sp-codex` by where the rollout is filed: each finds only the rollouts under its
+    /// own home, so the other one would answer that there is no such session. `subPool` decides
+    /// only when both file into one folder.
     nonisolated static func codexCommand(transcript path: String, termCwd: String,
-                                         verb: String, pinnedCwd: String? = nil) -> String? {
+                                         verb: String, pinnedCwd: String? = nil,
+                                         subPool: Bool? = nil) -> String? {
         let base = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         let parts = base.split(separator: "-")
         guard parts.count >= 5 else { return nil }
@@ -1031,18 +1047,19 @@ final class AppState: ObservableObject {
         // after a deliberate move — there the card has been told it belongs somewhere else, and
         // `cd`-ing back into the project it just left would undo the gesture.
         let cwd = pinnedCwd ?? CodexSession.rolloutCwd(path) ?? termCwd
-        let cmd = "codex \(verb) \(sid)"
+        let tool = AgentHome.resuming(path, kind: .codex, subPool: subPool).command
+        let cmd = "\(tool) \(verb) \(sid)"
         return cwd == termCwd ? cmd : "cd \(SessionForge.shellQuote(cwd)) && \(cmd)"
     }
 
-    nonisolated static func resumeCommand(transcript path: String, kind: AgentKind,
+    nonisolated static func resumeCommand(transcript path: String, kind: AgentKind, subPool: Bool?,
                                           termCwd: String, pinnedCwd: String? = nil) -> String? {
         let base = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         guard !base.isEmpty else { return nil }
 
-        if kind == .codex || path.contains("/.codex/") {
+        if kind == .codex || AgentHome.isCodex(path) {
             return codexCommand(transcript: path, termCwd: termCwd, verb: "resume",
-                                pinnedCwd: pinnedCwd)
+                                pinnedCwd: pinnedCwd, subPool: subPool)
         }
 
         // Claude resolves `--resume <sid>` against the *current* folder's project slug, so the
@@ -1063,7 +1080,9 @@ final class AppState: ObservableObject {
         // work the session was already trusted to do.
         return SessionForge.resumeCommand(sessionId: base, inheritedFlags: [],
                                           skipPermissions: true,
-                                          cwd: cwd == termCwd ? nil : cwd)
+                                          cwd: cwd == termCwd ? nil : cwd,
+                                          command: AgentHome.resuming(path, kind: .claude,
+                                                                      subPool: subPool).command)
     }
 
     /// Move a terminal into another project — folder, conversation and all.
@@ -1100,7 +1119,7 @@ final class AppState: ObservableObject {
             // wrong guess would carry somebody else's conversation into another project.
             let transcript = lastSessionFile(for: was)
             let live = controllers[id] != nil || remote.sessionExists(id)
-            let isCodex = was.agentKind == .codex || transcript?.contains("/.codex/") == true
+            let isCodex = was.agentKind == .codex || transcript.map(AgentHome.isCodex) == true
 
             // We own the status from here. `onClose` fires on the next main-actor turn — after the
             // reopen below — and would mark a terminal that is on screen as closed.
@@ -1149,10 +1168,15 @@ final class AppState: ObservableObject {
     /// ever look. A file already sitting there is left alone rather than overwritten: the same
     /// session id under two projects should be impossible, and if it ever happens the file already
     /// there is somebody's conversation.
+    ///
+    /// It stays in the `projects` folder it is in — `~/.claude`'s, or sub-pool's when that is a
+    /// folder of its own — because that is the only one the CLI that wrote it looks in.
     private func relocateTranscript(_ path: String, to projectPath: String) -> String? {
         let src = URL(fileURLWithPath: path)
-        guard src.pathExtension == "jsonl", path.contains("/.claude/projects/") else { return nil }
-        let dir = FV.claudeProjectsDir
+        guard src.pathExtension == "jsonl",
+              let root = AgentHome.roots(.claude).first(where: { path.hasPrefix($0.url.path + "/") })
+        else { return nil }
+        let dir = root.url
             .appendingPathComponent(SessionForge.slugify(projectPath), isDirectory: true)
         let dest = dir.appendingPathComponent(src.lastPathComponent)
         guard dest.path != src.path else { return src.path }
@@ -1315,19 +1339,21 @@ final class AppState: ObservableObject {
         // reason: duplicating a Codex card silently handed you an empty terminal. (Branching from a
         // turn in the *middle* is still treeflow's synthesised rollout; `codex fork` has no way to
         // land on one.)
-        if let path = livePath, onDisk, path.contains("/.codex/"),
-           let cmd = Self.codexCommand(transcript: path, termCwd: src.cwd, verb: "fork") {
+        if let path = livePath, onDisk, AgentHome.isCodex(path),
+           let cmd = Self.codexCommand(transcript: path, termCwd: src.cwd, verb: "fork",
+                                       subPool: src.subPool) {
             guard let newT = newTerminal(projectId: src.projectId, name: src.name + " ⑂",
                                          clusterId: clusterId, autoRunClaude: false) else { return }
             if let idx = terminals.firstIndex(where: { $0.id == newT.id }) {
                 terminals[idx].agentKind = .codex
+                terminals[idx].subPool = src.subPool
             }
             typeIntoTerminal(newT.id, cmd, after: 1.4)
             return
         }
 
         var forkSid: String?
-        if let path = livePath, onDisk, !path.contains("/.codex/") {
+        if let path = livePath, onDisk, !AgentHome.isCodex(path) {
             forkSid = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         }
         guard let sid = forkSid else {
@@ -1343,14 +1369,17 @@ final class AppState: ObservableObject {
         let srcSession = RemoteServer.sessionName(for: id)
         let srcTranscript = hookSessionPath(for: id) ?? src.transcriptPath
         let termCwd = src.cwd
+        let srcSubPool = src.subPool
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let flags = tmuxPath.map {
                 SessionForge.inheritedFlags(tmuxPath: $0, tmuxSocket: RemoteServer.socket,
                                             sessionName: srcSession)
             } ?? []
             let sessionCwd = srcTranscript.flatMap { SessionForge.sessionCwd(transcriptPath: $0) }
+            let home = AgentHome.resuming(srcTranscript, kind: .claude, subPool: srcSubPool)
             let cmd = SessionForge.resumeCommand(sessionId: sid, inheritedFlags: flags, forkSession: true,
-                                                 cwd: sessionCwd == termCwd ? nil : sessionCwd)
+                                                 cwd: sessionCwd == termCwd ? nil : sessionCwd,
+                                                 command: home.command)
             Task { @MainActor in
                 guard let self else { return }
                 let elapsed = Date().timeIntervalSince(createdAt)
@@ -1418,7 +1447,7 @@ final class AppState: ObservableObject {
                                     sessionId: t.sessionId,
                                     transcriptPath: transcript,
                                     newTokens: t.newTokens, lastPrompt: t.lastPrompt,
-                                    removedAt: Date())
+                                    removedAt: Date(), subPool: t.subPool)
         terminalArchive.removeAll { $0.id == t.id }
         terminalArchive.insert(entry, at: 0)          // newest first, which is how it is read
         // Trimmed per project, so a busy project cannot push a quiet one's history out.
@@ -2028,9 +2057,13 @@ final class AppState: ObservableObject {
         if let sid = ev.sessionId { terminals[idx].sessionId = sid }
         if let tp = ev.transcriptPath {
             terminals[idx].transcriptPath = tp
-            // Tell Claude vs Codex apart by where the transcript lives (drives the card's colour cue).
-            if tp.contains("/.codex/") { terminals[idx].agentKind = .codex }
-            else if tp.contains("/.claude/") { terminals[idx].agentKind = .claude }
+            // Tell Claude vs Codex apart by where the transcript lives (drives the card's colour cue),
+            // and `sp-claude` from `claude` by the path it was reported under — the transcript itself
+            // may sit in a folder both of them share.
+            if let home = ev.reporter {
+                terminals[idx].agentKind = home.kind
+                terminals[idx].subPool = home.viaSubPool
+            }
         }
 
         switch ev.event {
@@ -2079,15 +2112,21 @@ final class AppState: ObservableObject {
                 loadLatestPrompt(termId: uid, path: tp)           // resume/compact/clear → recover latest prompt
             }
         case "ShellCommand":
+            // Which Codex is starting is read first, quiet or not. For `sp-codex`, whose hooks never
+            // fire (see CodexHookInstaller), this command line is the only word the card ever gets
+            // that it is a Codex terminal at all — and so the only thing that starts its status poll.
+            // Not for Claude: its hooks say which CLI ran which conversation, and a command line only
+            // says what was typed — `claude update` in an `sp-claude` card would relabel the card.
+            if let c = ev.command, let home = AgentHome.launched(by: c), home.kind == .codex {
+                terminals[idx].agentKind = .codex
+                terminals[idx].subPool = home.viaSubPool
+            }
             // A plain (non-claude) command ran at the zsh prompt → back to "shell", show the command.
             // `claude` still reports itself so the *act of starting an agent* is audited, but it must
             // not drag the card back to "shell" — its own hooks own the status from here.
             guard !ev.quiet else { break }
             enterStatus(.shell, at: idx)
-            if let c = ev.command, !c.isEmpty {
-                terminals[idx].lastPrompt = c
-                if c.hasPrefix("codex") { terminals[idx].agentKind = .codex }
-            }
+            if let c = ev.command, !c.isEmpty { terminals[idx].lastPrompt = c }
         default:
             break
         }
@@ -2391,7 +2430,8 @@ final class AppState: ObservableObject {
         guard let t = terminals.first(where: { $0.id == id }), let path = transcriptPath(for: id) else { return nil }
         let sid = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         guard !sid.isEmpty else { return nil }
-        return AskSpec(sessionId: sid, cwd: t.cwd, agent: t.agentKind.rawValue)
+        return AskSpec(sessionId: sid, cwd: t.cwd, agent: t.agentKind.rawValue,
+                       command: AgentHome.resuming(path, kind: t.agentKind, subPool: t.subPool).command)
     }
 
     /// The agent transcript file for a terminal: the path its own hooks reported, else — only when
@@ -2412,7 +2452,10 @@ final class AppState: ObservableObject {
         // correct — and when hooks ARE working both answers are the same file anyway.
         if t.agentKind == .codex {
             let claimed = Set(terminals.filter { $0.id != id }.compactMap { $0.transcriptPath })
-            if let live = CodexSession.currentRollout(cwd: t.cwd, excluding: claimed) { return live }
+            if let live = CodexSession.currentRollout(cwd: t.cwd, excluding: claimed,
+                                                      home: t.subPool.map { AgentHome(kind: .codex, subPool: $0) }) {
+                return live
+            }
         }
         // The pointer hook.sh writes for this terminal wins for Claude: it is rewritten on every
         // hook event, so it survives a missed event or a `--resume` that switched sessions.
@@ -2422,9 +2465,14 @@ final class AppState: ObservableObject {
         // some unrelated session from the same project.
         guard t.agentKind != .unknown || t.status.isAgent else { return nil }
         let claimed = Set(terminals.filter { $0.id != id }.compactMap { $0.transcriptPath })
-        let dir = FV.transcriptDir(forCwd: t.cwd)
-        let files = (try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        // Every `projects` folder this card's CLI could be writing into — both, when it has not
+        // said which it runs.
+        let home = t.subPool.map { AgentHome(kind: .claude, subPool: $0) }
+        let files = AgentHome.roots(.claude).filter { home.map($0.homes.contains) ?? true }.flatMap {
+            (try? FileManager.default.contentsOfDirectory(
+                at: $0.url.appendingPathComponent(FV.claudeSlug(for: t.cwd), isDirectory: true),
+                includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        }
         let newest = files.filter { $0.pathExtension == "jsonl" && !claimed.contains($0.path) }
             .max { a, b in
                 let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
@@ -2441,12 +2489,17 @@ final class AppState: ObservableObject {
     /// hook.sh rewrites that pointer on every event, a Codex worker's included, so after a
     /// multi-agent run it names whichever worker acted last. Read back as is, that sent a reopen to
     /// `codex resume` the worker and a fork to fork it; it is walked up to the conversation instead.
+    ///
+    /// hook.sh stores the path as the agent reported it, which under sub-pool runs through a temp
+    /// dir that is deleted when the session ends — read back as is, every `sp-claude` card would
+    /// lose its conversation the moment its agent exited.
     func hookSessionPath(for id: UUID) -> String? {
         guard let data = try? Data(contentsOf: FV.sessionPointer(for: id)),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let path = obj["transcript_path"] as? String,
-              FileManager.default.fileExists(atPath: path) else { return nil }
-        return path.contains("/.codex/") ? CodexTree.mainLineRollout(of: path) : path
+              let reported = obj["transcript_path"] as? String else { return nil }
+        let path = AgentHome.canonical(reported)
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        return AgentHome.isCodex(path) ? CodexTree.mainLineRollout(of: path) : path
     }
 
     /// How many terminals point at the same transcript. >1 means the conversation genuinely belongs
@@ -2727,20 +2780,21 @@ extension AppState {
         let fm = FileManager.default
         let full = wanted.count == 36
         var hits: [(path: String, sid: String)] = []
-        let claude = FV.home.appendingPathComponent(".claude/projects")
-        for dir in (try? fm.contentsOfDirectory(atPath: claude.path)) ?? [] {
-            let d = claude.appendingPathComponent(dir)
-            if full {
-                let p = d.appendingPathComponent("\(wanted).jsonl").path
-                if fm.fileExists(atPath: p) { hits.append((p, wanted)) }
-            } else {
-                for f in (try? fm.contentsOfDirectory(atPath: d.path)) ?? []
-                where f.hasPrefix(wanted) && f.hasSuffix(".jsonl") {
-                    hits.append((d.appendingPathComponent(f).path, String(f.dropLast(6))))
+        for claude in AgentHome.roots(.claude).map(\.url) {
+            for dir in (try? fm.contentsOfDirectory(atPath: claude.path)) ?? [] {
+                let d = claude.appendingPathComponent(dir)
+                if full {
+                    let p = d.appendingPathComponent("\(wanted).jsonl").path
+                    if fm.fileExists(atPath: p) { hits.append((p, wanted)) }
+                } else {
+                    for f in (try? fm.contentsOfDirectory(atPath: d.path)) ?? []
+                    where f.hasPrefix(wanted) && f.hasSuffix(".jsonl") {
+                        hits.append((d.appendingPathComponent(f).path, String(f.dropLast(6))))
+                    }
                 }
             }
         }
-        for p in CodexTree.rolloutPaths(root: CodexSession.sessionsDir) {
+        for p in CodexTree.rolloutPaths(roots: CodexSession.sessionRoots) {
             let id = CodexTree.sessionId(fromRollout: p)
             if full ? id == wanted : id.hasPrefix(wanted) { hits.append((p, id)) }
         }
@@ -2797,7 +2851,7 @@ extension AppState {
             path = main
             sid = CodexTree.sessionId(fromRollout: main)
         }
-        let codex = path.contains("/.codex/")
+        let codex = AgentHome.isCodex(path)
 
         func done(_ action: String, _ id: UUID) -> (status: String, body: [String: Any]) {
             let t = terminals.first { $0.id == id }
@@ -2819,10 +2873,11 @@ extension AppState {
             t.transcriptPath == path || hookSessionPath(for: t.id) == path
         }
         // A new or returning card shows what it was doing, the way a reopened one does.
-        func bring(_ id: UUID, kind: AgentKind?, lastPrompt: String?) {
+        func bring(_ id: UUID, kind: AgentKind?, subPool: Bool?, lastPrompt: String?) {
             guard let i = terminals.firstIndex(where: { $0.id == id }) else { return }
             terminals[i].transcriptPath = path
             terminals[i].agentKind = kind ?? (codex ? .codex : .claude)
+            terminals[i].subPool = subPool
             if let lastPrompt, !lastPrompt.isEmpty { terminals[i].lastPrompt = lastPrompt }
             else { loadLatestPrompt(termId: id, path: path) }
             resumeSession(terminals[i], transcript: path)
@@ -2857,7 +2912,8 @@ extension AppState {
             }
             // Back on the board, so out of the drawer of things that could be brought back.
             terminalArchive.removeAll { $0.transcriptPath == path }
-            bring(t.id, kind: row.agentKind == .unknown ? nil : row.agentKind, lastPrompt: row.lastPrompt)
+            bring(t.id, kind: row.agentKind == .unknown ? nil : row.agentKind, subPool: row.subPool,
+                  lastPrompt: row.lastPrompt)
             return done("restored", t.id)
         }
         let folder = (codex ? CodexSession.rolloutCwd(path) : Self.claudeConversationCwd(path)) ?? ""
@@ -2867,7 +2923,7 @@ extension AppState {
         guard let t = newTerminal(projectId: pid, name: "↺ " + String(sid.prefix(8))) else {
             return ("500 Internal Server Error", ["error": "could not open a terminal"])
         }
-        bring(t.id, kind: nil, lastPrompt: nil)
+        bring(t.id, kind: nil, subPool: nil, lastPrompt: nil)
         return done("created", t.id)
     }
 }

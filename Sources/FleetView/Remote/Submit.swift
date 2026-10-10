@@ -61,8 +61,12 @@ enum Submit {
         Thread.sleep(forTimeInterval: gap(for: text))
         // A shell running a command is not a composer: a second Enter there answers whatever that
         // command is waiting on. Only agents get the retries.
-        let agent = isAgent(tmux(["display-message", "-p", "-t", session, "#{pane_current_command}"],
-                                 true))
+        let current = tmux(["display-message", "-p", "-t", session, "#{pane_current_command}"], true)
+        var agent = isAgent(current)
+        if !agent, isWrapper(current) {
+            agent = foregroundCommands(tty: tmux(["display-message", "-p", "-t", session, "#{pane_tty}"], true))
+                .contains(where: isAgent)
+        }
         // See the text arrive before claiming anything about it leaving. "Gone from the composer"
         // is also what text that never landed looks like — a TUI still drawing its banner drops
         // keystrokes — and reporting that as submitted is the lie this whole check exists to stop.
@@ -139,6 +143,36 @@ enum Submit {
         let c = command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if c.hasPrefix("claude") || c.hasPrefix("codex") || c == "node" { return true }
         return c.range(of: #"^\d+\.\d+\.\d+"#, options: .regularExpression) != nil
+    }
+
+    /// `sp-claude` and `sp-codex` are Python scripts that run the agent as their child, and tmux
+    /// names a pane after the leader of its foreground job — so a pane running `sp-claude` reads
+    /// "Python". That is only worth a closer look, never an answer: a Python script waiting on
+    /// `input()` is exactly the kind of foreground command a second Enter must not reach.
+    static func isWrapper(_ command: String) -> Bool {
+        command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("python")
+    }
+
+    /// The names of the processes in the foreground job on `tty` — the wrapper and the agent it
+    /// started share that job, which is what makes the agent findable from the pane at all.
+    static func foregroundCommands(tty: String) -> [String] {
+        let tty = tty.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tty.isEmpty else { return [] }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/ps")
+        p.arguments = ["-ww", "-t", tty, "-o", "tpgid=,pgid=,comm="]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        let rows = String(data: data, encoding: .utf8) ?? ""
+        return rows.split(separator: "\n").compactMap { row in
+            let f = row.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard f.count == 3, f[0] == f[1] else { return nil }
+            return (String(f[2]) as NSString).lastPathComponent
+        }
     }
 
     /// Text with every space, line break and box edge taken out — what survives a TUI re-wrapping

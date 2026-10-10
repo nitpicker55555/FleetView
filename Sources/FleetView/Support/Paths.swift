@@ -85,16 +85,11 @@ enum FV {
         try? logHandle?.write(contentsOf: data)
     }
 
-    static var claudeProjectsDir: URL { home.appendingPathComponent(".claude/projects", isDirectory: true) }
-
-    /// Claude Code's slug rule for a cwd: replace "/" and "_" with "-".
+    /// Claude Code's slug rule for a cwd: replace "/" and "_" with "-". The folders it names live
+    /// under each Claude home's `projects` (`AgentHome.roots(.claude)`).
     static func claudeSlug(for path: String) -> String {
         path.replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: "_", with: "-")
-    }
-
-    static func transcriptDir(forCwd cwd: String) -> URL {
-        claudeProjectsDir.appendingPathComponent(claudeSlug(for: cwd), isDirectory: true)
     }
 
     /// The user's login shell (so injected `claude` resolves via their profile PATH).

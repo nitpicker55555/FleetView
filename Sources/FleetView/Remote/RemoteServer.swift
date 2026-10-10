@@ -15,6 +15,7 @@ struct AskSpec: Sendable {
     let sessionId: String   // the agent session (transcript filename without .jsonl)
     let cwd: String
     let agent: String       // "claude" / "codex" / ""
+    let command: String     // the CLI to run it with: "claude", "sp-claude", "codex", "sp-codex"
 }
 
 /// Serves FleetView terminals to other devices over the LAN.
@@ -233,9 +234,12 @@ final class RemoteServer {
         // Run through a LOGIN shell so the agent inherits the user's real environment (PATH + auth) —
         // a GUI-launched app's env lacks it, and claude/codex would report "Not logged in". The prompt,
         // session id and cwd are passed as env vars (referenced quoted) so arbitrary text can't inject.
+        // `spec.command` is one of AgentHome's four names, never text from a request, so it is safe
+        // to put in the line itself. An `sp-claude` session has to be asked through `sp-claude`:
+        // plain `claude` would answer from whatever account ~/.claude is logged into, if any.
         let tool = spec.agent == "codex"
-            ? #"codex exec resume "$FV_SID" "$FV_Q""#
-            : #"claude -p --resume "$FV_SID" --fork-session "$FV_Q""#
+            ? spec.command + #" exec resume "$FV_SID" "$FV_Q""#
+            : spec.command + #" -p --resume "$FV_SID" --fork-session "$FV_Q""#
         let p = Process()
         p.executableURL = URL(fileURLWithPath: FV.userShell)
         p.arguments = ["-lc", #"cd "$FV_CWD" && "# + tool]

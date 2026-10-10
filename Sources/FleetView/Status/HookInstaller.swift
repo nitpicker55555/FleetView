@@ -1,13 +1,22 @@
 import Foundation
 
-/// Installs (and cleanly removes) FleetView's Claude Code status hooks in ~/.claude/settings.json.
+/// Installs (and cleanly removes) FleetView's Claude Code status hooks in ~/.claude/settings.json,
+/// and in sub-pool's `claude-home/settings.json` when `sp-claude` is set up — that is the only
+/// settings file `sp-claude` reads (see AgentHome).
 /// The hook script no-ops unless FLEETVIEW_TERM_ID is set, so it never affects normal `claude` use.
 enum HookInstaller {
     // PreToolUse lets us clear "needs you" the instant the user approves a permission prompt
     // (Claude fires it as work resumes; without it the card stayed stuck on "needs you").
     static let events = ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "Notification"]
-    static var settingsURL: URL { FV.home.appendingPathComponent(".claude/settings.json") }
-    static var backupURL: URL { FV.supportDir.appendingPathComponent("settings.backup.json") }
+
+    /// The Claude homes whose settings get our hooks. Unlike Codex's, a Claude hook needs no trust
+    /// recorded against the file's path, so sub-pool's per-session temp dir does not get in the way.
+    static var homes: [AgentHome] { [.claude] + (AgentHome.subPoolClaude.exists ? [.subPoolClaude] : []) }
+    static func settingsURL(_ home: AgentHome) -> URL { home.dir.appendingPathComponent("settings.json") }
+    static func backupURL(_ home: AgentHome) -> URL {
+        FV.supportDir.appendingPathComponent(home.viaSubPool ? "sp-claude-settings.backup.json"
+                                                             : "settings.backup.json")
+    }
 
     static func writeHookScript() {
         FV.ensureSupportDir()
@@ -42,15 +51,26 @@ enum HookInstaller {
     }
 
     static func isInstalled() -> Bool {
-        guard let obj = readSettings(), let hooks = obj["hooks"] as? [String: Any] else { return false }
-        for e in events where groupIndexOfOurs(in: hooks[e] as? [[String: Any]] ?? []) != nil { return true }
-        return false
+        homes.contains { home in
+            guard let obj = readSettings(home), let hooks = obj["hooks"] as? [String: Any] else { return false }
+            return events.contains { groupIndexOfOurs(in: hooks[$0] as? [[String: Any]] ?? []) != nil }
+        }
     }
 
     @discardableResult
     static func install() -> Bool {
         writeHookScript()
-        var obj = readSettings() ?? [:]
+        return homes.map { install($0) }.allSatisfy { $0 }
+    }
+
+    @discardableResult
+    static func uninstall() -> Bool {
+        homes.map { uninstall($0) }.allSatisfy { $0 }
+    }
+
+    private static func install(_ home: AgentHome) -> Bool {
+        let settingsURL = settingsURL(home), backupURL = backupURL(home)
+        var obj = readSettings(home) ?? [:]
         // Back up the original once, before our first modification.
         if !FileManager.default.fileExists(atPath: backupURL.path),
            let data = try? Data(contentsOf: settingsURL) {
@@ -66,19 +86,18 @@ enum HookInstaller {
             hooks[e] = arr
         }
         obj["hooks"] = hooks
-        return writeSettings(obj)
+        return writeSettings(obj, home)
     }
 
-    @discardableResult
-    static func uninstall() -> Bool {
-        guard var obj = readSettings(), var hooks = obj["hooks"] as? [String: Any] else { return false }
+    private static func uninstall(_ home: AgentHome) -> Bool {
+        guard var obj = readSettings(home), var hooks = obj["hooks"] as? [String: Any] else { return false }
         for e in events {
             guard var arr = hooks[e] as? [[String: Any]] else { continue }
             arr.removeAll { group in groupIsOurs(group) }
             if arr.isEmpty { hooks.removeValue(forKey: e) } else { hooks[e] = arr }
         }
         if hooks.isEmpty { obj.removeValue(forKey: "hooks") } else { obj["hooks"] = hooks }
-        return writeSettings(obj)
+        return writeSettings(obj, home)
     }
 
     // MARK: - Helpers
@@ -94,15 +113,18 @@ enum HookInstaller {
         arr.firstIndex(where: groupIsOurs)
     }
 
-    private static func readSettings() -> [String: Any]? {
-        guard let data = try? Data(contentsOf: settingsURL),
+    private static func readSettings(_ home: AgentHome) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: settingsURL(home)),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return obj
     }
 
-    private static func writeSettings(_ obj: [String: Any]) -> Bool {
+    /// Written in place, not replaced, so a settings file that is a symlink stays one — sub-pool's
+    /// home is wired to `~/.claude` by links (its `projects` and `skills` are), and an atomic
+    /// rename would silently cut this one loose.
+    private static func writeSettings(_ obj: [String: Any], _ home: AgentHome) -> Bool {
         guard let out = try? JSONSerialization.data(withJSONObject: obj,
                                                     options: [.prettyPrinted, .sortedKeys]) else { return false }
-        do { try out.write(to: settingsURL); return true } catch { return false }
+        do { try out.write(to: settingsURL(home)); return true } catch { return false }
     }
 }

@@ -37,8 +37,12 @@ enum SearchIndex {
     // MARK: - Location
 
     static var dbURL: URL { FV.supportDir.appendingPathComponent("search.db") }
-    private static var claudeRoot: URL { FV.home.appendingPathComponent(".claude/projects") }
-    private static var codexRoot: URL { FV.home.appendingPathComponent(".codex/sessions") }
+    /// Every folder conversations are filed in — `sp-claude`'s and `sp-codex`'s included, each
+    /// once (see AgentHome.roots).
+    private static var roots: [(URL, Source)] {
+        AgentHome.roots(.claude).map { ($0.url, Source.claude) }
+            + AgentHome.roots(.codex).map { ($0.url, Source.codex) }
+    }
 
     // MARK: - CJK tokenisation
     //
@@ -283,7 +287,7 @@ enum SearchIndex {
         // Claude keeps three layouts under a project slug — <sid>.jsonl, <sid>/*.jsonl and
         // <sid>/subagents/agent-*.jsonl — so enumerate rather than glob a fixed depth.
         var jobs: [(url: URL, src: Source, from: Int, prompts: Int, project: String)] = []
-        for (root, src) in [(claudeRoot, Source.claude), (codexRoot, Source.codex)] {
+        for (root, src) in roots {
             let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey])
             while let url = e?.nextObject() as? URL {
                 guard url.pathExtension == "jsonl" else { continue }

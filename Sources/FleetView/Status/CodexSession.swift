@@ -14,7 +14,9 @@ import Foundation
 /// sessions that are *already running* — nothing has to be restarted for it to take effect.
 enum CodexSession {
 
-    static var sessionsDir: URL { FV.home.appendingPathComponent(".codex/sessions", isDirectory: true) }
+    /// Every folder Codex files rollouts in: `~/.codex/sessions`, and sub-pool's when `sp-codex` is
+    /// in use (see AgentHome).
+    static var sessionRoots: [URL] { AgentHome.roots(.codex).map(\.url) }
 
     /// How far back a rollout can have been touched and still count as this terminal's live one.
     /// A session idle for longer than this is not what the terminal is writing now.
@@ -54,23 +56,38 @@ enum CodexSession {
     /// separate read (`isWorking`) that is not cached this way. So the visible cost of the staleness
     /// is that a brand-new Codex session can take up to 10s to be attributed — while every existing
     /// one stays exact.
-    private static var rolloutScan: (at: Date, list: [(path: String, mtime: Date)])?
+    ///
+    /// One walk per sessions folder, so a card known to run one CLI never pays for the other's:
+    /// sub-pool's folder held 7000 rollouts here against `~/.codex`'s 2400, and walking it took the
+    /// scan from 9ms to 29ms.
+    private static var rolloutScan: [String: (at: Date, list: [Recent])] = [:]
     private static let scanTTL: TimeInterval = 10.0
 
-    /// Rollouts touched recently enough to be live, newest first. Codex files them under
-    /// `sessions/YYYY/MM/DD/`, so only the last few day-directories are worth walking.
-    private static func recentRollouts() -> [(path: String, mtime: Date)] {
+    /// A live-enough rollout, and the homes whose CLI could be writing it — two when `codex` and
+    /// `sp-codex` share one folder.
+    private struct Recent { let path: String; let mtime: Date; let homes: [AgentHome] }
+
+    /// Rollouts touched recently enough to be live, newest first, from the folders `home` files
+    /// into — every one of them when nil.
+    private static func recentRollouts(home: AgentHome?) -> [Recent] {
+        AgentHome.roots(.codex).filter { home.map($0.homes.contains) ?? true }
+            .flatMap(recentRollouts(in:))
+            .sorted { $0.mtime > $1.mtime }
+    }
+
+    /// Codex files rollouts under `sessions/YYYY/MM/DD/`.
+    private static func recentRollouts(in root: AgentHome.Root) -> [Recent] {
         lock.lock()
-        if let s = rolloutScan, Date().timeIntervalSince(s.at) < scanTTL {
+        if let s = rolloutScan[root.url.path], Date().timeIntervalSince(s.at) < scanTTL {
             let cached = s.list; lock.unlock(); return cached
         }
         lock.unlock()
         let fm = FileManager.default
         let cutoff = Date().addingTimeInterval(-staleAfter)
-        var out: [(String, Date)] = []
+        var out: [Recent] = []
         // Walk day directories rather than the whole tree: there are thousands of rollouts and only
         // the last couple of days can hold a live one.
-        guard let years = try? fm.contentsOfDirectory(at: sessionsDir, includingPropertiesForKeys: nil)
+        guard let years = try? fm.contentsOfDirectory(at: root.url, includingPropertiesForKeys: nil)
         else { return [] }
         for y in years {
             guard let months = try? fm.contentsOfDirectory(at: y, includingPropertiesForKeys: nil) else { continue }
@@ -82,14 +99,13 @@ enum CodexSession {
                     for f in files where f.pathExtension == "jsonl" {
                         let t = (try? f.resourceValues(forKeys: [.contentModificationDateKey])
                             .contentModificationDate) ?? .distantPast
-                        if t > cutoff { out.append((f.path, t)) }
+                        if t > cutoff { out.append(Recent(path: f.path, mtime: t, homes: root.homes)) }
                     }
                 }
             }
         }
-        let sorted = out.sorted { $0.1 > $1.1 }
-        lock.lock(); rolloutScan = (Date(), sorted); lock.unlock()
-        return sorted
+        lock.lock(); rolloutScan[root.url.path] = (Date(), out); lock.unlock()
+        return out
     }
 
     /// The rollout a Codex terminal in `cwd` is writing right now: the most recently touched one
@@ -99,9 +115,15 @@ enum CodexSession {
     /// is claimed by whoever asks first and the other falls through to the next. That is a real
     /// limit, but it beats the previous behaviour, where every Codex terminal was stuck on the file
     /// it was first guessed to own.
-    static func currentRollout(cwd: String, excluding claimed: Set<String>) -> String? {
+    ///
+    /// `home` narrows it to what that CLI can be writing — a `codex` and an `sp-codex` terminal in
+    /// one folder file into different places, and neither can be writing the other's rollout. nil
+    /// when the card has not said which it runs.
+    static func currentRollout(cwd: String, excluding claimed: Set<String>,
+                               home: AgentHome? = nil) -> String? {
         guard !cwd.isEmpty else { return nil }
-        for (path, _) in recentRollouts() where !claimed.contains(path) {
+        for r in recentRollouts(home: home) where !claimed.contains(r.path) {
+            let path = r.path
             // Never a worker. Workers share the cwd of the conversation that spawned them, are
             // written to constantly while a run is going and are claimed by no terminal, so they
             // always won this — and a Codex terminal idle in that directory took a busy worker's

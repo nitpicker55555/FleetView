@@ -6,6 +6,16 @@ import Foundation
 /// PreToolUse / PermissionRequest / PostToolUse / Stop) and deliver JSON on stdin, so hook.sh works
 /// unchanged. The shared script no-ops unless FLEETVIEW_TERM_ID is set, so it never reports for codex
 /// runs outside FleetView. Our block is fenced by sentinel comments and removed cleanly on uninstall.
+///
+/// Deliberately not installed into sub-pool's `codex-home/config.toml`, the file `sp-codex` reads.
+/// Codex keys a hook's trust on the config file's path as the CLI sees it,
+/// `$CODEX_HOME/config.toml:<event>:0:0`, and `sp-codex` points CODEX_HOME at a fresh
+/// `sp-codex-XXXXXXXX` temp dir every session: a trust recorded against the file's real path is
+/// ignored, and one recorded against the session's path is dead by the next session (both tried
+/// with codex-cli 0.153.4 — only the exact session path fired). The hooks would sit there
+/// untrusted in every session and never run. `sp-codex` cards get their
+/// status from the rollout instead, exactly as Codex cards did before their hooks were trusted
+/// (`CodexSession`); what that cannot see is an approval prompt.
 enum CodexHookInstaller {
     // Codex lifecycle events we care about. PermissionRequest is Codex's approval signal (Claude uses
     // "Notification"); PreToolUse/PostToolUse clear "needs you" once the user approves.

@@ -80,6 +80,8 @@ struct TerminalArchive: Identifiable, Codable, Hashable {
     var newTokens: Int = 0
     var lastPrompt: String = ""
     var removedAt: Date
+    /// `TerminalSession.subPool`, kept so a restore resumes with the CLI the card had.
+    var subPool: Bool? = nil
 }
 
 struct TerminalSession: Identifiable, Codable, Hashable {
@@ -125,6 +127,14 @@ struct TerminalSession: Identifiable, Codable, Hashable {
     /// screen by the reconnect. nil rather than false when shown: this struct is in state.json,
     /// and a non-optional field would make every row already there fail to decode (CLAUDE.md).
     var windowHidden: Bool? = nil
+
+    /// The agent runs under sub-pool's wrapper — `sp-claude` / `sp-codex` rather than `claude` /
+    /// `codex` — so that is what a resume, a fork or a side question has to type (see AgentHome).
+    /// Set from Claude's hooks, whose reported path says which CLI ran, and for Codex from the
+    /// command line that started it, since `sp-codex` never fires a hook. For Claude it is second
+    /// to the conversation's own record (`AgentHome.resuming`). nil is "never seen either way",
+    /// which is every row written before this existed.
+    var subPool: Bool? = nil
 }
 
 struct Cluster: Identifiable, Codable, Hashable {

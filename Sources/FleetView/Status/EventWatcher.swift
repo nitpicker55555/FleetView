@@ -9,7 +9,12 @@ final class EventWatcher {
         let event: String
         let term: String
         let sessionId: String?
+        /// Where the transcript really is (`AgentHome.canonical`), not the path as reported: under
+        /// sub-pool that runs through a temp dir which is gone once the session ends.
         let transcriptPath: String?
+        /// The home of the agent behind the event, read off the path *as reported* — the one thing
+        /// that tells `sp-claude` from `claude` when both file into the same folder.
+        let reporter: AgentHome?
         let cwd: String?
         let prompt: String?
         let message: String?
@@ -74,10 +79,12 @@ final class EventWatcher {
                   let event = obj["event"] as? String,
                   let term = obj["term"] as? String else { continue }
             let p = (obj["payload"] as? [String: Any]) ?? [:]
+            let reported = p["transcript_path"] as? String
             let ev = Event(event: event,
                            term: term,
                            sessionId: p["session_id"] as? String,
-                           transcriptPath: p["transcript_path"] as? String,
+                           transcriptPath: reported.map(AgentHome.canonical),
+                           reporter: reported.flatMap(AgentHome.reporting),
                            cwd: p["cwd"] as? String,
                            prompt: p["prompt"] as? String,
                            message: p["message"] as? String,

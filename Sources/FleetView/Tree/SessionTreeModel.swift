@@ -173,7 +173,7 @@ final class SessionTreeModel: ObservableObject {
                 built = SessionTreeBuilder.build(projectDir: dir, boundSessionId: sid,
                                                  expandedCompactions: expanded)
             case .codex(let cwd):
-                built = CodexTree.build(cwd: cwd, boundSessionId: sid, root: CodexSession.sessionsDir)
+                built = CodexTree.build(cwd: cwd, boundSessionId: sid, roots: CodexSession.sessionRoots)
             }
             Task { @MainActor in
                 guard let self, self.generation == gen else { return }
@@ -257,7 +257,7 @@ final class SessionTreeModel: ObservableObject {
             let sid = boundSessionId
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 let sig = CodexTree.signature(cwd: cwd, boundSessionId: sid,
-                                              root: CodexSession.sessionsDir)
+                                              roots: CodexSession.sessionRoots)
                 Task { @MainActor in
                     guard let self else { return }
                     self.signatureInFlight = false

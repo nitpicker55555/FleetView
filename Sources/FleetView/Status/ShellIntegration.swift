@@ -83,8 +83,9 @@ enum ShellIntegration {
       FLEETVIEW_CMD_ID="c$$-$RANDOM$RANDOM"
       FLEETVIEW_CMD_START=$EPOCHREALTIME
       # `claude` keeps its own hooks for *status*, but starting an agent is itself an action worth
-      # recording, so the command line is reported for it too.
-      [[ "$first" == claude ]] && FLEETVIEW_CMD_QUIET=1 || FLEETVIEW_CMD_QUIET=
+      # recording, so the command line is reported for it too. `sp-claude` is the same agent with the
+      # same hooks.
+      [[ "$first" == claude || "$first" == sp-claude ]] && FLEETVIEW_CMD_QUIET=1 || FLEETVIEW_CMD_QUIET=
       fleetview_emit "{\"event\":\"ShellCommand\",\"term\":\"$FLEETVIEW_TERM_ID\",\"payload\":{\"command\":\"$cmd\",\"cmd_id\":\"$FLEETVIEW_CMD_ID\",\"cwd\":\"$cwd\",\"pid\":$$,\"tty\":\"$TTY\",\"quiet\":\"$FLEETVIEW_CMD_QUIET\"}}"
     }
 

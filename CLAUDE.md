@@ -91,3 +91,10 @@ directory outside the repo when you have one.
   `~/.claude/projects/<slug>/…` (branches via `parentUuid`), Codex
   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (branches via `forked_from_id`). Anything that
   reads history has to handle both, or say which one it handles.
+- **`sp-claude` / `sp-codex` (sub-pool) are the same two agents with a second home.** They run the
+  CLI with `CLAUDE_CONFIG_DIR` / `CODEX_HOME` set to a per-session temp dir linked into
+  `~/.sub-pool/claude-home` / `codex-home`: settings, hooks, rollouts and the paths hooks report
+  all live there, and each CLI resumes only what its own home holds. Go through `AgentHome` (roots,
+  `canonical`, `resuming`) rather than spelling out `~/.claude` or `~/.codex/sessions`. Codex hooks
+  cannot be trusted under `sp-codex`, so those cards run on the rollout poll — see
+  `CodexHookInstaller`.

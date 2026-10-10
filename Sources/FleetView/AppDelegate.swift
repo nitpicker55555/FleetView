@@ -117,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CodexHookInstaller.uninstall()
         let a = NSAlert()
         a.messageText = "Status hooks removed"
-        a.informativeText = "FleetView's hooks were removed from ~/.claude/settings.json and ~/.codex/config.toml. Live status will stop updating until you relaunch FleetView."
+        a.informativeText = "FleetView's hooks were removed from ~/.claude/settings.json, ~/.codex/config.toml and sp-claude's ~/.sub-pool/claude-home/settings.json. Live status will stop updating until you relaunch FleetView."
         a.runModal()
     }
 

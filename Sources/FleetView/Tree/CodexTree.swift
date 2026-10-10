@@ -50,18 +50,20 @@ enum CodexTree {
 
     /// Every rollout under `root`, newest directories first. Codex files them as
     /// `sessions/YYYY/MM/DD/rollout-*.jsonl`; walking the three levels by name costs no `stat`.
-    static func rolloutPaths(root: URL) -> [String] {
+    static func rolloutPaths(roots: [URL]) -> [String] {
         let fm = FileManager.default
         var out: [String] = []
-        for y in (try? fm.contentsOfDirectory(atPath: root.path))?.sorted() ?? [] {
-            let yp = root.appendingPathComponent(y)
-            for m in (try? fm.contentsOfDirectory(atPath: yp.path))?.sorted() ?? [] {
-                let mp = yp.appendingPathComponent(m)
-                for d in (try? fm.contentsOfDirectory(atPath: mp.path))?.sorted() ?? [] {
-                    let dp = mp.appendingPathComponent(d)
-                    for f in (try? fm.contentsOfDirectory(atPath: dp.path)) ?? []
-                    where f.hasPrefix("rollout-") && f.hasSuffix(".jsonl") {
-                        out.append(dp.appendingPathComponent(f).path)
+        for root in roots {
+            for y in (try? fm.contentsOfDirectory(atPath: root.path))?.sorted() ?? [] {
+                let yp = root.appendingPathComponent(y)
+                for m in (try? fm.contentsOfDirectory(atPath: yp.path))?.sorted() ?? [] {
+                    let mp = yp.appendingPathComponent(m)
+                    for d in (try? fm.contentsOfDirectory(atPath: mp.path))?.sorted() ?? [] {
+                        let dp = mp.appendingPathComponent(d)
+                        for f in (try? fm.contentsOfDirectory(atPath: dp.path)) ?? []
+                        where f.hasPrefix("rollout-") && f.hasSuffix(".jsonl") {
+                            out.append(dp.appendingPathComponent(f).path)
+                        }
                     }
                 }
             }
@@ -74,10 +76,10 @@ enum CodexTree {
     /// Sub-threads are excluded the way Claude's builder drops sidechains: a multi-agent run spawns
     /// a rollout per worker (1775 of the 2068 here), each of which would root its own mini-tree in
     /// a panel that is supposed to be showing one conversation. `Meta.isWorker` is the marker.
-    static func sessions(cwd: String, root: URL) -> [Meta] {
+    static func sessions(cwd: String, roots: [URL]) -> [Meta] {
         guard !cwd.isEmpty else { return [] }
         var out: [Meta] = []
-        for p in rolloutPaths(root: root) {
+        for p in rolloutPaths(roots: roots) {
             guard let m = meta(p), m.isMainLine, m.cwd == cwd else { continue }
             out.append(m)
         }
@@ -127,7 +129,7 @@ enum CodexTree {
     /// Whether `path` is a worker's rollout rather than a conversation's. False for anything that
     /// is not a Codex rollout, and for one whose head is not readable yet.
     static func isWorkerRollout(_ path: String) -> Bool {
-        path.contains("/.codex/") && meta(path)?.isWorker == true
+        AgentHome.isCodex(path) && meta(path)?.isWorker == true
     }
 
     /// The conversation's rollout for any rollout in it: `path` itself unless that is a worker, else
@@ -165,7 +167,7 @@ enum CodexTree {
         let dir = (sibling as NSString).deletingLastPathComponent
         let near = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
             .first { $0.hasSuffix(suffix) }.map { (dir as NSString).appendingPathComponent($0) }
-        let found = near ?? rolloutPaths(root: CodexSession.sessionsDir).first { $0.hasSuffix(suffix) }
+        let found = near ?? rolloutPaths(roots: CodexSession.sessionRoots).first { $0.hasSuffix(suffix) }
 
         lock.lock()
         if let found { threadPaths[id] = found } else { threadMisses[id] = Date() }
@@ -183,9 +185,9 @@ enum CodexTree {
     /// going, and every worker's hook still reports as the terminal that started it. That no longer
     /// rebinds a terminal, but `state.json` written before it still names workers, and a tree opened
     /// on such a terminal has to show the conversation, not nothing.
-    static func mainLineSession(of sid: String, root: URL) -> String? {
+    static func mainLineSession(of sid: String, roots: [URL]) -> String? {
         var index: [String: Meta] = [:]
-        for p in rolloutPaths(root: root) {
+        for p in rolloutPaths(roots: roots) {
             if let m = meta(p) { index[m.sid] = m }
         }
         var cur = sid
@@ -445,21 +447,21 @@ enum CodexTree {
     /// it is one of `all`, a stale index re-read when it is not, and the conversation above it when
     /// the terminal turned out to be sitting on a worker thread.
     private static func resolveBound(_ sid: String?, _ all: inout [Meta],
-                                     cwd: String, root: URL) -> String? {
+                                     cwd: String, roots: [URL]) -> String? {
         guard let sid, !all.contains(where: { $0.sid == sid }) else { return sid }
         // A session started since the index was last built is not in it yet, and it is precisely
         // the one being asked about. Re-read once rather than showing the wrong conversation.
         forgetIndex()
-        all = sessions(cwd: cwd, root: root)
+        all = sessions(cwd: cwd, roots: roots)
         if all.contains(where: { $0.sid == sid }) { return sid }
-        return mainLineSession(of: sid, root: root)
+        return mainLineSession(of: sid, roots: roots)
     }
 
     /// Build the tree for the conversation `boundSessionId` belongs to (see `family`).
-    static func build(cwd: String, boundSessionId: String?, root: URL) -> TreeGraph {
+    static func build(cwd: String, boundSessionId: String?, roots: [URL]) -> TreeGraph {
         var tree = TreeGraph()
-        var all = sessions(cwd: cwd, root: root)
-        let bound = resolveBound(boundSessionId, &all, cwd: cwd, root: root)
+        var all = sessions(cwd: cwd, roots: roots)
+        let bound = resolveBound(boundSessionId, &all, cwd: cwd, roots: roots)
         let metas = family(of: bound, among: all)
         guard !metas.isEmpty else { return tree }
 
@@ -514,9 +516,9 @@ enum CodexTree {
     /// Files whose size/mtime the panel watches to decide a rebuild is needed. Scoped to the same
     /// family the tree was built from, so an unrelated session growing in the background does not
     /// rebuild a tree it cannot appear in.
-    static func watchPaths(cwd: String, boundSessionId: String?, root: URL) -> [String] {
-        var all = sessions(cwd: cwd, root: root)
-        let bound = resolveBound(boundSessionId, &all, cwd: cwd, root: root)
+    static func watchPaths(cwd: String, boundSessionId: String?, roots: [URL]) -> [String] {
+        var all = sessions(cwd: cwd, roots: roots)
+        let bound = resolveBound(boundSessionId, &all, cwd: cwd, roots: roots)
         return family(of: bound, among: all).map(\.path)
     }
 
@@ -535,8 +537,8 @@ enum CodexTree {
     /// session writes a *new* rollout, so the thing that changed is that a file appeared. When the
     /// count moves, the cached head index is dropped so the new session can be seen; the walk is
     /// name-only (no `stat`), which is what keeps it affordable at this interval.
-    static func signature(cwd: String, boundSessionId: String?, root: URL) -> String {
-        let paths = rolloutPaths(root: root)
+    static func signature(cwd: String, boundSessionId: String?, roots: [URL]) -> String {
+        let paths = rolloutPaths(roots: roots)
         lock.lock()
         let changed = paths.count != indexedCount
         if changed { indexedCount = paths.count }
@@ -544,7 +546,7 @@ enum CodexTree {
         if changed { lock.lock(); metaCache.removeAll(); lock.unlock() }
 
         var sig = "n=\(paths.count);"
-        for p in watchPaths(cwd: cwd, boundSessionId: boundSessionId, root: root).sorted() {
+        for p in watchPaths(cwd: cwd, boundSessionId: boundSessionId, roots: roots).sorted() {
             let a = try? FileManager.default.attributesOfItem(atPath: p)
             sig += "\(p):\((a?[.size] as? Int64) ?? 0):"
                 + "\((a?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0);"

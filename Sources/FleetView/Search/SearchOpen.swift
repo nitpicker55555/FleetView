@@ -45,10 +45,14 @@ enum SearchOpen {
     // MARK: - Entry point
 
     /// Resolve a hit. Does file IO and may run a subprocess — call off the main thread.
-    static func plan(for hit: SearchIndex.Hit, inheritedFlags: [String] = []) throws -> Plan {
+    ///
+    /// `subPool` is what the card that last held the conversation ran (`TerminalSession.subPool`),
+    /// which decides between `claude` and `sp-claude` where the transcript's folder cannot.
+    static func plan(for hit: SearchIndex.Hit, inheritedFlags: [String] = [],
+                     subPool: Bool? = nil) throws -> Plan {
         switch hit.src {
-        case .claude: return try planClaude(hit, inheritedFlags: inheritedFlags)
-        case .codex: return try planCodex(hit)
+        case .claude: return try planClaude(hit, inheritedFlags: inheritedFlags, subPool: subPool)
+        case .codex: return try planCodex(hit, subPool: subPool)
         }
     }
 
@@ -61,7 +65,8 @@ enum SearchOpen {
 
     // MARK: - Claude
 
-    private static func planClaude(_ hit: SearchIndex.Hit, inheritedFlags: [String]) throws -> Plan {
+    private static func planClaude(_ hit: SearchIndex.Hit, inheritedFlags: [String],
+                                   subPool: Bool?) throws -> Plan {
         guard let projectDir = claudeProjectDir(for: hit.path) else {
             throw OpenError.notClaudeProject(hit.path)
         }
@@ -106,7 +111,11 @@ enum SearchOpen {
         }
         let command = SessionForge.resumeCommand(sessionId: fork.sessionId,
                                                  inheritedFlags: inheritedFlags,
-                                                 skipPermissions: true, cwd: cwd)
+                                                 skipPermissions: true, cwd: cwd,
+                                                 command: AgentHome.resuming(hit.path, kind: .claude,
+                                                                             subPool: subPool,
+                                                                             forkedFrom: fork.sourceSessionId
+                                                                                 ?? hit.session).command)
         return Plan(command: command, cwd: cwd, label: label(hit),
                     synthesized: fork.wroteFile != nil,
                     detail: "claude node=\(anchor.prefix(8)) sid=\(fork.sessionId.prefix(8)) " +
@@ -134,20 +143,23 @@ enum SearchOpen {
     }
 
     /// `~/.claude/projects/<slug>/…` → the `<slug>` directory, whatever layout the file is in
-    /// (`<sid>.jsonl`, `<sid>/*.jsonl`, or `<sid>/subagents/agent-*.jsonl`).
+    /// (`<sid>.jsonl`, `<sid>/*.jsonl`, or `<sid>/subagents/agent-*.jsonl`). sub-pool's `projects`
+    /// counts the same when it is a folder of its own.
     private static func claudeProjectDir(for path: String) -> URL? {
-        let root = FV.claudeProjectsDir.standardizedFileURL.path
-        var dir = URL(fileURLWithPath: path).standardizedFileURL.deletingLastPathComponent()
-        while dir.path.hasPrefix(root + "/") {
-            if dir.deletingLastPathComponent().path == root { return dir }
-            dir = dir.deletingLastPathComponent()
+        for r in AgentHome.roots(.claude) {
+            let root = r.url.standardizedFileURL.path
+            var dir = URL(fileURLWithPath: path).standardizedFileURL.deletingLastPathComponent()
+            while dir.path.hasPrefix(root + "/") {
+                if dir.deletingLastPathComponent().path == root { return dir }
+                dir = dir.deletingLastPathComponent()
+            }
         }
         return nil
     }
 
     // MARK: - Codex
 
-    private static func planCodex(_ hit: SearchIndex.Hit) throws -> Plan {
+    private static func planCodex(_ hit: SearchIndex.Hit, subPool: Bool?) throws -> Plan {
         // A rollout's cwd is on its `session_meta` record — the very first line — so every
         // incremental index pass after the first one starts past it and learns nothing. Reading the
         // head here is the same fallback the Claude side gets from reading the tail, and without it
@@ -155,7 +167,7 @@ enum SearchOpen {
         // never be opened at all.
         let cwd = hit.project.isEmpty ? (CodexSession.rolloutCwd(hit.path) ?? "") : hit.project
         guard !cwd.isEmpty else { throw OpenError.noCwd(hit.path) }
-        return try planCodexNode(node: hit.node, cwd: cwd, label: label(hit))
+        return try planCodexNode(node: hit.node, cwd: cwd, label: label(hit), subPool: subPool)
     }
 
     /// Open a Codex node by its treeflow address (`<session-id>:<n>`).
@@ -163,16 +175,35 @@ enum SearchOpen {
     /// Split out from the search path because the session tree addresses nodes identically — see
     /// CodexTree, which numbers prompts the way treeflow does precisely so that a node dragged off
     /// the tree and a node dragged out of search results are the same string and open the same way.
-    static func planCodexNode(node: String, cwd: String, label: String) throws -> Plan {
+    ///
+    /// treeflow knows one sessions folder, `~/.codex/sessions` unless `CODEX_SESSIONS_DIR` says
+    /// otherwise, and answers with a `codex` command. A node from an `sp-codex` session is in
+    /// sub-pool's folder and resumes only through `sp-codex` (see AgentHome), so both are pointed
+    /// there — treeflow also writes its synthesised rollout into the folder it was given, which is
+    /// the one `sp-codex` will look in.
+    static func planCodexNode(node: String, cwd: String, label: String,
+                              subPool: Bool? = nil) throws -> Plan {
         guard let tool = treeflowPath() else { throw OpenError.treeflowMissing }
+        let thread = String(node.split(separator: ":").first ?? "")
+        let rollout = CodexTree.rolloutPath(ofThread: thread, near: "")
+        let home = AgentHome.resuming(rollout, kind: .codex, subPool: subPool)
+        var env: [String: String] = [:]
+        if home.viaSubPool,
+           let root = AgentHome.roots(.codex).first(where: { $0.homes.contains(home) }),
+           !root.homes.contains(.codex) {
+            env["CODEX_SESSIONS_DIR"] = root.url.path
+        }
         // treeflow scopes Codex sessions by cwd and has no way to be told a session id directly,
         // so the project path is not optional here.
         let out = try run(tool, ["-p", cwd, "--codex", "resume", node, "--json"],
-                          cwd: cwd)
+                          cwd: cwd, env: env)
         guard let data = out.data(using: .utf8),
               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let command = obj["command"] as? String else {
+              var command = obj["command"] as? String else {
             throw OpenError.treeflow(out.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if home.viaSubPool, command.hasPrefix("codex ") {
+            command = home.command + command.dropFirst("codex".count)
         }
         let synthesized = (obj["synthesized"] as? Bool) ?? false
         let chain = (obj["chain_length"] as? Int) ?? 0
@@ -200,11 +231,15 @@ enum SearchOpen {
     /// Is Codex opening available at all? Drives whether the UI offers the action.
     static var codexOpenAvailable: Bool { treeflowPath() != nil }
 
-    private static func run(_ tool: String, _ args: [String], cwd: String) throws -> String {
+    private static func run(_ tool: String, _ args: [String], cwd: String,
+                            env: [String: String] = [:]) throws -> String {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: tool)
         proc.arguments = args
         proc.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        if !env.isEmpty {
+            proc.environment = ProcessInfo.processInfo.environment.merging(env) { _, new in new }
+        }
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe

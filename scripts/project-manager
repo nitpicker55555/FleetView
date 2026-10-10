@@ -1278,6 +1278,18 @@ def cmd_notes(a):
 
 CLAUDE_ROOT = os.path.join(HOME, ".claude", "projects")
 CODEX_ROOT = os.path.join(HOME, ".codex", "sessions")
+
+
+def _history_roots(own, sub_pool):
+    # sp-claude / sp-codex keep their conversations in sub-pool's home. Listed the way FleetView's
+    # index walks them (AgentHome.roots), or a path here would never match the same file there: the
+    # CLI's own folder as it is, sub-pool's resolved, and none when that is only a link to the first.
+    real = os.path.realpath(sub_pool)
+    return [own] + ([real] if os.path.isdir(real) and real != os.path.realpath(own) else [])
+
+
+HISTORY_ROOTS = ([(r, 0) for r in _history_roots(CLAUDE_ROOT, os.path.join(HOME, ".sub-pool", "claude-home", "projects"))]
+                 + [(r, 1) for r in _history_roots(CODEX_ROOT, os.path.join(HOME, ".sub-pool", "codex-home", "sessions"))])
 FV_DIR = os.path.join(HOME, ".fleetview")
 INDEX_DB = os.path.join(FV_DIR, "search.db")
 HEADS_CACHE = os.path.join(FV_DIR, "cache", "history-heads.json")
@@ -1492,7 +1504,7 @@ class _History:
                 "SELECT path, src, session, project, done FROM file"):
             files[path] = {"path": path, "src": src, "sid": sid, "cwd": cwd, "done": done,
                            "size": None, "mtime": None}
-        for root, src in ((CLAUDE_ROOT, 0), (CODEX_ROOT, 1)):
+        for root, src in HISTORY_ROOTS:
             for dp, _, names in os.walk(root):
                 for n in names:
                     if not n.endswith(".jsonl"):

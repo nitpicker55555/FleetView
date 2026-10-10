@@ -417,9 +417,10 @@ final class SearchModel: ObservableObject {
         guard opening == nil else { return }
         opening = hit.id
         failure = nil
+        let subPool = state.subPool(forConversation: hit)
         Task.detached(priority: .userInitiated) {
             do {
-                let plan = try SearchOpen.plan(for: hit)
+                let plan = try SearchOpen.plan(for: hit, subPool: subPool)
                 await MainActor.run {
                     self.preview = nil
                     state.openSearchPlan(plan, hit: hit, joinClusterOf: card)

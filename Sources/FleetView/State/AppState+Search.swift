@@ -70,6 +70,21 @@ extension AppState {
     /// marked " ⑂", as a duplicated card is; a plain resume is the same conversation and keeps the
     /// name unchanged. nil when no card ever held it, and the hit's own text is all there is.
     func inheritedName(for hit: SearchIndex.Hit, forked: Bool) -> String? {
+        let (live, archived) = holders(of: hit)
+        guard let name = live?.name ?? archived?.name, !name.isEmpty else { return nil }
+        return forked ? name + " ⑂" : name
+    }
+
+    /// What the card that last held this conversation ran, `sp-claude` or `claude`, when one did —
+    /// the transcript cannot say when both CLIs file into the same folder (see AgentHome).
+    func subPool(forConversation hit: SearchIndex.Hit) -> Bool? {
+        let (live, archived) = holders(of: hit)
+        return live?.subPool ?? archived?.subPool
+    }
+
+    /// The card on the board that last held `hit`'s conversation, and the removed one — a card
+    /// still on the board wins over the drawer, and newer wins over older.
+    private func holders(of hit: SearchIndex.Hit) -> (TerminalSession?, TerminalArchive?) {
         func same(_ path: String?, _ sid: String?) -> Bool {
             path == hit.path || (!hit.session.isEmpty && sid == hit.session)
         }
@@ -77,7 +92,6 @@ extension AppState {
             .max { ($0.lastActivity ?? .distantPast) < ($1.lastActivity ?? .distantPast) }
         let archived = terminalArchive.filter { same($0.transcriptPath, $0.sessionId) }
             .max { $0.removedAt < $1.removedAt }
-        guard let name = live?.name ?? archived?.name, !name.isEmpty else { return nil }
-        return forked ? name + " ⑂" : name
+        return (live, archived)
     }
 }
