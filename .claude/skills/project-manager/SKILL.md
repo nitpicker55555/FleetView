@@ -76,6 +76,7 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager session <id> --files` | The files a conversation **wrote/edited** (and, for Claude, read), grouped by folder; plus paths its shell commands created |
 | `project-manager memory [<project>]` | Notes earlier agents left about a project (Claude's per-project memory) — read these first |
 | `project-manager cat <path> [-n N] [--max BYTES]` | Print a file or list a folder. Locally just `cat`/`ls`; with `-u` it reads **that** machine's disk — how you open what history points at over there. Capped at 1 MB; binary files are described, not printed |
+| `project-manager put <file> [--to <path>] [--open] [-p <project>]` | Send a local file to the `-u` machine through the dashboard's upload (POST /upload, ≤ 25 MB). Alone it lands in FleetView's uploads folder and the path is printed; `--to` copies it into place there (a folder keeps the name, `~` works), `--open` opens it with its default app (default place `~/Downloads`, never over an existing file). The copy/open runs in a borrowed terminal that is removed again when it reports back — **use this instead of serving the file yourself and curling it from a terminal** |
 | `project-manager open <folder> [-t\|--claude\|--codex] [-n NAME]` | Put a folder from `~/PycharmProjects` on the board (the web's 📂), optionally with a terminal/agent in it. Needs a FleetView new enough to have `/workspace` — an older one says so |
 
 ## Knowing which project you are in

@@ -2344,6 +2344,95 @@ def cmd_cat(a):
               file=sys.stderr)
 
 
+
+def cmd_put(a):
+    """Send a file to the -u Mac through the dashboard's own upload, optionally put it somewhere and open it.
+
+    The upload is the web's (POST /upload): any file up to 25 MB, saved in FleetView's uploads folder
+    under a name the server picks — only the extension comes from ours. Copying it elsewhere or opening
+    it is the one thing the server has no endpoint for, so --to/--open borrow a terminal: one card in a
+    project on the board, a single cp/open line, and the card is removed again once that line reports
+    back. Nothing is left on the board, and nothing waits on an agent.
+    """
+    import shlex
+    src = os.path.abspath(os.path.expanduser(a.file))
+    try:
+        with open(src, "rb") as f:
+            data = f.read()
+    except OSError as e:
+        sys.exit("cannot read %s: %s" % (a.file, e.strerror))
+    if len(data) > 25 * 1024 * 1024:
+        sys.exit("%s is %s — the upload takes at most 25 MB" % (a.file, short_bytes(len(data))))
+    name = os.path.basename(src)
+    req = urllib.request.Request(
+        BASE + "/upload?" + urllib.parse.urlencode({"name": name}, quote_via=urllib.parse.quote),
+        data=data, method="POST", headers={"User-Agent": UA, "Content-Type": "application/octet-stream"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            up = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        sys.exit("upload refused (HTTP %d): %s" % (e.code, e.read().decode("utf-8", "replace")[:200]))
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach FleetView at %s (%s)" % (BASE, e))
+    up_path = up.get("path") or ""
+    if not up_path:
+        sys.exit("FleetView answered without a path: %s" % up)
+    if not (a.to or a.open):
+        print("uploaded %s (%s) → %s" % (name, short_bytes(len(data)), up_path))
+        return
+
+    def q(path):                                  # quote for the Mac's shell, keeping ~ expandable
+        if path == "~":
+            return '"$HOME"'
+        if path.startswith("~/"):
+            return '"$HOME"/' + shlex.quote(path[2:])
+        return shlex.quote(path)
+
+    if a.to:                                      # where the caller said; a folder keeps the file's name
+        place = 'd=%s; [ -d "$d" ] && d="$d"/%s' % (q(a.to), shlex.quote(name))
+    else:                                         # ~/Downloads, never over an existing file
+        place = ('d="$HOME"/Downloads/%s; if [ -e "$d" ]; then b="${d%%.*}"; x="${d##*.}"; '
+                 '[ "$b" = "$d" ] && d="$d-$(date +%%H%%M%%S)" || d="$b-$(date +%%H%%M%%S).$x"; fi') % shlex.quote(name)
+    tok = os.urandom(4).hex()
+    # The marker is split in the typed line and joined only in the output, so the echo of the
+    # command itself never matches the poll below.
+    line = ('%s; mkdir -p "$(dirname "$d")" && cp %s "$d" %s&& echo "__put_""ok_%s $d" || echo "__put_""fail_%s"'
+            % (place, shlex.quote(up_path), '&& open "$d" ' if a.open else '', tok, tok))
+
+    st = state()
+    projs = match_projects(st, a.project) if a.project else (st.get("projects") or [])
+    if not projs:
+        sys.exit("uploaded to %s, but there is no project on that board to run cp/open in" % up_path)
+    r = api_json("/new?projectId=" + projs[0]["id"])
+    tid = r.get("id") or ""
+    if not tid:
+        sys.exit("uploaded to %s, but FleetView returned no terminal id for the cp/open" % up_path)
+    try:
+        _rename(tid, "put " + name)
+        if not _wait_session(tid):
+            sys.exit("uploaded to %s, but the helper terminal did not come up — nothing copied" % up_path)
+        api_json("/type?" + urllib.parse.urlencode({"id": tid, "text": line, "enter": "1"},
+                                                   quote_via=urllib.parse.quote))
+        got = None
+        deadline = time.time() + 20
+        while time.time() < deadline and got is None:
+            time.sleep(0.4)
+            for ln in api_text("/capture?id=%s&lines=30" % tid).splitlines():
+                if ("__put_ok_" + tok) in ln:
+                    got = ("ok", ln.split(tok, 1)[1].strip())
+                elif ("__put_fail_" + tok) in ln:
+                    got = ("fail", "")
+    finally:
+        try:
+            api_json("/action?" + urllib.parse.urlencode({"id": tid, "do": "remove"}))
+        except SystemExit:
+            pass
+    if got is None:
+        sys.exit("uploaded to %s; the cp/open did not report back within 20s" % up_path)
+    if got[0] != "ok":
+        sys.exit("uploaded to %s, but copying it into place failed" % up_path)
+    print("sent %s (%s) → %s%s" % (name, short_bytes(len(data)), got[1], ", opened" if a.open else ""))
+
 def _is_cjk(ch):
     o = ord(ch)
     return (0x3400 <= o <= 0x4DBF or 0x4E00 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF
@@ -2565,6 +2654,12 @@ def main():
     s.add_argument("--max", type=int, default=1 << 20, help="bytes to read at most (default 1 MB)")
     s.add_argument("--max-entries", type=int, default=400, help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_cat)
+    s = sub.add_parser("put", help="send a file to the -u machine (the web's upload), optionally copy it into place and open it")
+    s.add_argument("file", help="the local file (at most 25 MB)")
+    s.add_argument("--to", help="where to put it on that Mac (a folder keeps the name; ~ works). Default with --open: ~/Downloads")
+    s.add_argument("--open", action="store_true", help="open it there with its default app")
+    s.add_argument("-p", "--project", help="project whose terminal runs the cp/open (default: any on the board)")
+    s.set_defaults(fn=cmd_put)
     s = sub.add_parser("notes", help="the shared Notes list / web quick-commands")
     s.add_argument("action", nargs="?", choices=("ls", "add", "rm"), help="default: ls")
     s.add_argument("rest", nargs="*", help="text to add, or which note to remove")
