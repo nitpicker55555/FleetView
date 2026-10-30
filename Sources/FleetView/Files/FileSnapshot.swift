@@ -16,7 +16,8 @@ import WebKit
 /// `FV_SNAPSHOT_EDITED`: `path=Card,…`, writes an agent's hook would have reported.
 /// `FV_SNAPSHOT_STEPS`: after all that, steps separated by `;;` — `js:<script>` in the page,
 /// `sh:<command>` (an agent writing a file), `wait:<seconds>`, or `do:<overwrite|useDisk|save>` on the
-/// tab in front — each followed by a moment for the window to react. How a test drives a reload or
+/// tab in front, `do:card=<name>` (that card's commits) or `do:repo=<folder>` on the 提交 page — each
+/// followed by a moment for the window to react. How a test drives a reload or
 /// a conflict through the real model.
 @MainActor
 enum FileSnapshot {
@@ -99,6 +100,10 @@ enum FileSnapshot {
                 case "commit": if let c = model.commits.first { model.openCommit(c.sha) }
                 case "uncommitted": model.openUncommitted()
                 case let a where a.hasPrefix("fileHistory="): model.showHistory(of: String(a.dropFirst("fileHistory=".count)))
+                case let a where a.hasPrefix("card="):
+                    let name = String(a.dropFirst("card=".count))
+                    if let c = model.committers.first(where: { $0.name == name }) ?? model.committers.first { model.showCommits(of: c) }
+                case let a where a.hasPrefix("repo="): model.setHistoryRepo(String(a.dropFirst("repo=".count)))
                 case "useDisk": model.useDiskVersion(id)
                 case "save": model.saveTabs(model.unsavedTabs) { ok in print("files snapshot: saveTabs ok=\(ok)") }
                 default: break

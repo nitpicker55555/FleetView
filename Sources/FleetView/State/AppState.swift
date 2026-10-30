@@ -105,6 +105,10 @@ final class AppState: ObservableObject {
     /// When each terminal's last run ended by going back to idle. Kept only in memory: it drives the
     /// few seconds a card that just finished stays tinted, and after a relaunch nothing is fresh.
     @Published var runEndedAt: [UUID: Date] = [:]
+    /// How many commits each card on the board has made, for the git chip on its card
+    /// (AppState+Commits). Absent for a card that has made none.
+    @Published var cardCommitCounts: [UUID: Int] = [:]
+    var commitCountWork: DispatchWorkItem?
     /// When an agent CLI was last started in each terminal, and the command line that started it,
     /// from the shell's report. Only rollouts written since then — or the one it was told to resume
     /// — can be that agent's (see `transcriptPath(for:)`). Memory only: after a relaunch the agents'
@@ -2079,6 +2083,7 @@ final class AppState: ObservableObject {
         let seconds = max(0, Int(Date().timeIntervalSince(since)))
         terminals[idx].runningSince = nil
         lastFinishedRun[terminals[idx].id] = (since, Date())
+        scheduleCommitCounts()           // a turn that ended may have committed
         terminals[idx].lastRunSeconds = seconds
         let t = terminals[idx]
         FV.log("run finished: term=\(t.name) after=\(RelativeTime.clock(seconds: seconds)) " +

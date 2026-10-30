@@ -285,6 +285,7 @@ struct TerminalCardView: View {
                     .help(L(.tokensHelp(terminal.newTokens)))
             }
             triggerChip
+            commitChip
             Spacer(minLength: 4)
             controls
                 .opacity(hovering ? 1 : 0)
@@ -316,6 +317,25 @@ struct TerminalCardView: View {
             .highPriorityGesture(TapGesture().onEnded { state.toggleTriggers(terminal.id) })
             .fixedSize()
             .help(L(.trigChipHelp(timed, all.count - timed)))
+        }
+    }
+
+    /// This card's agent has committed: how many commits, and a click lists them — in whatever
+    /// repository they went to. Absent until it has made one.
+    @ViewBuilder private var commitChip: some View {
+        if let n = state.cardCommitCounts[terminal.id], n > 0 {
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
+                Text("\(n)").font(.fvLabelSmall).monospacedDigit()
+            }
+            .foregroundColor(container?.fg ?? Theme.primary)
+            .padding(.horizontal, 6).frame(height: 18)
+            .overlay(Capsule().strokeBorder(container?.fg.opacity(0.5) ?? Theme.primary.opacity(0.6), lineWidth: 1))
+            .contentShape(Capsule())
+            // High priority, as the trigger chip: the card's own tap (raise) wants this click too.
+            .highPriorityGesture(TapGesture().onEnded { FileWindows.shared.showCommits(of: terminal, app: state) })
+            .fixedSize()
+            .help(L(.cardCommitsHelp(n)))
         }
     }
 
@@ -361,6 +381,7 @@ struct TerminalCardView: View {
         Button(L(.cardOpenFiles)) {
             FileWindows.shared.open(projectId: terminal.projectId, app: state, reveal: terminal.cwd)
         }
+        Button(L(.cardCommits)) { FileWindows.shared.showCommits(of: terminal, app: state) }
         Button(L(.cardDuplicateFork)) { state.duplicateTerminal(terminal.id) }
         Button(L(.cardDuplicateBlank)) { state.duplicateTerminal(terminal.id, blank: true) }
         Button(done ? L(.cardUnmark) : L(.cardMark)) { state.toggleSubtaskDone(terminal.id) }

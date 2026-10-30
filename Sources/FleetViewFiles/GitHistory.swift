@@ -6,6 +6,9 @@ public struct GitCommit: Equatable, Sendable {
     public let parents: [String]
     public let author: String
     public let date: Date
+    /// When it was committed, which is not `date` (when it was written) for a commit amended, rebased
+    /// or cherry-picked since. What ties a commit to the agent call that made it (CommitLedger).
+    public let committed: Date
     /// Decorations: `HEAD -> main`, `origin/main`, `tag: v0.4.0`.
     public let refs: [String]
     public let subject: String
@@ -32,16 +35,16 @@ public struct GitCommit: Equatable, Sendable {
 public enum GitLog {
     /// Each record starts with \x1e; fields are NUL-separated; trailers \x01-separated; a
     /// `--shortstat` line may follow the record's header line.
-    public static let format = "%x1e%H%x00%P%x00%an%x00%at%x00%D%x00%s%x00%(trailers:key=Co-Authored-By,valueonly=true,separator=%x01)"
+    public static let format = "%x1e%H%x00%P%x00%an%x00%at%x00%ct%x00%D%x00%s%x00%(trailers:key=Co-Authored-By,valueonly=true,separator=%x01)"
 
     public static func parse(_ data: Data) -> [GitCommit] {
         var out: [GitCommit] = []
         for rec in data.split(separator: 0x1e) {
             let text = String(decoding: rec, as: UTF8.self)
-            let fields = text.split(separator: "\0", maxSplits: 6, omittingEmptySubsequences: false).map(String.init)
-            guard fields.count == 7, fields[0].count >= 7 else { continue }
+            let fields = text.split(separator: "\0", maxSplits: 7, omittingEmptySubsequences: false).map(String.init)
+            guard fields.count == 8, fields[0].count >= 7 else { continue }
             // The last field is the trailers, then — after a newline — the shortstat, if any.
-            let tail = fields[6]
+            let tail = fields[7]
             let nl = tail.firstIndex(of: "\n")
             let trailers = nl.map { String(tail[..<$0]) } ?? tail
             let stat = nl.map { String(tail[$0...]) } ?? ""
@@ -51,8 +54,9 @@ public enum GitLog {
                 parents: fields[1].split(separator: " ").map(String.init),
                 author: fields[2],
                 date: Date(timeIntervalSince1970: TimeInterval(fields[3]) ?? 0),
-                refs: fields[4].isEmpty ? [] : fields[4].components(separatedBy: ", "),
-                subject: fields[5],
+                committed: Date(timeIntervalSince1970: TimeInterval(fields[4]) ?? 0),
+                refs: fields[5].isEmpty ? [] : fields[5].components(separatedBy: ", "),
+                subject: fields[6],
                 coAuthors: trailers.split(separator: "\u{1}").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
                 files: files, added: added, deleted: deleted))
         }
@@ -197,6 +201,25 @@ extension GitReader {
         }
         guard r.status == 0 else { return nil }
         return GitLog.parse(r.out)
+    }
+
+    /// The working trees of a repository, its own first: they share its commits, so a commit made in
+    /// any of them is one of its commits. `worktree list` only reads.
+    public func worktrees(_ repo: Repo) -> [String] {
+        let r = run(["worktree", "list", "--porcelain"], in: repo.toplevel, timeout: 5)
+        guard r.status == 0 else { return [repo.toplevel] }
+        let list = String(decoding: r.out, as: UTF8.self).split(separator: "\n")
+            .filter { $0.hasPrefix("worktree ") }.map { String($0.dropFirst("worktree ".count)) }
+        return list.isEmpty ? [repo.toplevel] : list
+    }
+
+    /// Every commit on any ref committed between two moments, newest first, without counts — what
+    /// the agents' calls are matched against, so it is asked for one call's span at a time.
+    public func commits(_ repo: Repo, from: Date, to: Date, limit: Int = 200) -> [GitCommit] {
+        let r = run(["log", "--no-color", "--all", "-n", String(limit), "--format=" + GitLog.format,
+                     "--since=@\(Int(from.timeIntervalSince1970))", "--until=@\(Int(to.timeIntervalSince1970.rounded(.up)))", "--"],
+                    in: repo.toplevel, timeout: 10, limit: 4 << 20)
+        return r.status == 0 ? GitLog.parse(r.out) : []
     }
 
     /// Local and remote branches, most recently committed to first.
