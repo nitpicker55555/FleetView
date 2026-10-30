@@ -59,6 +59,28 @@ final class WebAudit: @unchecked Sendable {
         return AuditTarget(kind: "terminal", id: id, name: name)
     }
 
+    /// Which agent a CLI call came from: project-manager sends the card it runs in
+    /// (`FLEETVIEW_TERM_ID`) and its machine. Without it every call read "project-manager, from
+    /// 127.0.0.1" — which of twenty agents had driven another was not in the log at all. A card on
+    /// another Mac is named by its id and host; one on this Mac by its name too.
+    private func caller(_ request: HTTPRequestHead?) -> [String: AuditValue] {
+        var out: [String: AuditValue] = [:]
+        if let id = request?.headers["x-fv-caller"]?.trimmingCharacters(in: .whitespaces), !id.isEmpty {
+            out["caller.terminal.id"] = .string(id.uppercased())
+            lock.lock()
+            let name = terminalNames[id.uppercased()]
+            lock.unlock()
+            if let name { out["caller.terminal.name"] = .string(name) }
+        }
+        if let host = request?.headers["x-fv-caller-host"], !host.isEmpty { out["caller.host"] = .string(host) }
+        return out
+    }
+
+    /// Reads a CLI makes of another card — its screen, its conversation — logged although the same
+    /// endpoints polled by a browser are not: an agent looking at another is a deliberate act, and
+    /// a rare one. `/state` stays out, since `wait` polls it every second.
+    static let cliReads: Set<String> = ["/capture", "/conversation", "/tree"]
+
     /// Called once at launch, from the main actor.
     func start(auditor: Auditor) {
         lock.lock()
@@ -116,7 +138,8 @@ final class WebAudit: @unchecked Sendable {
         if let tool = request?.cliTool {
             actor = AuditActor(kind: .cli, id: session.id, name: tool, cliTool: tool,
                                sourceIP: session.ip, sourcePort: session.port,
-                               userAgent: session.userAgent, geo: session.geo)
+                               userAgent: session.userAgent, geo: session.geo,
+                               extra: caller(request))
         }
 
         let trace = AuditTrace(id: Identifiers.ulid(now: now),
@@ -167,7 +190,7 @@ final class WebAudit: @unchecked Sendable {
             return
         }
 
-        guard scope.isAudited,
+        guard scope.isAudited || (scope.actor.kind == .cli && Self.cliReads.contains(scope.path)),
               let event = requestEvent(scope, query: query, duration: duration, facts: facts) else { return }
         auditor.emit(event)
     }
@@ -213,12 +236,42 @@ final class WebAudit: @unchecked Sendable {
                 "text.sha256": .string(AuditDigest.short(text)),
                 "enter": .bool(query["enter"] == "1"),
             ]
-            // The text ends up in the agent's transcript anyway; a preview here is convenience,
-            // and off by default.
-            if config.webInputPreview, !text.isEmpty {
+            // An agent driving another (project-manager) is logged word for word, what one agent
+            // told another being the whole of the record — through the same redaction as a command
+            // line, so a token pasted into it is not. A person typing from the phone keeps the
+            // preview rule: it ends up in the transcript anyway, and is off by default.
+            if scope.actor.kind == .cli, !text.isEmpty {
+                let clean = redaction.apply(to: text).text
+                data["text"] = .string(clean)
+                if clean != text { data["text.redacted"] = .bool(true) }
+            } else if config.webInputPreview, !text.isEmpty {
                 data["text.preview"] = .string(String(text.prefix(config.promptPreviewChars)))
             }
             return event("fleetview.web.input_sent", "sent \(text.count) characters to\(named)", data)
+
+        case "/capture":
+            return event("fleetview.web.screen_read", "read the screen of\(named)",
+                         AuditValue.compact(["lines": query["lines"].map { .string($0) }]), categories: ["session"])
+
+        case "/conversation":
+            return event("fleetview.web.conversation_read", "read the conversation of\(named)",
+                         AuditValue.compact(["limit": query["limit"].map { .string($0) }]), categories: ["session"])
+
+        case "/tree":
+            return event("fleetview.web.tree_read", "read the session tree of\(named)", [:], categories: ["session"])
+
+        case "/commits":
+            return event("fleetview.web.card_commits_read", "listed the commits and changes of\(named)", [:],
+                         categories: ["session"])
+
+        case "/writers":
+            return event("fleetview.web.writers_read", "asked which card wrote \(query["path"] ?? "?")",
+                         AuditValue.compact(["path": query["path"].map { .string($0) }]), categories: ["session"])
+
+        case "/repo":
+            return event("fleetview.web.repo_read", "read the commits and changes of \(query["path"] ?? "?")",
+                         AuditValue.compact(["path": query["path"].map { .string($0) },
+                                             "sha": query["sha"].map { .string($0) }]), categories: ["session"])
 
         case "/key":
             return event("fleetview.web.key_sent", "sent key \(query["k"] ?? "?") to\(named)",
@@ -281,7 +334,11 @@ final class WebAudit: @unchecked Sendable {
                 "question.chars": .int(question.count),
                 "question.sha256": .string(AuditDigest.short(question)),
             ]
-            if config.promptPreview, !question.isEmpty {
+            if scope.actor.kind == .cli, !question.isEmpty {
+                let clean = redaction.apply(to: question).text
+                data["question"] = .string(clean)
+                if clean != question { data["question.redacted"] = .bool(true) }
+            } else if config.promptPreview, !question.isEmpty {
                 data["question.preview"] = .string(String(question.prefix(config.promptPreviewChars)))
             }
             return event("fleetview.web.ask", "asked\(named) a side question", data,
