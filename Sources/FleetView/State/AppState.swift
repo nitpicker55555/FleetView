@@ -116,6 +116,14 @@ final class AppState: ObservableObject {
     /// one-off animation is missed by anyone not looking at that moment; this is long enough to
     /// catch with a glance and short enough not to become a second state to read.
     static let freshFor: TimeInterval = 10
+    /// How soon after a run stops a new one carries on its clock instead of starting from zero.
+    /// An interrupted turn comes straight back — Esc and "继续" by hand or by the auto-recover
+    /// daemon, a Codex retry, a status that dips to idle between two hooks — and each of those used
+    /// to put the card's clock back to 0:00 in the middle of what was one piece of work.
+    static let resumeWindow: TimeInterval = 20
+    /// The run each terminal last finished, while a new one may still pick it up (`resumeWindow`).
+    /// Memory only, like `runEndedAt`.
+    private var lastFinishedRun: [UUID: (start: Date, end: Date)] = [:]
     let treeModel = SessionTreeModel()
 
     // MARK: - Conversation search (⌘K)
@@ -2047,7 +2055,7 @@ final class AppState: ObservableObject {
     func enterStatus(_ s: TermStatus, at idx: Int) {
         switch s {
         case .working:
-            if terminals[idx].runningSince == nil { terminals[idx].runningSince = Date() }
+            if terminals[idx].runningSince == nil { terminals[idx].runningSince = runStart(at: idx) }
         case .needsYou:
             break                                   // same turn, waiting on you — keep counting
         case .idle, .shell, .closed, .exited:
@@ -2070,6 +2078,7 @@ final class AppState: ObservableObject {
         guard let since = terminals[idx].runningSince else { return }
         let seconds = max(0, Int(Date().timeIntervalSince(since)))
         terminals[idx].runningSince = nil
+        lastFinishedRun[terminals[idx].id] = (since, Date())
         terminals[idx].lastRunSeconds = seconds
         let t = terminals[idx]
         FV.log("run finished: term=\(t.name) after=\(RelativeTime.clock(seconds: seconds)) " +
@@ -2080,6 +2089,26 @@ final class AppState: ObservableObject {
                    target: auditTarget(terminal: t.id),
                    data: ["run.seconds": .int(seconds), "run.ended_by": .string(endedBy)],
                    durationNanos: seconds * 1_000_000_000)
+    }
+
+    /// When a run starting now began: now — or, when this terminal's last run stopped less than
+    /// `resumeWindow` ago, that run's start, so the clock goes on from where it was.
+    ///
+    /// The stop has already been logged as `run_finished` by then, with the seconds so far. The
+    /// resumption is logged too, so the next `run_finished` — which counts from the same start — is
+    /// read as covering that one rather than as a second run.
+    private func runStart(at idx: Int) -> Date {
+        let id = terminals[idx].id, now = Date()
+        guard let last = lastFinishedRun.removeValue(forKey: id),
+              now.timeIntervalSince(last.end) < Self.resumeWindow else { return now }
+        let gap = Int(now.timeIntervalSince(last.end)), carried = Int(last.end.timeIntervalSince(last.start))
+        FV.log("run resumed: term=\(terminals[idx].name) after a \(gap)s gap, clock carries \(carried)s")
+        audit.emit("fleetview.terminal.run_resumed",
+                   categories: ["process"],
+                   message: "\(terminals[idx].name) carried on after \(gap)s",
+                   target: auditTarget(terminal: id),
+                   data: ["run.gap_seconds": .int(gap), "run.carried_seconds": .int(carried)])
+        return last.start
     }
 
     /// The user pressed Escape (Claude's interrupt) — if the agent was working, the turn just ended,
@@ -2171,11 +2200,12 @@ final class AppState: ObservableObject {
 
         switch ev.event {
         case "UserPromptSubmit":
-            // A new prompt is a new run even if the card never left `working` (a queued follow-up),
-            // so close the old one out — otherwise its length would be overwritten unrecorded — and
-            // start the clock again rather than going through `enterStatus`'s transition.
+            // A new prompt closes the run before it out — otherwise its length would be overwritten
+            // unrecorded — even when the card never left `working` (a queued follow-up). The clock
+            // then starts again, unless that run stopped within `resumeWindow`: "继续" after an Esc
+            // is the same piece of work, and so is a follow-up sent while the agent was still going.
             finishRun(at: idx, endedBy: "new prompt")
-            terminals[idx].runningSince = Date()
+            terminals[idx].runningSince = runStart(at: idx)
             terminals[idx].status = .working
             if let p = ev.prompt.flatMap(PromptText.clean) {
                 terminals[idx].lastPrompt = p.replacingOccurrences(of: "\n", with: " ")
