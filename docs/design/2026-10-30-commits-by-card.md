@@ -38,6 +38,15 @@ A file changed by a shell command is not seen — `sed -i`, a Python script, a g
 which edits through scripts as often as through Edit: 2 of its 15 uncommitted files were found. Matching a dirty
 file's modification time to the shell call running at that moment would close it; not done yet.
 
+### For agents: the card-git skill
+
+`.claude/skills/card-git` teaches an agent to ask the same questions from a shell:
+`project-manager commits <card>` (GET `/commits?id=`) lists a card's commits in every repository and its
+uncommitted files; `project-manager writers <path>` (GET `/writers?path=`) answers the other way round —
+which card, by uuid, last wrote a file, or each uncommitted file under a folder (`-a` for every writer, latest
+first; a file no agent wrote says so). Both are worked out by FleetView after the ledger catches up, so `-u`
+answers for a card on another Mac.
+
 ## How a commit is put on a card
 
 Nothing in git records which card made a commit, so it comes from the agents' transcripts (`CommitLedger`):
