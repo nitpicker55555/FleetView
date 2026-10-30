@@ -180,8 +180,13 @@ extension AppState {
             for e in st {
                 let abs = repo.toplevel + "/" + e.path
                 if e.mark == .untracked && e.path.hasSuffix("/") {
-                    // A new folder is one line to git; the files agents wrote in it are its contents here.
-                    for f in CommitLedger.written(under: abs) { status[f] = GitStatus.Mark.untracked.rawValue }
+                    // A new folder is one line to git; its files are listed one by one here — every
+                    // one git would add, not only those an agent's Edit wrote. The first version took
+                    // them from the ledger alone, and a folder of scripts made by shell commands
+                    // (tools/wechat-decrypt) was simply not there.
+                    for f in GitReader.shared.untrackedFiles(repo, under: e.path) {
+                        status[repo.toplevel + "/" + f] = GitStatus.Mark.untracked.rawValue
+                    }
                 } else {
                     status[abs] = e.mark.rawValue
                 }

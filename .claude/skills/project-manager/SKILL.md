@@ -64,6 +64,7 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager log <id> [-p\|-c\|-f]` | Locate the agent's transcript file; `-p` path only, `-c` cat, `-f` follow (tail -f). With `-u` all three read the file on that machine |
 | `project-manager new <project> [label]` | Open a terminal in a project. `--claude` starts a permission-bypassed Claude session in it, `-c CMD` runs any other command |
 | `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project, `-n` to name the card, `--id` for the bare uuid on stdout, `--no-wait` to start the agent without sending the task. With `-u` and no `-p`: the project of the same name over there |
+| `project-manager audit [<card>] [-d DAYS] [--full]` | **What agents did to each other through project-manager**, from the audit log: who (the calling card, with its machine), to whom (the target card), what (the words sent — in full, secrets redacted — the key, the command, the screen or conversation read), when. `<card>` narrows to actions by or on one card. With `-u` it reads that machine's log |
 | `project-manager rename <id> <name…>` | Relabel a terminal |
 | `project-manager rm <id>` | Remove a terminal (kills its session) |
 | `project-manager restore <session-id>` | Bring a closed conversation back by its session id (Claude or Codex, or its first 8+ characters): the card it was in — closed on the board, or removed and still in the drawer, under its old name — or a new card in the folder it ran in, with the agent resumed inside. Prints `already open` instead of opening a second terminal on a live conversation. A Codex worker id restores the conversation it belongs to. Waits for the agent to report in; `--no-wait` doesn't |
@@ -427,6 +428,15 @@ Pitfalls I hit doing it the hard way — avoid them:
 
 Every command works against a remote instance, the history ones included: they run on that machine
 and read its files. There's no auth, so `send` lands in someone's live, permission-bypassed session.
+
+## Everything you do here is on record
+
+Every call carries the card you run in (`FLEETVIEW_TERM_ID`) and your machine, and FleetView's audit log
+(`~/.fleetview/logs/audit-*.jsonl`) records it against the card you acted on: what you `send` (word for
+word, secrets redacted), `key`, `choose`, `ask`, `new`, `restore`, `rename`, `rm`, a remote `/pm` command,
+and your reads of another card — `show`/`tail` (its screen), `wait`'s reply (its conversation), `commits`,
+`writers`, `repo`. Only `ls`/`watch`/`wait`'s polling of the board is left out. `project-manager audit`
+reads it back. Write prompts to other agents as you would want them read later.
 
 ## Cautions
 

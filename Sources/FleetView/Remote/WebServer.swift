@@ -459,7 +459,9 @@ final class WebServer {
                     as? [String]) ?? []
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let (status, result) = PMRunner.run(argv: argv, port: port, color: query["color"] == "1",
-                                                origin: query["origin"])
+                                                origin: query["origin"],
+                                                caller: scope.actor.extra["caller.terminal.id"]?.displayString,
+                                                callerHost: scope.actor.extra["caller.host"]?.displayString)
             let body = (try? JSONEncoder().encode(result)) ?? Data(#"{"code":1}"#.utf8)
             WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query,
                                    facts: WebAudit.shared.pmFacts(argv: argv).merging([

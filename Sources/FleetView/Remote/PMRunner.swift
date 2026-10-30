@@ -12,7 +12,7 @@ enum PMRunner {
     /// Everything else the CLI does already goes through the HTTP API; nothing outside this list has
     /// a reason to be started from the network. `scripts/project-manager` keeps the same list as
     /// `REMOTE_RUN`.
-    static let commands: Set<String> = ["projects", "history", "session", "search", "memory", "log", "cat"]
+    static let commands: Set<String> = ["projects", "history", "session", "search", "memory", "log", "cat", "audit"]
     static let timeout: TimeInterval = 180
     /// A `cat` or a `log -c` piece is capped by the script itself; this is the backstop for anything
     /// that is not, so one request cannot hold a transcript's worth of JSON in memory.
@@ -48,7 +48,8 @@ enum PMRunner {
     }
 
     /// Run one command. Blocks for as long as the command takes — call it off the main actor.
-    static func run(argv: [String], port: Int, color: Bool, origin: String?) -> (status: String, Result) {
+    static func run(argv: [String], port: Int, color: Bool, origin: String?,
+                    caller: String? = nil, callerHost: String? = nil) -> (status: String, Result) {
         guard let first = argv.first, commands.contains(first) else {
             return ("400 Bad Request",
                     Result(code: 2, stdout: "", stderr: "not something /pm runs: \(argv.first ?? "(nothing)")\n"))
@@ -72,6 +73,9 @@ enum PMRunner {
         // FleetView's own environment is nobody's card; a leftover id would make "your project"
         // mean whichever terminal last exported it.
         env["FLEETVIEW_TERM_ID"] = nil
+        // …but the requests it makes here are the remote caller's, and are logged as theirs.
+        if let caller, !caller.isEmpty { env["FV_PM_CALLER"] = caller }
+        if let callerHost, !callerHost.isEmpty { env["FV_PM_CALLER_HOST"] = callerHost }
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         env["PYTHONIOENCODING"] = "utf-8"
         env["LANG"] = env["LANG"] ?? "en_US.UTF-8"

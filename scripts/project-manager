@@ -68,6 +68,18 @@ BASE = base_url()          # rebound by --url before any command runs
 # Identify ourselves so the audit log attributes these calls to the CLI rather than to an
 # anonymous browser on the LAN.
 UA = "fleetctl/project-manager/1.0"
+# …and which agent is calling: the card this shell runs in, and its machine, so the log says "FleetView-1
+# on Pro told pad agent …" instead of "project-manager, from 127.0.0.1". A command /pm runs on another
+# Mac is still the original caller's (FleetView passes it on as FV_PM_CALLER).
+CALLER = os.environ.get("FV_PM_CALLER") or os.environ.get("FLEETVIEW_TERM_ID") or ""
+CALLER_HOST = os.environ.get("FV_PM_CALLER_HOST") or os.uname().nodename.split(".")[0]
+
+def _headers(**extra):
+    h = {"User-Agent": UA, "X-FV-Caller-Host": CALLER_HOST}
+    if CALLER:
+        h["X-FV-Caller"] = CALLER
+    h.update(extra)
+    return h
 # The fleet runs permission-bypassed by convention; `new --claude` exists so that is one
 # explicit flag rather than a string every caller retypes (and sometimes mistypes).
 CLAUDE_CMD = "claude --dangerously-skip-permissions"
@@ -77,7 +89,7 @@ CODEX_CMD = "codex --dangerously-bypass-approvals-and-sandbox"
 
 
 def _get(path, timeout=10, base=None):
-    req = urllib.request.Request((base or BASE) + path, headers={"User-Agent": UA})
+    req = urllib.request.Request((base or BASE) + path, headers=_headers())
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode("utf-8", "replace")
 
@@ -127,7 +139,7 @@ def api_text(path):
 
 # What /pm will run. FleetView keeps its own copy of this list (PMRunner.commands) and refuses the
 # rest: everything else here already goes through the HTTP API and has no reason to be run remotely.
-REMOTE_RUN = ("projects", "history", "session", "search", "memory", "log", "cat")
+REMOTE_RUN = ("projects", "history", "session", "search", "memory", "log", "cat", "audit")
 
 def pm_remote(argv, timeout=300):
     """Run `project-manager <argv>` on the -u instance: (exit code, stdout, stderr)."""
@@ -385,7 +397,7 @@ def cmd_peers(a):
         host, port, timeout = target
         try:
             req = urllib.request.Request("http://%s:%d/state" % (host, port),
-                                         headers={"User-Agent": UA})
+                                         headers=_headers())
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 d = json.loads(r.read().decode("utf-8", "replace"))
             if not isinstance(d, dict) or "terminals" not in d or "projects" not in d:
@@ -1498,6 +1510,82 @@ def cmd_repo(a):
             who = c("90", "← no agent made it (by hand, a script, or on GitHub)")
         print("  %s  %s  %s" % (c("33", m["sha"][:7]), when, who))
         print("           %s" % m["subject"])
+
+# Audit actions an agent's project-manager call can leave, and how `audit` words them.
+AUDIT_VERBS = {
+    "web-input_sent": "sent", "web-key_sent": "key", "web-action": "action", "web-ask": "asked",
+    "web-screen_read": "read screen", "web-conversation_read": "read conversation", "web-tree_read": "read tree",
+    "web-card_commits_read": "read commits", "web-writers_read": "who wrote", "web-repo_read": "read repo",
+    "web-pm_run": "ran", "terminal-created": "created", "terminal-restored": "restored", "terminal-renamed": "renamed",
+    "terminal-removed": "removed", "web-terminal_attached": "attached", "web-file_read": "read file",
+    "web-file_uploaded": "uploaded",
+}
+
+def cmd_audit(a):
+    """What agents did to each other through project-manager, from this machine's audit log: who
+    (the calling card), to whom (the target card), what (the words sent, the key, the command), when.
+    Read here — with -u it runs on that machine and reads its log."""
+    logs = os.path.join(HOME, ".fleetview", "logs")
+    since = time.time() - a.days * 86400
+    files = sorted(f for f in os.listdir(logs) if f.startswith("audit-") and f.endswith(".jsonl")) if os.path.isdir(logs) else []
+    files = [f for f in files if f[6:16] >= time.strftime("%Y-%m-%d", time.localtime(since))]
+    want = None
+    if a.card:
+        sel = a.card.lower()
+        try:
+            hit = [t for t in state()["terminals"] if t["id"].lower().startswith(sel) or sel in t["name"].lower()]
+        except SystemExit:
+            hit = []
+        want = {t["id"].upper() for t in hit} or None
+    rows = []
+    for f in files:
+        with open(os.path.join(logs, f), encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"type":"cli"' not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                act = r.get("event.action", "")
+                if act == "web-session_started" or act not in AUDIT_VERBS and not a.everything:
+                    continue
+                actor, target = r.get("fleetview.actor", {}), r.get("fleetview.target", {}) or {}
+                caller = actor.get("caller.terminal.id", "")
+                tgt = target.get("terminal.id", "")
+                if a.card:
+                    names = (actor.get("caller.terminal.name", "") + " " + target.get("terminal.name", "")).lower()
+                    if want is not None:
+                        if caller not in want and tgt not in want:
+                            continue
+                    elif a.card.lower() not in names and not caller.lower().startswith(a.card.lower()) \
+                            and not tgt.lower().startswith(a.card.lower()):
+                        continue
+                rows.append(r)
+    rows = rows[-a.limit:] if a.limit else rows
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+    if not rows:
+        print("no project-manager actions logged%s in the last %g day(s)" % (" for %r" % a.card if a.card else "", a.days))
+        return
+    for r in rows:
+        actor, target, data = r.get("fleetview.actor", {}), r.get("fleetview.target", {}) or {}, r.get("fleetview.data", {}) or {}
+        when = r.get("@timestamp", "")[5:19].replace("T", " ")
+        if actor.get("caller.terminal.id"):
+            who = "%s %s" % (actor["caller.terminal.id"][:8].lower(), actor.get("caller.terminal.name", ""))
+            if actor.get("caller.host"):
+                who += c("90", "@" + actor["caller.host"])
+        else:
+            who = c("90", "(no card%s)" % ((" @" + actor["caller.host"]) if actor.get("caller.host") else ", " + r.get("source.ip", "?")))
+        tgt = ("%s %s" % (target.get("terminal.id", "")[:8].lower(), target.get("terminal.name", ""))) if target.get("terminal.id") else ""
+        verb = AUDIT_VERBS.get(r.get("event.action", ""), r.get("event.action", ""))
+        body = data.get("text") or data.get("question") or data.get("key") or data.get("path") \
+            or " ".join(data.get("pm.argv", []) or []) or data.get("do") or r.get("message", "")
+        if not a.full and isinstance(body, str):
+            body = body.replace("\n", " ⏎ ")
+            body = body if len(body) <= 160 else body[:157] + "…"
+        print("%s  %s  %s %s%s" % (c("90", when), who, c("36", verb), ("→ " + tgt + "  ") if tgt else "", body))
 
 def cmd_rename(a):
     t = resolve(state(), a.sel)
@@ -2715,7 +2803,7 @@ def cmd_put(a):
     name = os.path.basename(src)
     req = urllib.request.Request(
         BASE + "/upload?" + urllib.parse.urlencode({"name": name}, quote_via=urllib.parse.quote),
-        data=data, method="POST", headers={"User-Agent": UA, "Content-Type": "application/octet-stream"})
+        data=data, method="POST", headers=_headers(**{"Content-Type": "application/octet-stream"}))
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             up = json.loads(r.read().decode("utf-8", "replace"))
@@ -2957,6 +3045,13 @@ def main():
     s.add_argument("path", nargs="?", default="."); s.add_argument("-n", "--limit", type=int, default=30)
     s.add_argument("--sha", help="just this commit"); s.add_argument("-a", "--all", action="store_true", help="every card that wrote a file")
     s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_repo)
+    s = sub.add_parser("audit", help="what agents did to each other via project-manager: who, to whom, what, when")
+    s.add_argument("card", nargs="?", help="only actions by or on this card (name or id prefix)")
+    s.add_argument("-d", "--days", type=float, default=1, help="how far back (default 1 day)")
+    s.add_argument("-n", "--limit", type=int, default=100, help="newest N (0 = all)")
+    s.add_argument("--full", action="store_true", help="whole messages, not one line")
+    s.add_argument("--everything", action="store_true", help="every CLI event, not just actions")
+    s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_audit)
     s = sub.add_parser("new", help="open a terminal in a project")
     s.add_argument("sel", help="project")
     s.add_argument("label", nargs="?", help="label the new terminal (same as -n)")
