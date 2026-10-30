@@ -634,7 +634,7 @@ struct TaskRow: View {
         HStack(spacing: 12) {
             StatusGlyph(status: status)
             HStack(spacing: 6) {
-                Text(name).font(.fvBody).lineLimit(1)
+                NameText(name: name, font: .fvBody)
                     .foregroundColor(isSelected ? Theme.onSecondaryContainer
                                      : (ended ? Theme.onSurfaceVariant : Theme.onSurface))
                 if isCluster {

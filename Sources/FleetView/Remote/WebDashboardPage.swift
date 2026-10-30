@@ -248,6 +248,11 @@ enum WebDashboardPage {
      the line then scales with the font under any text zoom, so the clip stays between lines. Each
      is its px figure divided by the font size, a hair over so 100% still lays out on the same pixel. */
   .card .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.42858}
+  /* A name's distinguishing tail — the (2) a taken name was given, or an older duplicate's time — stays
+     whole; the rest of the name gives way (see nameHTML). */
+  .card .nm.split{display:flex;text-overflow:clip}
+  .card .nm .nb{min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .card .nm .ns{flex:none;white-space:pre}
   .card .when{flex:none;color:var(--sub)}
   /* tabular-nums so a ticking clock doesn't shuffle the card's right edge every second */
   .card .clock{color:var(--accent)}
@@ -3779,6 +3784,13 @@ function toast(msg,ms){
    and its tokens. No status word and no agent chip — the shape and the mark say both, and the word
    is the shape's title. The fill is the state, wherever the card is drawn; whether it is in its first
    ten seconds is left out of the markup on purpose (see paintFresh). */
+/* The same split as the Mac's NameText (TerminalNames.split): cut at the end, two cards called
+   "review (2)" and "review (3)" would read the same. */
+function nameHTML(name){
+  const m=name.match(/^(.+?)( \(\d+\)| · \d\d-\d\d \d\d:\d\d(?::\d\d)?(?: #\d+)?)$/);
+  if(!m) return `<span class="nm ts">${esc(name)}</span>`;
+  return `<span class="nm ts split"><span class="nb">${esc(m[1])}</span><span class="ns">${esc(m[2])}</span></span>`;
+}
 function card(t){
   const ended=t.status==='exited'||t.status==='closed';
   const cls='card'+(t.status==='working'?' tint run':t.status==='needsYou'?' tint need':t.status==='idle'?' idle':'')
@@ -3792,7 +3804,7 @@ function card(t){
   const trig=t.trig>0?`<span class="trig" role="button" title="${tr('trig.chip',{n:t.trig})}" onclick="event.stopPropagation();openTrig('${t.id}')">${ic(t.trigTimed>0?'alarm-clock':'hourglass','s12')}${t.trig}</span>`:'';
   const uid=t.id.toLowerCase();
   return `<div class="${cls}" data-id="${t.id}" data-pid="${t.projectId}" data-cid="${t.clusterId||''}" data-name="${esc(t.name)}" data-cluster="${t.clusterId?'1':'0'}" data-canopen="${t.canOpen?'1':'0'}" data-done="${t.done?'1':'0'}" data-win="${t.window||'none'}">
-    <div class="hd">${cardGlyph(t.status)}<span class="nm ts">${esc(t.name)}</span>${extra}${time}</div>
+    <div class="hd">${cardGlyph(t.status)}${nameHTML(t.name)}${extra}${time}</div>
     <div class="pr bs"><span class="sig">${t.status==='shell'?'$':'›'}</span><span class="tx">${t.prompt?esc(t.prompt):'—'}</span></div>
     <div class="ft"><span class="uid" role="button" data-short="${uid.slice(0,4)}…" onclick="event.stopPropagation();uidTap(this,'${t.id}')"
       title="${tr('card.idTitle',{id:uid.slice(0,8)})}">${uid.slice(0,4)}…</span>${agentMark(t.agent)}${tok}${trig}</div>

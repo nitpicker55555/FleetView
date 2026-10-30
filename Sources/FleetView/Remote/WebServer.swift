@@ -213,7 +213,9 @@ final class WebServer {
         if path == "/file" { handleFileGet(conn, params, scope); return }
         if path == "/browse" { handleBrowse(conn, params, scope); return }
         if path == "/read" { handleRead(conn, params, scope); return }
-        if path == "/conversation" { handleConversation(conn, params, scope); return }  // parsing; off it
+        if path == "/conversation" { handleConversation(conn, params, scope); return }
+        if path == "/commits" { handleCommits(conn, params, scope); return }
+        if path == "/writers" { handleWriters(conn, params, scope); return }  // parsing; off it
         if path == "/capture" { handleCapture(conn, params, scope); return }            // tmux; off it
         if path == "/triggers" { handleTriggers(conn, params, scope); return }          // transcript; off it
 
@@ -317,6 +319,59 @@ final class WebServer {
             let spec = MainActor.assumeIsolated { app.conversationSpec(id) }
             DispatchQueue.global(qos: .userInitiated).async {
                 answer("200 OK", spec.respond(limit: limit))
+            }
+        }
+    }
+
+    /// GET /commits?id= — one card's commits, in every repository, and the files it wrote that are
+    /// still uncommitted (AppState.gitReport). The ledger catches up first, so a commit from a few
+    /// minutes ago is in it; one answered in the last half minute is not matched yet.
+    private func handleCommits(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        func answer(_ status: String, _ body: Data) {
+            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
+            send(conn, status: status, type: "application/json", body: body, setCookie: scope.setCookie)
+        }
+        guard let s = query["id"], let id = UUID(uuidString: s) else {
+            answer("400 Bad Request", Data(#"{"error":"bad id"}"#.utf8)); return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
+            }
+            let (book, card) = MainActor.assumeIsolated { () -> (AppState.CardBook, (String, String)?) in
+                let t = app.terminals.first { $0.id == id }
+                return (app.cardBook(), t.map { t in (t.name, app.projects.first { $0.id == t.projectId }?.name ?? "") })
+            }
+            guard let card else { answer("404 Not Found", Data(#"{"error":"no such terminal"}"#.utf8)); return }
+            MainActor.assumeIsolated {
+                app.refreshCommitLedger {
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        answer("200 OK", AppState.gitReport(card: id, name: card.0, project: card.1, book))
+                    }
+                }
+            }
+        }
+    }
+
+    /// GET /writers?path= — which card wrote a file, or each uncommitted file under a folder
+    /// (AppState.writersReport). An absolute path on this machine.
+    private func handleWriters(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        func answer(_ status: String, _ body: Data) {
+            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
+            send(conn, status: status, type: "application/json", body: body, setCookie: scope.setCookie)
+        }
+        guard let path = query["path"], path.hasPrefix("/") else {
+            answer("400 Bad Request", Data(#"{"error":"give an absolute path"}"#.utf8)); return
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
+            }
+            MainActor.assumeIsolated {
+                let book = app.cardBook()
+                app.refreshCommitLedger {
+                    DispatchQueue.global(qos: .userInitiated).async { answer("200 OK", AppState.writersReport(path: path, book)) }
+                }
             }
         }
     }

@@ -167,6 +167,8 @@ final class FileBrowserModel: ObservableObject, EditorHost {
 
     // Finding files (FileBrowserModel+Find).
     enum SideMode: Hashable { case tree, search, history }
+    /// The sidebar put away (its button, ⌃⌘S, or dragged shut), leaving the window to the tabs.
+    @Published var sidebarHidden = false
     @Published var sideMode: SideMode = .tree { didSet { if sideMode == .history && oldValue != .history { historyShown() } } }
     @Published var filter = "" { didSet { if filter != oldValue { runFilter() } } }
     @Published var filterResults: [String] = []
@@ -495,6 +497,7 @@ final class FileBrowserModel: ObservableObject, EditorHost {
     /// The card's working directory, opened in the tree.
     func revealDirectory(_ abs: String) {
         guard let rel = relative(abs), !rel.isEmpty else { return }
+        sidebarHidden = false
         reveal(rel + "/")
         expand(rel)
         revealTarget = rel

@@ -677,6 +677,44 @@ enum CommitLedger {
         }
     }
 
+    /// Every conversation that wrote each of these files, the latest first, with when it last did.
+    static func writers(of files: [String]) -> [String: [(transcript: String, at: Date)]] {
+        guard !files.isEmpty else { return [:] }
+        return readQueue.sync {
+            guard let db = reader() else { return [:] }
+            var out: [String: [(transcript: String, at: Date)]] = [:]
+            for start in stride(from: 0, to: files.count, by: 400) {
+                let batch = Array(files[start..<min(start + 400, files.count)])
+                let marks = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                var s: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT path, transcript, MAX(at) FROM edit WHERE path IN (\(marks)) GROUP BY path, transcript",
+                                         -1, &s, nil) == SQLITE_OK else { continue }
+                for (i, p) in batch.enumerated() { bind(s, Int32(i + 1), p) }
+                while sqlite3_step(s) == SQLITE_ROW {
+                    out[text(s, 0), default: []].append((text(s, 1), Date(timeIntervalSince1970: sqlite3_column_double(s, 2))))
+                }
+                sqlite3_finalize(s)
+            }
+            return out.mapValues { $0.sorted { $0.at > $1.at } }
+        }
+    }
+
+    /// The files under a folder that any agent wrote — how a new folder git lists as one line is
+    /// opened back up into its files.
+    static func written(under dir: String) -> [String] {
+        readQueue.sync {
+            guard let db = reader() else { return [] }
+            var out: [String] = []
+            var s: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT DISTINCT path FROM edit WHERE path >= ? AND path < ?", -1, &s, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(s) }
+            let prefix = dir.hasSuffix("/") ? dir : dir + "/"
+            bind(s, 1, prefix); bind(s, 2, prefix + "\u{10FFFF}")
+            while sqlite3_step(s) == SQLITE_ROW { out.append(text(s, 0)) }
+            return out
+        }
+    }
+
     /// The conversation that wrote each of these files last, whoever's it was.
     static func lastWriters(of files: [String]) -> [String: String] {
         guard !files.isEmpty else { return [:] }

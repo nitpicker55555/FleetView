@@ -90,8 +90,7 @@ struct PeerTaskList: View {
         let ended = status == .exited || status == .closed
         return HStack(spacing: 12) {
             StatusGlyph(status: status)
-            Text(t.name.isEmpty ? String(t.id.prefix(8)) : t.name)
-                .font(.fvBody).lineLimit(1)
+            NameText(name: t.name.isEmpty ? String(t.id.prefix(8)) : t.name, font: .fvBody)
                 .foregroundColor(ended ? Theme.onSurfaceVariant : Theme.onSurface)
             Spacer(minLength: 4)
         }
