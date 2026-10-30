@@ -417,6 +417,7 @@ extension UIText {
         case .histByCardHelp: return "只看某张卡提交的 commit，包括它提交到其他仓库的"
         case .histCardOnly(let a): return "「\(a)」的提交"
         case .histCardNone: return "这张卡还没有提交过"
+        case .histCardUncommittedTitle(let a): return "「\(a)」未提交的改动"
         case .histCardCredit(let a): return "由「\(a)」提交：从它的对话记录里认出来的。点一下只看这张卡的提交"
         case .histMore: return "加载更早的提交…"
         case .histFileHistory: return "这个文件的历史"

@@ -104,6 +104,8 @@ enum FileSnapshot {
                     let name = String(a.dropFirst("card=".count))
                     if let c = model.committers.first(where: { $0.name == name }) ?? model.committers.first { model.showCommits(of: c) }
                 case let a where a.hasPrefix("repo="): model.setHistoryRepo(String(a.dropFirst("repo=".count)))
+                case "cardCommit": if let c = model.cardCommits.first { model.openCommit(c.commit.sha, in: c.repoFolder) }
+                case "cardUncommitted": if let u = model.cardUncommitted.first { model.openUncommitted(u) }
                 case "useDisk": model.useDiskVersion(id)
                 case "save": model.saveTabs(model.unsavedTabs) { ok in print("files snapshot: saveTabs ok=\(ok)") }
                 default: break

@@ -1,4 +1,4 @@
-built 2026-10-26T13:02:17Z with esbuild 0.28.2, node v26.0.0
+built 2026-10-30T06:27:31Z with esbuild 0.28.2, node v26.0.0
 @codemirror/autocomplete 6.20.4
 @codemirror/commands 6.11.1
 @codemirror/lang-cpp 6.0.3
@@ -49,6 +49,6 @@ style-mod 4.1.4
 uc.micro 3.0.0
 w3c-keyname 2.2.8
 
-57ac99fa357a0efa597f075b825ae49344c6602e9acee9a1020c0fb94e9b2c45  editor.js
-135e84065cf93bcf31b77aacceac5302d64d2901aa58509a6cfed73c0a8528c3  editor.css
-91b4fc1bf0ba7ad81caf7646dcd17e85fe18e89e9745b3273e6026456e9b2330  index.html
+2b233b8c18a92829ed710030069a72f18527f5f37dbf1fa064e4aa9b1350984d  editor.js
+0d5870e5e0af463fe83787f4a8a4b2215196d0f13e46413e5417a126ff5dce1c  editor.css
+f63392154fa5638e8c6151f95a65c9d7e7faf2a1027814bc1faaeeaa8312fd85  index.html

@@ -20,7 +20,9 @@ desktop window. Asked for on 2026-10-26: "为啥现在没有显示分支，看�
   (`--follow`, so across renames), with a chip to go back to all of them.
 
 **A commit opens as a tab**, like a file: its message, author, date, parents (each a link), then
-every file it changed with its counts. A file's diff unfolds under its name — the first ones already
+every file it changed with its counts — and, beside them, the changed files as a tree to jump through, with a filter,
+folders that fold, a chain of single folders as one row, and each file marked added, changed, removed or renamed
+(added 2026-10-30, asked for as "左侧还有修改的文件树"). A file's diff unfolds under its name — the first ones already
 unfolded, up to a budget, the rest on a click. Changed lines are told apart by **background tint
 only**, as everywhere in this window. Each file can be opened side by side (the merge view, both
 sides read-only), or opened at a line by clicking that line. The working-tree row opens the same

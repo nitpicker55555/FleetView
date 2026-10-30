@@ -426,6 +426,7 @@ enum UIText {
     case histCardOnly(String)
     case histCardNone
     case histCardCredit(String)
+    case histCardUncommittedTitle(String)
     case histMore
     case histFileHistory
     case histFolderHistory

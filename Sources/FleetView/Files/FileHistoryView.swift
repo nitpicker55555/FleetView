@@ -142,6 +142,27 @@ struct HistoryPane: View {
     /// the one the window belongs to.
     private var cardList: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
+            // What the card wrote and nobody has committed, above what it committed — the same place
+            // the working tree's row has in a repository's list.
+            ForEach(model.cardUncommitted) { u in
+                let on = model.active?.changes.map { $0.only == u.files && $0.repoFolder == u.repoFolder } ?? false
+                HStack(spacing: 6) {
+                    Circle().fill(Theme.warn).frame(width: 7, height: 7)
+                    Text(L(.histUncommitted(u.files.count))).font(.system(size: 12.5)).foregroundColor(Theme.text)
+                    if !u.repoFolder.isEmpty, let r = model.repo(folder: u.repoFolder) {
+                        Text(model.repoName(r)).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                            .foregroundColor(Theme.onTertiaryContainer)
+                            .padding(.horizontal, 5).frame(height: 15)
+                            .background(Theme.tertiaryContainer).clipShape(Capsule())
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12).frame(height: 30)
+                .background(on ? Theme.secondaryContainer : Color.clear)
+                .contentShape(Rectangle())
+                .onTapGesture { model.openUncommitted(u) }
+                .help(model.repo(folder: u.repoFolder).map(\.repo.toplevel) ?? "")
+            }
             ForEach(model.cardCommits) { cc in
                 let r = model.repo(folder: cc.repoFolder)
                 CommitRow(commit: cc.commit, selected: activeSha == cc.commit.sha, picked: false,
@@ -157,7 +178,7 @@ struct HistoryPane: View {
                     Text(L(.filesSearching)).font(.fvLabelSmall).foregroundColor(Theme.outline)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
-            } else if model.cardCommits.isEmpty {
+            } else if model.cardCommits.isEmpty && model.cardUncommitted.isEmpty {
                 Text(L(.histCardNone)).font(.fvBodySmall).foregroundColor(Theme.outline)
                     .padding(.horizontal, 12).padding(.vertical, 8)
             }

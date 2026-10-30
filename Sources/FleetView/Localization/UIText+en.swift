@@ -417,6 +417,7 @@ extension UIText {
         case .histByCardHelp: return "Only the commits one card made, including those in other repositories"
         case .histCardOnly(let a): return "Commits by “\(a)”"
         case .histCardNone: return "This card hasn't committed anything"
+        case .histCardUncommittedTitle(let a): return "Uncommitted by “\(a)”"
         case .histCardCredit(let a): return "Committed by “\(a)”, as its conversation records. Click to see only this card's commits"
         case .histMore: return "Load earlier commits…"
         case .histFileHistory: return "History of This File"

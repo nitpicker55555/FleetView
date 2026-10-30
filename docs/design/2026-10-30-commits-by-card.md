@@ -21,6 +21,19 @@ button that lists its commits.
   them. Worktrees of the project's repository (`FleetView-redesign`, `FleetView-files`) are the same repository —
   they share its commits — and are not listed separately.
 
+### What a card has written and not committed
+
+At the top of a card's list, a row per repository: "未提交的改动 · N 个文件", opening a tab with just those files'
+changes (new files included, read from disk). A file counts when the card's agent wrote it — an Edit, Write,
+MultiEdit or NotebookEdit call, or a Codex patch (`FileChange`), recorded in the ledger like the commit calls
+(`edit`; 33,105 writes on this machine, one row per call id and file so a fork's copies stay the parent's) — git
+reports it as changed now, and no later card wrote it after. A worktree's uncommitted files are its own and listed
+under it.
+
+A file changed by a shell command is not seen — `sed -i`, a Python script, a generator. Checked on `FleetView-1`,
+which edits through scripts as often as through Edit: 2 of its 15 uncommitted files were found. Matching a dirty
+file's modification time to the shell call running at that moment would close it; not done yet.
+
 ## How a commit is put on a card
 
 Nothing in git records which card made a commit, so it comes from the agents' transcripts (`CommitLedger`):

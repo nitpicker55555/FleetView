@@ -24,8 +24,12 @@ extension FileBrowserModel {
         let title: String
         /// The commit, for a commit's tab.
         var sha: String?
+        /// Only these files (repository-relative): one card's uncommitted changes, not the whole tree's.
+        var only: [String]? = nil
+        /// Of those, the ones git does not track yet — shown as new, read from disk.
+        var untracked: [String] = []
 
-        func same(_ o: ChangeSpec) -> Bool { repoFolder == o.repoFolder && range == o.range }
+        func same(_ o: ChangeSpec) -> Bool { repoFolder == o.repoFolder && range == o.range && only == o.only }
         var live: Bool { if case .worktree = range { return true }; return false }
     }
 
@@ -227,12 +231,19 @@ extension FileBrowserModel {
         let range = spec.range, root = self.root
         // Untracked files come from the last status, which already knows them; git's diff does not.
         var found: [(String, Bool)] = []
-        if case .worktree = range, let st = repoStatus(r.folder) {
+        if spec.only == nil, case .worktree = range, let st = repoStatus(r.folder) {
             found = st.marks.filter { $0.value == .untracked }.keys.sorted().map { ($0, st.untracked.contains($0)) }
         }
         let untracked = found
+        let only = spec.only.map(Set.init), extra = spec.untracked, top = r.repo.toplevel
         let result = await onUtility { () -> (files: [GitChange], commit: GitCommit?, message: String?, parent: String?)? in
             guard var files = GitReader.shared.changes(r.repo, range, under: r.scope) else { return nil }
+            if let only { files = files.filter { only.contains($0.path) || $0.oldPath.map(only.contains) == true } }
+            for path in extra {
+                let lines = Self.lineCount(top + "/" + path)
+                files.append(GitChange(path: path, oldPath: nil, status: "?", added: lines, deleted: lines == nil ? nil : 0,
+                                       binary: lines == nil))
+            }
             var commit: GitCommit?, message: String?, parent: String?
             if case .commit(let sha) = range {
                 commit = GitReader.shared.commit(r.repo, sha)
@@ -283,6 +294,9 @@ extension FileBrowserModel {
                                          "date": c.date.timeIntervalSince1970, "refs": c.refs, "coAuthors": c.coAuthors,
                                          "message": result.message ?? c.subject]
                 if let a = c.agent { cj["agent"] = a }
+                if let f = c.files { cj["files"] = f }
+                if let a = c.added { cj["added"] = a }
+                if let d = c.deleted { cj["deleted"] = d }
                 out["commit"] = cj
             }
         case .between(let a, let b):
@@ -323,8 +337,9 @@ extension FileBrowserModel {
         let c = f.change
         if c.status == "?" {
             // Untracked: the whole file is new. Read here rather than diffed against nothing by git.
-            guard !f.untrackedDir, let rel = f.rel else { return .notFound }
-            let abs = absolute(rel)
+            guard !f.untrackedDir else { return .notFound }
+            // Outside the project (a repository one of its cards wrote in) there is no tree path.
+            let abs = f.rel.map { absolute($0) } ?? (r.repo.toplevel + "/" + c.path)
             let text = await onUtility { () -> String? in
                 guard Self.lineCount(abs) != nil, let data = FileManager.default.contents(atPath: abs),
                       let d = FileText.decode(data) else { return nil }

@@ -212,6 +212,8 @@ final class FileBrowserModel: ObservableObject, EditorHost {
     /// A card whose commits the page lists, across every repository, instead of one repository's.
     @Published var historyCard: CommitAuthor?
     @Published var cardCommits: [CardCommit] = []
+    /// What that card has written and nobody has committed yet, by repository.
+    @Published var cardUncommitted: [CardUncommitted] = []
     @Published var cardCommitsLoading = false
     /// Repositories outside the project that its cards have committed to.
     @Published var externalRepos: [RepoRef] = []

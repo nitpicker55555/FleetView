@@ -9,6 +9,15 @@ struct CardCommit: Identifiable, Equatable {
     var id: String { repoFolder + "@" + commit.sha }
 }
 
+/// A card's uncommitted work in one repository: the files its agent wrote last that git still
+/// reports as changed. `untracked` are the new ones among them.
+struct CardUncommitted: Identifiable, Equatable {
+    let repoFolder: String
+    let files: [String]          // repository-relative
+    let untracked: [String]
+    var id: String { repoFolder }
+}
+
 /// Who made each commit, and what each card committed — wherever it went.
 ///
 /// A project is many cards, and a card's agent commits wherever it was told to: the project's own
@@ -103,6 +112,7 @@ extension FileBrowserModel {
     func showCommits(of card: CommitAuthor) {
         historyCard = card
         cardCommits = []
+        cardUncommitted = []
         cardCommitsLoading = true
         if sideMode != .history { sideMode = .history }
         guard let app else { cardCommitsLoading = false; return }
@@ -134,12 +144,79 @@ extension FileBrowserModel {
             }
             if list != self.cardCommits { self.cardCommits = list }
             self.cardCommitsLoading = false
+            await self.loadUncommitted(of: card, book: book, gen: gen)
         }
+    }
+
+    /// The files a card wrote that are still uncommitted: what its agents' Edit and Write calls (and
+    /// Codex's patches) touched, against `git status` of each repository they are in. A file a later
+    /// card wrote too is that card's. A file changed afterwards by hand still counts as the last
+    /// agent's — nothing records the hand.
+    private func loadUncommitted(of card: CommitAuthor, book: AppState.CardBook, gen: Int) async {
+        let found = await onUtility { () -> [(repo: GitReader.Repo, files: [String], untracked: [String])] in
+            let mine = AppState.transcripts(ofCard: card.id, book)
+            let written = CommitLedger.edits(inTranscripts: mine)
+            var byTop: [String: [String]] = [:]
+            for p in written.keys {
+                let top = CommitLedger.toplevel((p as NSString).deletingLastPathComponent)
+                if !top.isEmpty && !CommitLedger.isScratch(top) { byTop[top, default: []].append(p) }
+            }
+            var dirty: [(repo: GitReader.Repo, files: [(abs: String, untracked: Bool)])] = []
+            for (top, files) in byTop {
+                guard let repo = GitReader.shared.repo(at: top), let status = GitReader.shared.status(repo) else { continue }
+                let wanted = Set(files)
+                var hit: [(abs: String, untracked: Bool)] = []
+                for e in status where e.mark != .deleted {
+                    let abs = repo.toplevel + "/" + e.path
+                    if e.mark == .untracked && e.path.hasSuffix("/") {
+                        // A new folder is one status line; the card's files in it are its own lines here.
+                        hit += files.filter { $0.hasPrefix(abs) }.map { ($0, true) }
+                    } else if wanted.contains(abs) {
+                        hit.append((abs, e.mark == .untracked))
+                    }
+                }
+                if !hit.isEmpty { dirty.append((repo, hit)) }
+            }
+            let last = CommitLedger.lastWriters(of: dirty.flatMap { $0.files.map(\.abs) })
+            let own = Set(mine)
+            return dirty.compactMap { d in
+                let kept = d.files.filter { last[$0.abs].map(own.contains) ?? false }
+                guard !kept.isEmpty else { return nil }
+                let rel = { (abs: String) in String(abs.dropFirst(d.repo.toplevel.count + 1)) }
+                return (d.repo, kept.map { rel($0.abs) }.sorted(), kept.filter(\.untracked).map { rel($0.abs) })
+            }
+        }
+        guard gen == authorsGeneration else { return }
+        let common = await onUtility { CommitLedger.commonDirs() }
+        var list: [CardUncommitted] = []
+        for f in found {
+            let top = f.repo.toplevel
+            if !isHome(top, common: common) && !nested.contains(where: { $0.repo.toplevel == top })
+                && !externalRepos.contains(where: { $0.repo.toplevel == top }) {
+                externalRepos.append(RepoRef(repo: f.repo, folder: top, rootInRepo: ""))
+            }
+            // A worktree's uncommitted files are its own, not the main checkout's: it is listed as
+            // a repository of its own here, though its commits are the project's.
+            let folder = top == mainRef?.repo.toplevel ? "" : (nested.first { $0.repo.toplevel == top }?.folder
+                ?? externalRepos.first { $0.repo.toplevel == top }?.folder
+                ?? { externalRepos.append(RepoRef(repo: f.repo, folder: top, rootInRepo: "")); return top }())
+            list.append(CardUncommitted(repoFolder: folder, files: f.files, untracked: f.untracked))
+        }
+        if list != cardUncommitted { cardUncommitted = list }
+    }
+
+    /// One card's uncommitted files in one repository, as a changes tab.
+    func openUncommitted(_ u: CardUncommitted) {
+        guard let card = historyCard else { return }
+        openChanges(ChangeSpec(repoFolder: u.repoFolder, range: .worktree("HEAD"), focus: nil,
+                               title: L(.histCardUncommittedTitle(card.name)), only: u.files, untracked: u.untracked),
+                    pin: false)
     }
 
     func clearCardFilter() {
         historyCard = nil
         cardCommits = []
+        cardUncommitted = []
         cardCommitsLoading = false
     }
 
