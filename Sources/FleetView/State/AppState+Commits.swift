@@ -162,16 +162,20 @@ extension AppState {
         return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data("{}".utf8)
     }
 
-    /// `GET /writers?path=`: which card's agent wrote a file — or, for a folder, each uncommitted file
-    /// in it — the latest writer first. A file no agent wrote (a shell command, a hand) has none.
-    /// Runs git: call off the main actor.
-    nonisolated static func writersReport(path raw: String, _ book: CardBook) -> Data {
+    /// A card as the reports name it: its uuid, name, and whether it is still on the board.
+    nonisolated private static func cardJSON(_ a: CommitAuthor?) -> [String: Any]? {
+        a.map { ["id": $0.id.uuidString, "name": $0.name, "removed": $0.removed] }
+    }
+
+    /// Which card's agent wrote a file — or, for a folder, each uncommitted file in it — the latest
+    /// writer first. A file no agent wrote (a shell command, a hand) has none. Runs git.
+    nonisolated private static func writerRows(path raw: String, cards: [String: CommitAuthor])
+        -> (top: String, path: String, rows: [[String: Any]]) {
         let path = (raw as NSString).standardizingPath
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
         let top = CommitLedger.toplevel(isDir.boolValue ? path : (path as NSString).deletingLastPathComponent)
         var status: [String: String] = [:]      // absolute path → git's mark
-        var files: [String] = []
         if !top.isEmpty, let repo = GitReader.shared.repo(at: top), let st = GitReader.shared.status(repo) {
             for e in st {
                 let abs = repo.toplevel + "/" + e.path
@@ -183,23 +187,59 @@ extension AppState {
                 }
             }
         }
-        if isDir.boolValue {
-            files = status.keys.filter { $0 == path || $0.hasPrefix(path.hasSuffix("/") ? path : path + "/") }.sorted()
-        } else {
-            files = [path]
-        }
-        let cards = cardsByTranscript(book)
+        let files = isDir.boolValue
+            ? status.keys.filter { $0 == path || $0.hasPrefix(path.hasSuffix("/") ? path : path + "/") }.sorted()
+            : [path]
         let writers = CommitLedger.writers(of: files)
         let rows: [[String: Any]] = files.map { f in
             let who: [[String: Any]] = (writers[f] ?? []).map { w in
                 var row: [String: Any] = ["at": Int(w.at.timeIntervalSince1970), "transcript": w.transcript]
-                if let a = cards[w.transcript] { row["id"] = a.id.uuidString; row["name"] = a.name; row["removed"] = a.removed }
+                if let c = cardJSON(cards[w.transcript]) { row.merge(c) { a, _ in a } }
                 return row
             }
             return ["path": top.isEmpty ? f : String(f.dropFirst(top.count + 1)),
                     "status": status[f] ?? (exists || isDir.boolValue ? "clean" : "missing"), "writers": who]
         }
+        return (top, path, rows)
+    }
+
+    /// `GET /writers?path=`: see `writerRows`. Runs git: call off the main actor.
+    nonisolated static func writersReport(path raw: String, _ book: CardBook) -> Data {
+        let (top, path, rows) = writerRows(path: raw, cards: cardsByTranscript(book))
         let body: [String: Any] = ["repo": top, "path": path, "files": rows]
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data("{}".utf8)
+    }
+
+    /// `GET /repo?path=`: a repository seen from its cards — its newest commits, each with the card
+    /// that made it, and its uncommitted files, each with the card that wrote it last. `sha` asks
+    /// about one commit instead of the newest. Runs git: call off the main actor.
+    nonisolated static func repoReport(path raw: String, limit: Int, sha: String?, _ book: CardBook) -> Data {
+        let path = (raw as NSString).standardizingPath
+        var isDir: ObjCBool = false
+        _ = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+        guard let repo = GitReader.shared.repo(at: isDir.boolValue ? path : (path as NSString).deletingLastPathComponent) else {
+            return Data(#"{"error":"not in a git repository"}"#.utf8)
+        }
+        let cards = cardsByTranscript(book)
+        let commits: [GitCommit]
+        if let sha {
+            guard let c = GitReader.shared.commit(repo, sha) else { return Data(#"{"error":"no such commit"}"#.utf8) }
+            commits = [c]
+        } else {
+            commits = GitReader.shared.log(repo, limit: limit) ?? []
+        }
+        let made = CommitLedger.conversations(of: commits.map(\.sha))
+        let list: [[String: Any]] = commits.map { c in
+            var row: [String: Any] = ["sha": c.sha, "committed": Int(c.committed.timeIntervalSince1970),
+                                      "author": c.author, "subject": c.subject]
+            if let t = made[c.sha] {
+                row["transcript"] = t
+                if let card = cardJSON(cards[t]) { row["card"] = card }
+            }
+            return row
+        }
+        var body: [String: Any] = ["repo": repo.toplevel, "commits": list]
+        if sha == nil { body["uncommitted"] = writerRows(path: repo.toplevel, cards: cards).rows }
         return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data("{}".utf8)
     }
 

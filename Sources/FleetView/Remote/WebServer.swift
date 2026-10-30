@@ -215,7 +215,8 @@ final class WebServer {
         if path == "/read" { handleRead(conn, params, scope); return }
         if path == "/conversation" { handleConversation(conn, params, scope); return }
         if path == "/commits" { handleCommits(conn, params, scope); return }
-        if path == "/writers" { handleWriters(conn, params, scope); return }  // parsing; off it
+        if path == "/writers" { handleWriters(conn, params, scope); return }
+        if path == "/repo" { handleRepo(conn, params, scope); return }  // parsing; off it
         if path == "/capture" { handleCapture(conn, params, scope); return }            // tmux; off it
         if path == "/triggers" { handleTriggers(conn, params, scope); return }          // transcript; off it
 
@@ -371,6 +372,33 @@ final class WebServer {
                 let book = app.cardBook()
                 app.refreshCommitLedger {
                     DispatchQueue.global(qos: .userInitiated).async { answer("200 OK", AppState.writersReport(path: path, book)) }
+                }
+            }
+        }
+    }
+
+    /// GET /repo?path=&limit=&sha= — a repository's newest commits (or one) with the card that made
+    /// each, and its uncommitted files with the card that wrote each (AppState.repoReport).
+    private func handleRepo(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        func answer(_ status: String, _ body: Data) {
+            WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
+            send(conn, status: status, type: "application/json", body: body, setCookie: scope.setCookie)
+        }
+        guard let path = query["path"], path.hasPrefix("/") else {
+            answer("400 Bad Request", Data(#"{"error":"give an absolute path"}"#.utf8)); return
+        }
+        let limit = min(500, max(1, Int(query["limit"] ?? "") ?? 30))
+        let sha = query["sha"].flatMap { $0.isEmpty ? nil : $0 }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
+            }
+            MainActor.assumeIsolated {
+                let book = app.cardBook()
+                app.refreshCommitLedger {
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        answer("200 OK", AppState.repoReport(path: path, limit: limit, sha: sha, book))
+                    }
                 }
             }
         }
