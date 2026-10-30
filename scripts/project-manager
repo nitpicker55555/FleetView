@@ -1512,6 +1512,8 @@ def cmd_repo(a):
         print("           %s" % m["subject"])
 
 # Audit actions an agent's project-manager call can leave, and how `audit` words them.
+RECOVERED_LOG = "pm-history-recovered.jsonl"
+
 AUDIT_VERBS = {
     "web-input_sent": "sent", "web-key_sent": "key", "web-action": "action", "web-ask": "asked",
     "web-screen_read": "read screen", "web-conversation_read": "read conversation", "web-tree_read": "read tree",
@@ -1538,14 +1540,32 @@ def cmd_audit(a):
             hit = []
         want = {t["id"].upper() for t in hit} or None
     rows = []
-    for f in files:
-        with open(os.path.join(logs, f), encoding="utf-8", errors="replace") as fh:
+    # Before FleetView recorded callers (build 260), the log said only that *a* project-manager did
+    # something. pm-history-recovered.jsonl is that stretch rebuilt from the agents' transcripts:
+    # the same events (same event.id) with the caller and the words filled in, plus the reads and
+    # the calls to other Macs the log never saw. Read in place of those originals, never beside them.
+    recovered = os.path.join(logs, RECOVERED_LOG)
+    paths = [os.path.join(logs, f) for f in files]
+    replaced = set()
+    if os.path.exists(recovered):
+        paths.insert(0, recovered)
+        with open(recovered, encoding="utf-8", errors="replace") as fh:
+            replaced = {m.group(1) for m in (re.search(r'"event\.id":"([^"]+)"', l) for l in fh) if m}
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(since))     # both are local time
+    for path in paths:
+        mine = path == recovered
+        with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if '"type":"cli"' not in line:
                     continue
                 try:
                     r = json.loads(line)
                 except ValueError:
+                    continue
+                if mine:
+                    if r.get("@timestamp", "")[:19] < cutoff:
+                        continue
+                elif r.get("event.id") in replaced:
                     continue
                 act = r.get("event.action", "")
                 if act == "web-session_started" or act not in AUDIT_VERBS and not a.everything:
@@ -1562,6 +1582,7 @@ def cmd_audit(a):
                             and not tgt.lower().startswith(a.card.lower()):
                         continue
                 rows.append(r)
+    rows.sort(key=lambda r: r.get("@timestamp", "")[:23])
     rows = rows[-a.limit:] if a.limit else rows
     if a.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -1569,6 +1590,7 @@ def cmd_audit(a):
     if not rows:
         print("no project-manager actions logged%s in the last %g day(s)" % (" for %r" % a.card if a.card else "", a.days))
         return
+    shown_recovered = False
     for r in rows:
         actor, target, data = r.get("fleetview.actor", {}), r.get("fleetview.target", {}) or {}, r.get("fleetview.data", {}) or {}
         when = r.get("@timestamp", "")[5:19].replace("T", " ")
@@ -1578,14 +1600,22 @@ def cmd_audit(a):
                 who += c("90", "@" + actor["caller.host"])
         else:
             who = c("90", "(no card%s)" % ((" @" + actor["caller.host"]) if actor.get("caller.host") else ", " + r.get("source.ip", "?")))
-        tgt = ("%s %s" % (target.get("terminal.id", "")[:8].lower(), target.get("terminal.name", ""))) if target.get("terminal.id") else ""
+        tgt = ("%s %s" % (target.get("terminal.id", "")[:8].lower(), target.get("terminal.name", ""))) if target.get("terminal.id") \
+            else target.get("terminal.name", "")
+        if target.get("host"):
+            tgt += c("90", "@" + target["host"])
         verb = AUDIT_VERBS.get(r.get("event.action", ""), r.get("event.action", ""))
+        if r.get("fleetview.recovered"):
+            verb, shown_recovered = "≈" + verb, True
         body = data.get("text") or data.get("question") or data.get("key") or data.get("path") \
-            or " ".join(data.get("pm.argv", []) or []) or data.get("do") or r.get("message", "")
+            or " ".join(data.get("pm.argv", []) or []) or data.get("pm.command") or data.get("do") or r.get("message", "")
         if not a.full and isinstance(body, str):
             body = body.replace("\n", " ⏎ ")
             body = body if len(body) <= 160 else body[:157] + "…"
         print("%s  %s  %s %s%s" % (c("90", when), who, c("36", verb), ("→ " + tgt + "  ") if tgt else "", body))
+    if shown_recovered:
+        print(c("90", "≈ from before callers were logged: the caller and the words were matched up afterwards from the "
+                      "agents' transcripts (%s)" % RECOVERED_LOG))
 
 def cmd_rename(a):
     t = resolve(state(), a.sel)
