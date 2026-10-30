@@ -272,6 +272,10 @@ enum Snapshot {
             if let fv1 = s.terminals.first(where: { $0.name == "FleetView-1" }) {
                 s.runEndedAt[fv1.id] = Date().addingTimeInterval(-2)
             }
+            // Commits two cards have made, so the git chip is in every shot.
+            for (name, n) in [("FleetView-1", 7), ("FleetView-2", 2)] {
+                if let t = s.terminals.first(where: { $0.name == name }) { s.cardCommitCounts[t.id] = n }
+            }
         }
         // Things that will make an agent act on its own (see AgentTrigger): a recurring check and
         // a /loop-style one-shot on ride-tracker, background work on backfill-a, and a LaunchAgent

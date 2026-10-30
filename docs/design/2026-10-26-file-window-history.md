@@ -27,6 +27,9 @@ sides read-only), or opened at a line by clicking that line. The working-tree ro
 kind of tab for everything uncommitted against HEAD, untracked files included; a commit's menu
 opens "this commit ↔ working tree", and picking two commits compares them.
 
+Which card made each commit, a card's commits across repositories, and the repositories outside the project its
+cards committed to: [2026-10-30-commits-by-card.md](2026-10-30-commits-by-card.md).
+
 Read-only, like everything else here: no commit, checkout, reset or stash. Those stay in the
 terminals, where an agent's half-done work is not one misclick away.
 

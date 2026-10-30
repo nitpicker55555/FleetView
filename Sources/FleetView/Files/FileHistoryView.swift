@@ -8,7 +8,7 @@ struct HistoryPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if model.repos.isEmpty {
+            if model.repos.isEmpty && model.externalRepos.isEmpty && model.historyCard == nil {
                 Text(L(.histNotARepo)).font(.fvBodySmall).foregroundColor(Theme.subtext)
                     .padding(.horizontal, 12).padding(.vertical, 10)
                 Spacer()
@@ -25,16 +25,57 @@ struct HistoryPane: View {
 
     private var header: some View {
         HStack(spacing: 4) {
-            if model.repos.count > 1 {
+            if model.historyCard == nil && model.repos.count + model.externalRepos.count > 1 {
                 Menu {
                     ForEach(model.repos, id: \.folder) { r in
                         Button(Self.repoName(r, model)) { model.setHistoryRepo(r.folder) }
+                    }
+                    if !model.externalRepos.isEmpty {
+                        Section(L(.histOtherRepos)) {
+                            ForEach(model.externalRepos, id: \.folder) { r in
+                                Button(Self.repoName(r, model)) { model.setHistoryRepo(r.folder) }
+                                    .help(r.folder)
+                            }
+                        }
                     }
                 } label: {
                     Text(model.repo(folder: model.historyRepo).map { Self.repoName($0, model) } ?? "")
                 }
                 .menuStyle(.borderlessButton).fixedSize().font(.fvLabel)
             }
+            if model.historyCard == nil { branchMenu }
+            if !model.committers.isEmpty || model.historyCard != nil { cardMenu }
+            Spacer(minLength: 4)
+            Button {
+                if let c = model.historyCard { model.showCommits(of: c) } else { model.loadHistory(); model.loadBranches() }
+            } label: {
+                Image(systemName: "arrow.clockwise").font(.system(size: 11))
+            }
+            .buttonStyle(.borderless).help(L(.histReload))
+        }
+        .padding(.horizontal, 10).padding(.bottom, 6)
+    }
+
+    /// The cards of this project that have committed: picking one lists its commits, in whatever
+    /// repository they went to.
+    private var cardMenu: some View {
+        Menu {
+            Button(L(.histAllCommits)) { model.clearCardFilter() }
+            Divider()
+            ForEach(model.committers, id: \.id) { a in
+                Button((model.historyCard?.id == a.id ? "● " : "") + model.authorName(a)) { model.showCommits(of: a) }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "person.crop.square").font(.system(size: 11))
+                if let c = model.historyCard { Text(c.name).lineLimit(1) }
+            }
+        }
+        .menuStyle(.borderlessButton).fixedSize().font(.fvLabel)
+        .help(L(.histByCardHelp))
+    }
+
+    private var branchMenu: some View {
             Menu {
                 Button(L(.histCurrentBranch(model.historyCurrentBranch ?? "HEAD"))) { model.setHistoryRef(nil) }
                 let local = model.branchList.filter { !$0.isRemote }
@@ -59,21 +100,15 @@ struct HistoryPane: View {
             }
             .menuStyle(.borderlessButton).fixedSize()
             .help(L(.histBranchHelp))
-            Spacer(minLength: 4)
-            Button { model.loadHistory(); model.loadBranches() } label: {
-                Image(systemName: "arrow.clockwise").font(.system(size: 11))
-            }
-            .buttonStyle(.borderless).help(L(.histReload))
-        }
-        .padding(.horizontal, 10).padding(.bottom, 6)
     }
 
-    static func repoName(_ r: RepoRef, _ model: FileBrowserModel) -> String {
-        r.folder.isEmpty ? model.projectName : r.folder
-    }
+    static func repoName(_ r: RepoRef, _ model: FileBrowserModel) -> String { model.repoName(r) }
 
     @ViewBuilder private var chips: some View {
-        if let p = model.historyPath {
+        if let c = model.historyCard {
+            chip(L(.histCardOnly(model.authorName(c))), help: L(.histByCardHelp)) { model.clearCardFilter() }
+        }
+        if model.historyCard == nil, let p = model.historyPath {
             chip(L(.histOnly((p as NSString).lastPathComponent)), help: p) { model.clearHistoryPath() }
         }
         if let pick = model.comparePick {
@@ -99,6 +134,38 @@ struct HistoryPane: View {
 
     private var list: some View {
         ScrollView {
+            if model.historyCard != nil { cardList } else { repoList }
+        }
+    }
+
+    /// One card's commits, newest first, each saying which repository it went to when that is not
+    /// the one the window belongs to.
+    private var cardList: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(model.cardCommits) { cc in
+                let r = model.repo(folder: cc.repoFolder)
+                CommitRow(commit: cc.commit, selected: activeSha == cc.commit.sha, picked: false,
+                          repo: cc.repoFolder.isEmpty ? nil : r.map { model.repoName($0) })
+                    .contentShape(Rectangle())
+                    .gesture(TapGesture(count: 1).onEnded { model.openCommit(cc.commit.sha, in: cc.repoFolder) })
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { model.openCommit(cc.commit.sha, in: cc.repoFolder, pin: true) })
+                    .help((r?.repo.toplevel ?? cc.repoFolder) + "\n" + cc.commit.sha + "\n" + cc.commit.subject)
+            }
+            if model.cardCommitsLoading {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(L(.filesSearching)).font(.fvLabelSmall).foregroundColor(Theme.outline)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+            } else if model.cardCommits.isEmpty {
+                Text(L(.histCardNone)).font(.fvBodySmall).foregroundColor(Theme.outline)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var repoList: some View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if model.historyRef == nil, model.historyUncommitted > 0 {
                     let on = model.active?.changes.map { if case .worktree("HEAD") = $0.range { return true }; return false } ?? false
@@ -113,7 +180,10 @@ struct HistoryPane: View {
                     .onTapGesture { model.openUncommitted() }
                 }
                 ForEach(model.commits, id: \.sha) { c in
-                    CommitRow(commit: c, selected: activeSha == c.sha, picked: model.comparePick == c.sha)
+                    let author = model.commitAuthors[c.sha]
+                    CommitRow(commit: c, selected: activeSha == c.sha, picked: model.comparePick == c.sha,
+                              card: author?.name, cardRemoved: author?.removed == true,
+                              onCard: author.map { a in { model.showCommits(of: a) } })
                         .contentShape(Rectangle())
                         .gesture(TapGesture(count: 1).onEnded { model.openCommit(c.sha) })
                         .simultaneousGesture(TapGesture(count: 2).onEnded { model.openCommit(c.sha, pin: true) })
@@ -122,7 +192,6 @@ struct HistoryPane: View {
                 footer
             }
             .padding(.vertical, 4)
-        }
     }
 
     @ViewBuilder private func menu(_ c: GitCommit) -> some View {
@@ -176,6 +245,13 @@ struct CommitRow: View {
     let commit: GitCommit
     let selected: Bool
     let picked: Bool
+    /// The card that made it, when its conversation says so; tapping it lists that card's commits.
+    var card: String? = nil
+    /// The card is no longer on the board: drawn faded rather than labelled, which the row has no room for.
+    var cardRemoved = false
+    var onCard: (() -> Void)? = nil
+    /// The repository it is in, in a card's list, where commits from several are side by side.
+    var repo: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -200,12 +276,33 @@ struct CommitRow: View {
             }
             HStack(spacing: 5) {
                 Text(commit.short).font(.fvMono).foregroundColor(Theme.primary).fixedSize()
+                // The card stands in for the author: on this machine the author is the same person on
+                // every commit, and which card made it is what tells them apart.
                 TimelineView(.periodic(from: commit.date, by: 60)) { ctx in
-                    Text(RelativeTime.compact(commit.date, now: ctx.date) + " · " + commit.author).lineLimit(1)
+                    Text(RelativeTime.compact(commit.date, now: ctx.date) + (card == nil ? " · " + commit.author : ""))
+                        .lineLimit(1)
                 }
                 .foregroundColor(Theme.outline)
+                .layoutPriority(1)
+                if let card {
+                    Text(card).font(.system(size: 10, weight: .medium)).lineLimit(1).truncationMode(.tail)
+                        .foregroundColor(Theme.onSecondaryContainer)
+                        .padding(.horizontal, 5).frame(height: 15)
+                        .background(Theme.secondaryContainer).clipShape(Capsule())
+                        .opacity(cardRemoved ? 0.55 : 1)
+                        .layoutPriority(2)
+                        .onTapGesture { onCard?() }
+                        .help(L(.histCardCredit(cardRemoved ? L(.histCardRemoved(card)) : card)))
+                }
+                if let repo {
+                    Text(repo).font(.system(size: 10, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                        .foregroundColor(Theme.onTertiaryContainer)
+                        .padding(.horizontal, 5).frame(height: 15)
+                        .background(Theme.tertiaryContainer).clipShape(Capsule())
+                }
                 Spacer(minLength: 4)
-                if let agent = commit.agent {
+                // Which agent is already said by the card, when there is one.
+                if card == nil, let agent = commit.agent {
                     Text(agent == "claude" ? "Claude" : "Codex").font(.system(size: 10, weight: .medium))
                         .foregroundColor(Theme.onPrimaryContainer)
                         .padding(.horizontal, 5).frame(height: 15)

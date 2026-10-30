@@ -14,13 +14,18 @@ func onUtility<T>(_ work: @escaping @Sendable () -> T) async -> T {
 struct RepoRef: Equatable {
     let repo: GitReader.Repo
     /// "" for the project's own repository; otherwise the folder, relative to the project root, that
-    /// is the repository's top level.
+    /// is the repository's top level — or, for a repository outside the project, its absolute path.
     let folder: String
+
+    /// A repository outside the project that one of its cards committed to (FileBrowserModel+Commits).
+    /// Only the 提交 page shows it: nothing in the tree is in it, and nothing here watches it.
+    var isExternal: Bool { folder.hasPrefix("/") }
     /// The project root's path inside the repository: "" unless the project is a folder inside it.
     let rootInRepo: String
 
     /// A repository-relative path as the tree names it, or nil when it is outside the project.
     func project(_ p: String) -> String? {
+        if isExternal { return nil }
         if !folder.isEmpty { return p.isEmpty ? folder : folder + "/" + p }
         if rootInRepo.isEmpty { return p }
         if p == rootInRepo { return "" }
@@ -29,6 +34,7 @@ struct RepoRef: Equatable {
 
     /// A path in the tree as the repository names it.
     func inRepo(_ rel: String) -> String {
+        if isExternal { return rel }
         if !folder.isEmpty { return rel == folder ? "" : String(rel.dropFirst(folder.count + 1)) }
         if rootInRepo.isEmpty { return rel }
         return rel.isEmpty ? rootInRepo : rootInRepo + "/" + rel
@@ -36,7 +42,7 @@ struct RepoRef: Equatable {
 
     /// Whether a path in the tree is in this repository.
     func contains(_ rel: String) -> Bool {
-        folder.isEmpty || rel == folder || rel.hasPrefix(folder + "/")
+        !isExternal && (folder.isEmpty || rel == folder || rel.hasPrefix(folder + "/"))
     }
 
     /// The part of the repository the window shows: the project's folder in it, or all of it.
@@ -200,6 +206,18 @@ final class FileBrowserModel: ObservableObject, EditorHost {
     @Published var historyPath: String?
     @Published var commits: [GitCommit] = []
     @Published var historyState: HistoryState = .idle
+    // Who committed (FileBrowserModel+Commits).
+    /// The card that made each listed commit, by sha.
+    @Published var commitAuthors: [String: CommitAuthor] = [:]
+    /// A card whose commits the page lists, across every repository, instead of one repository's.
+    @Published var historyCard: CommitAuthor?
+    @Published var cardCommits: [CardCommit] = []
+    @Published var cardCommitsLoading = false
+    /// Repositories outside the project that its cards have committed to.
+    @Published var externalRepos: [RepoRef] = []
+    /// This project's cards that have committed anything, for the page's card menu.
+    @Published var committers: [CommitAuthor] = []
+    var authorsGeneration = 0
     @Published var branchList: [GitBranch] = []
     /// A commit picked as one end of a comparison, waiting for the other.
     @Published var comparePick: String?
@@ -664,7 +682,7 @@ final class FileBrowserModel: ObservableObject, EditorHost {
         return nested.filter { $0.contains(rel) }.max { $0.folder.count < $1.folder.count }
     }
 
-    func repo(folder: String) -> RepoRef? { repos.first { $0.folder == folder } }
+    func repo(folder: String) -> RepoRef? { (repos + externalRepos).first { $0.folder == folder } }
 
     /// A project folder that is not a repository may hold some: look three levels down, briefly,
     /// past the folders nobody keeps repositories in. More turn up as the tree lists folders.

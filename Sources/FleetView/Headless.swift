@@ -27,11 +27,17 @@ enum AppStartup {
         // transcript on disk (~15 s); every refresh after that is incremental and near-free, so
         // doing it at launch means ⌘K is instant instead of waiting on a cold index.
         SearchIndex.refresh()
+        // Which card made which commit (CommitLedger). The first pass reads every transcript once
+        // (~17 s on this machine, in the background); each one after reads what was appended.
+        state.refreshCommitLedger { Task { @MainActor in state.refreshCommitCounts() } }
         // …and keep it warm. `project-manager projects/history/session/search` read this index from
         // outside the app, and nothing else refreshed it while the app ran — only launch and opening
         // the search panel did, so after a day of uptime the history an agent was reading had
         // stopped a day ago. An unchanged corpus costs ~0.1 s off the main thread.
-        let reindex = Timer(timeInterval: 300, repeats: true) { _ in SearchIndex.refresh() }
+        let reindex = Timer(timeInterval: 300, repeats: true) { [weak state] _ in
+            SearchIndex.refresh()
+            Task { @MainActor in state?.scheduleCommitCounts() }
+        }
         RunLoop.main.add(reindex, forMode: .common)
         state.updates.check()        // one GET, at most every six hours; off via logging.json
         let w = EventWatcher()

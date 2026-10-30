@@ -37,6 +37,13 @@ final class FileWindows {
         if let file, let rel = c.model.relative(file) { c.model.open(rel, pin: true) }
     }
 
+    /// A card's commits: its project's window, on the 提交 page, listing what that card committed.
+    func showCommits(of t: TerminalSession, app: AppState) {
+        guard let p = app.projects.first(where: { $0.id == t.projectId }) else { return }
+        open(p, app: app)
+        controllers[p.id]?.model.showCommits(of: CommitAuthor(id: t.id, name: t.name, projectId: t.projectId, removed: false))
+    }
+
     func open(projectId: UUID, app: AppState, reveal: String? = nil) {
         guard let p = app.projects.first(where: { $0.id == projectId }) else { return }
         open(p, app: app, reveal: reveal)

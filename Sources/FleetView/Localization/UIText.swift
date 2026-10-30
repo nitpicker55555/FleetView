@@ -389,6 +389,8 @@ enum UIText {
     case trigCopied
     case projFiles
     case cardOpenFiles
+    case cardCommits
+    case cardCommitsHelp(Int)
     case filesWindowTitle(String)
     case filesNoEditor
     case filesMissing
@@ -416,6 +418,14 @@ enum UIText {
     case histCopySha
     case histCopySubject
     case histNone
+    case histCardRemoved(String)
+    case histOtherRepos
+    case histAllCommits
+    case histByCard
+    case histByCardHelp
+    case histCardOnly(String)
+    case histCardNone
+    case histCardCredit(String)
     case histMore
     case histFileHistory
     case histFolderHistory

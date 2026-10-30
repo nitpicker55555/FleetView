@@ -47,6 +47,7 @@ extension FileBrowserModel {
         if repo(folder: historyRepo) == nil, let first = defaultHistoryRepo() { historyRepo = first }
         if historyStale || commits.isEmpty { loadHistory() }
         loadBranches()
+        loadCommitters()
     }
 
     private func defaultHistoryRepo() -> String? {
@@ -74,8 +75,10 @@ extension FileBrowserModel {
     }
 
     func setHistoryRepo(_ folder: String) {
+        if historyCard != nil { clearCardFilter() }
         guard folder != historyRepo else { return }
         historyRepo = folder
+        commitAuthors = [:]
         historyRef = nil
         historyPath = nil
         comparePick = nil
@@ -134,6 +137,7 @@ extension FileBrowserModel {
             }
             self.commits = more ? self.commits + list : list
             self.historyState = .loaded(more: list.count == limit)
+            self.attributeCommits()
         }
     }
 
@@ -161,7 +165,7 @@ extension FileBrowserModel {
 
     func openCommit(_ sha: String, in folder: String? = nil, pin: Bool = false) {
         let f = folder ?? historyRepo
-        let c = commits.first { $0.sha == sha }
+        let c = commits.first { $0.sha == sha } ?? cardCommits.first { $0.commit.sha == sha }?.commit
         let short = String(sha.prefix(7))
         let title = c.map { short + " " + $0.subject } ?? short
         openChanges(ChangeSpec(repoFolder: f, range: .commit(sha), focus: historyPath, title: title, sha: sha), pin: pin)
