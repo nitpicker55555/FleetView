@@ -382,7 +382,7 @@ extension UIText {
         case .projFiles: return "浏览文件"
         case .cardOpenFiles: return "在文件浏览器里打开所在目录"
         case .cardCommits: return "这张卡的提交"
-        case .cardCommitsHelp(let a): return "这张卡提交过 \(a) 次，点开看它的 commit（包括提交到其他仓库的）"
+        case .cardCommitsHelp(let a, let b): return (a > 0 ? "这张卡提交过 \(a) 次" : "这张卡还没提交过") + (b > 0 ? "，还有 \(b) 个文件改了没提交" : "") + "。点开看它的提交和改动（包括其他仓库里的）"
         case .filesWindowTitle(let n): return "\(n) — 文件"
         case .filesNoEditor: return "编辑器页面不在这个构建里（Editor/dist 缺失）。用 Editor/build.sh 生成，或从 package_app.sh 打包的 app 打开。"
         case .filesMissing: return "文件不在了"

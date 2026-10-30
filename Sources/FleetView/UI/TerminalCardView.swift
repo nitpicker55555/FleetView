@@ -320,13 +320,19 @@ struct TerminalCardView: View {
         }
     }
 
-    /// This card's agent has committed: how many commits, and a click lists them — in whatever
-    /// repository they went to. Absent until it has made one.
+    /// This card's agent has changed files: how many commits it made, and — after the dot the 提交
+    /// page gives uncommitted work — how many files it wrote that nobody has committed. A click lists
+    /// both, in whatever repository they are. Absent until it has changed something.
     @ViewBuilder private var commitChip: some View {
-        if let n = state.cardCommitCounts[terminal.id], n > 0 {
+        let n = state.cardCommitCounts[terminal.id] ?? 0, u = state.cardUncommittedCounts[terminal.id] ?? 0
+        if n > 0 || u > 0 {
             HStack(spacing: 3) {
                 Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
-                Text("\(n)").font(.fvLabelSmall).monospacedDigit()
+                if n > 0 { Text("\(n)").font(.fvLabelSmall).monospacedDigit() }
+                if u > 0 {
+                    Circle().fill(Theme.warn).frame(width: 5, height: 5).padding(.leading, n > 0 ? 2 : 0)
+                    Text("\(u)").font(.fvLabelSmall).monospacedDigit()
+                }
             }
             .foregroundColor(container?.fg ?? Theme.primary)
             .padding(.horizontal, 6).frame(height: 18)
@@ -335,7 +341,7 @@ struct TerminalCardView: View {
             // High priority, as the trigger chip: the card's own tap (raise) wants this click too.
             .highPriorityGesture(TapGesture().onEnded { FileWindows.shared.showCommits(of: terminal, app: state) })
             .fixedSize()
-            .help(L(.cardCommitsHelp(n)))
+            .help(L(.cardCommitsHelp(n, u)))
         }
     }
 

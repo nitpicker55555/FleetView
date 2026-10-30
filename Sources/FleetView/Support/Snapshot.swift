@@ -276,6 +276,10 @@ enum Snapshot {
             for (name, n) in [("FleetView-1", 7), ("FleetView-2", 2)] {
                 if let t = s.terminals.first(where: { $0.name == name }) { s.cardCommitCounts[t.id] = n }
             }
+            // …one with uncommitted work besides, and one with only that.
+            for (name, n) in [("FleetView-2", 3), ("web-store-1", 4)] {
+                if let t = s.terminals.first(where: { $0.name == name }) { s.cardUncommittedCounts[t.id] = n }
+            }
         }
         // Things that will make an agent act on its own (see AgentTrigger): a recurring check and
         // a /loop-style one-shot on ride-tracker, background work on backfill-a, and a LaunchAgent
