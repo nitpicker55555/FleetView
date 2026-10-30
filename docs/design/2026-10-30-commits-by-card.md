@@ -40,7 +40,9 @@ file's modification time to the shell call running at that moment would close it
 
 ### For agents: the card-git skill
 
-`.claude/skills/card-git` teaches an agent to ask the same questions from a shell:
+`.claude/skills/card-git` teaches an agent to ask the same questions from a shell, in every direction:
+`project-manager repo [path]` (GET `/repo?path=`) lists a repository's newest commits each with the card that
+produced it (`--sha` for one commit) and its uncommitted files each with the card that wrote it last;
 `project-manager commits <card>` (GET `/commits?id=`) lists a card's commits in every repository and its
 uncommitted files; `project-manager writers <path>` (GET `/writers?path=`) answers the other way round —
 which card, by uuid, last wrote a file, or each uncommitted file under a folder (`-a` for every writer, latest

@@ -1446,20 +1446,58 @@ def cmd_writers(a):
         if not files:
             print("nothing uncommitted under %s" % path)
             continue
-        mark = {"M": c("33", "M"), "A": c("32", "A"), "U": c("32", "?"), "D": c("31", "D"), "R": c("33", "R"),
-                "C": c("31", "C"), "clean": c("90", " "), "missing": c("31", "!")}
-        for f in files:
-            ws = f.get("writers", [])
-            shown = ws if a.all else ws[:1]
-            if not shown:
-                print("%s %s  %s" % (mark.get(f["status"], "?"), f["path"], c("90", "← no agent wrote it (a shell command, or by hand)")))
-                continue
-            for i, w in enumerate(shown):
-                who = ("%s  %s%s" % (w["id"].lower(), w.get("name", ""), c("90", " (removed)") if w.get("removed") else "")
-                       if "id" in w else c("90", "a conversation no card is known for: " + w["transcript"]))
-                when = time.strftime("%m-%d %H:%M", time.localtime(w["at"]))
-                head = "%s %s" % (mark.get(f["status"], "?"), f["path"]) if i == 0 else " " * (len(f["path"]) + 2)
-                print("%s  ← %s  %s" % (head, who, c("90", when)))
+        _print_writers(files, a.all)
+
+def _card(card):
+    """A card as these commands name it: its full uuid (what every project-manager command takes) and name."""
+    return "%s  %s%s" % (card["id"].lower(), card.get("name", ""), c("90", " (removed)") if card.get("removed") else "")
+
+def _print_writers(files, every=False, indent=""):
+    mark = {"M": c("33", "M"), "A": c("32", "A"), "U": c("32", "?"), "D": c("31", "D"), "R": c("33", "R"),
+            "C": c("31", "C"), "clean": c("90", " "), "missing": c("31", "!")}
+    for f in files:
+        ws = f.get("writers", [])
+        shown = ws if every else ws[:1]
+        if not shown:
+            print("%s%s %s  %s" % (indent, mark.get(f["status"], "?"), f["path"], c("90", "← no agent wrote it (a shell command, or by hand)")))
+            continue
+        for i, w in enumerate(shown):
+            who = _card(w) if "id" in w else c("90", "a conversation no card is known for: " + w["transcript"])
+            when = time.strftime("%m-%d %H:%M", time.localtime(w["at"]))
+            head = "%s %s" % (mark.get(f["status"], "?"), f["path"]) if i == 0 else " " * (len(f["path"]) + 2)
+            print("%s%s  ← %s  %s" % (indent, head, who, c("90", when)))
+
+def cmd_repo(a):
+    """A repository seen from its cards: its newest commits, each with the card that made it, and its
+    uncommitted files, each with the card that wrote it last. --sha asks about one commit."""
+    path = a.path if is_remote() and a.path.startswith("/") else os.path.abspath(os.path.expanduser(a.path))
+    q = {"path": path, "limit": a.limit}
+    if a.sha:
+        q["sha"] = a.sha
+    r = api_json("/repo?" + urllib.parse.urlencode(q))
+    if "error" in r:
+        sys.exit(r["error"])
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return
+    print(c("1", r["repo"]))
+    unc = r.get("uncommitted")
+    if unc is not None:
+        print(c("33", "uncommitted") + ("  none" if not unc else "  %d file%s" % (len(unc), "" if len(unc) == 1 else "s")))
+        _print_writers(unc, a.all, indent="  ")
+    commits = r.get("commits", [])
+    if not a.sha:
+        print(c("36", "commits") + "  newest %d" % len(commits))
+    for m in commits:
+        when = time.strftime("%m-%d %H:%M", time.localtime(m["committed"]))
+        if "card" in m:
+            who = "← " + _card(m["card"])
+        elif "transcript" in m:
+            who = c("90", "← a conversation no card is known for: " + m["transcript"])
+        else:
+            who = c("90", "← no agent made it (by hand, a script, or on GitHub)")
+        print("  %s  %s  %s" % (c("33", m["sha"][:7]), when, who))
+        print("           %s" % m["subject"])
 
 def cmd_rename(a):
     t = resolve(state(), a.sel)
@@ -2915,6 +2953,10 @@ def main():
     s = sub.add_parser("writers", help="which card wrote a file, or each uncommitted file under a folder")
     s.add_argument("paths", nargs="+"); s.add_argument("-a", "--all", action="store_true", help="every card that wrote it, not just the last")
     s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_writers)
+    s = sub.add_parser("repo", help="a repository's commits and uncommitted files, each with the card that made it")
+    s.add_argument("path", nargs="?", default="."); s.add_argument("-n", "--limit", type=int, default=30)
+    s.add_argument("--sha", help="just this commit"); s.add_argument("-a", "--all", action="store_true", help="every card that wrote a file")
+    s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_repo)
     s = sub.add_parser("new", help="open a terminal in a project")
     s.add_argument("sel", help="project")
     s.add_argument("label", nargs="?", help="label the new terminal (same as -n)")
