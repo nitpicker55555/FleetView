@@ -438,6 +438,10 @@ and your reads of another card — `show`/`tail` (its screen), `wait`'s reply (i
 `writers`, `repo`. Only `ls`/`watch`/`wait`'s polling of the board is left out. `project-manager audit`
 reads it back. Write prompts to other agents as you would want them read later.
 
+Callers have been logged since 2026-10-30. For the months before, `audit -d 90` also shows the
+history matched up afterwards from the agents' own transcripts (rows marked `≈`, from
+`~/.fleetview/logs/pm-history-recovered.jsonl`): who sent what to whom, where a transcript still says so.
+
 ## Cautions
 
 - `send`/`choose`/`key` **inject real keystrokes** into a live session. Before acting on a terminal
