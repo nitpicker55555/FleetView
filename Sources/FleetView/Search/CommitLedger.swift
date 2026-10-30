@@ -120,10 +120,27 @@ enum CommitLedger {
             cwd TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS auditscan(file TEXT PRIMARY KEY, done INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS edit(       -- every file an agent's tool call wrote
+            id TEXT NOT NULL,
+            path TEXT NOT NULL,
+            transcript TEXT NOT NULL,
+            born REAL NOT NULL,
+            at REAL NOT NULL,
+            PRIMARY KEY(id, path)
+        );
+        CREATE INDEX IF NOT EXISTS edit_path ON edit(path);
+        CREATE INDEX IF NOT EXISTS edit_transcript ON edit(transcript);
         """
         guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK else { sqlite3_close(db); return nil }
         // A file from the first version has no `resolved`; adding it again to a new one only fails.
         sqlite3_exec(db, "ALTER TABLE call ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0", nil, nil, nil)
+        // Files written before `edit` existed were read past the lines it needs: read them again, once.
+        // Calls and their commits are kept — reading a call twice changes nothing.
+        var version: Int32 = 0
+        query(db, "PRAGMA user_version") { s in version = sqlite3_column_int(s, 0) }
+        if version < 3 {
+            sqlite3_exec(db, "DELETE FROM scanned; PRAGMA user_version = 3", nil, nil, nil)
+        }
         return db
     }
 
@@ -149,6 +166,8 @@ enum CommitLedger {
 
     private struct Found {
         var calls: [Call] = []
+        /// Files written: (tool call id, absolute path, when).
+        var edits: [(String, String, Date)] = []
         /// Claude answers a call on a later line, possibly in a later pass: (id, answered, sha).
         var answers: [(String, Date, String)] = []
         var consumed = 0
@@ -203,6 +222,13 @@ enum CommitLedger {
         sqlite3_prepare_v2(db, """
             INSERT INTO scanned(path, done) VALUES(?, ?) ON CONFLICT(path) DO UPDATE SET done = excluded.done
             """, -1, &mark, nil)
+        var wrote: OpaquePointer?
+        // Like a call, a write copied into a fork stays with the conversation that made it.
+        sqlite3_prepare_v2(db, """
+            INSERT INTO edit(id, path, transcript, born, at) VALUES(?,?,?,?,?)
+            ON CONFLICT(id, path) DO UPDATE SET transcript=excluded.transcript, born=excluded.born, at=excluded.at
+            WHERE excluded.born < edit.born
+            """, -1, &wrote, nil)
         var calls = 0
         for i in 0..<jobs.count {
             guard let r = results[i] else { continue }
@@ -221,6 +247,12 @@ enum CommitLedger {
                 bind(upsert, 7, c.dir); bind(upsert, 8, c.top); bind(upsert, 9, c.sha)
                 if sqlite3_step(upsert) == SQLITE_DONE { calls += 1 }
             }
+            for (id, path, at) in r.edits {
+                sqlite3_reset(wrote)
+                bind(wrote, 1, id); bind(wrote, 2, path); bind(wrote, 3, main.path)
+                sqlite3_bind_double(wrote, 4, born); sqlite3_bind_double(wrote, 5, at.timeIntervalSince1970)
+                sqlite3_step(wrote)
+            }
             for (id, at, sha) in r.answers {
                 sqlite3_reset(answer)
                 sqlite3_bind_double(answer, 1, at.timeIntervalSince1970)
@@ -232,10 +264,10 @@ enum CommitLedger {
             sqlite3_bind_int64(mark, 2, Int64(r.consumed))
             sqlite3_step(mark)
         }
-        sqlite3_finalize(upsert); sqlite3_finalize(answer); sqlite3_finalize(mark)
+        sqlite3_finalize(upsert); sqlite3_finalize(answer); sqlite3_finalize(mark); sqlite3_finalize(wrote)
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
-        FV.log(String(format: "commits: read %d transcripts, %d commit calls, in %.1fs",
-                      jobs.count, calls, Date().timeIntervalSince(started)))
+        FV.log(String(format: "commits: read %d transcripts, %d commit calls, %d file writes, in %.1fs",
+                      jobs.count, calls, results.values.reduce(0) { $0 + $1.edits.count }, Date().timeIntervalSince(started)))
     }
 
     // MARK: - Which card each conversation was
@@ -389,6 +421,12 @@ enum CommitLedger {
         line.range(of: Data(needle.utf8)) != nil
     }
 
+    /// The byte test for a Claude tool call that writes files (EditedPaths reads which).
+    private static func writesFiles(_ line: Data) -> Bool {
+        has(line, "\"name\":\"Edit\"") || has(line, "\"name\":\"Write\"") || has(line, "\"name\":\"MultiEdit\"")
+            || has(line, "\"name\":\"NotebookEdit\"")
+    }
+
     /// The byte test before any JSON is decoded: a word `commitCall` could match.
     private static func mentionsCommit(_ line: Data) -> Bool {
         has(line, "commit") || has(line, "merge") || has(line, "cherry-pick") || has(line, "revert")
@@ -408,17 +446,26 @@ enum CommitLedger {
         var f = Found()
         var waiting = known
         f.consumed = lines(url, from: from) { line in
-            if has(line, "\"tool_use\""), has(line, "\"Bash\""), mentionsCommit(line) {
+            let commit = has(line, "\"Bash\"") && mentionsCommit(line)
+            if has(line, "\"tool_use\""), commit || writesFiles(line) {
                 guard let r = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                       let blocks = (r["message"] as? [String: Any])?["content"] as? [[String: Any]],
                       let at = date(r["timestamp"]) else { return }
-                for b in blocks where b["type"] as? String == "tool_use" && b["name"] as? String == "Bash" {
-                    guard let id = b["id"] as? String,
-                          let cmd = (b["input"] as? [String: Any])?["command"] as? String,
-                          let dir = gitDirectory(cmd, cwd: r["cwd"] as? String ?? "") else { continue }
-                    f.calls.append(Call(id: id, transcript: url.path, codex: false, start: at, end: nil,
-                                        dir: dir, top: toplevel(dir), sha: ""))
-                    waiting.insert(id)
+                let cwd = r["cwd"] as? String ?? ""
+                for b in blocks where b["type"] as? String == "tool_use" {
+                    guard let id = b["id"] as? String else { continue }
+                    let name = b["name"] as? String, input = b["input"] as? [String: Any]
+                    if name == "Bash" {
+                        guard let cmd = input?["command"] as? String,
+                              let dir = gitDirectory(cmd, cwd: cwd) else { continue }
+                        f.calls.append(Call(id: id, transcript: url.path, codex: false, start: at, end: nil,
+                                            dir: dir, top: toplevel(dir), sha: ""))
+                        waiting.insert(id)
+                    } else {
+                        #if canImport(FleetViewFiles) || LEDGER_STANDALONE
+                        for p in EditedPaths.paths(tool: name, input: input, cwd: cwd) { f.edits.append((id, p, at)) }
+                        #endif
+                    }
                 }
                 return
             }
@@ -449,6 +496,15 @@ enum CommitLedger {
     private static func readCodex(_ url: URL, from: Int) -> Found {
         var f = Found()
         f.consumed = lines(url, from: from) { line in
+            // A patch applied: every file it wrote, by absolute path.
+            if has(line, "\"FileChange\""), has(line, "\"item_completed\""),
+               let r = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+               let item = (r["payload"] as? [String: Any])?["item"] as? [String: Any],
+               item["type"] as? String == "FileChange", let id = item["id"] as? String,
+               let changes = item["changes"] as? [String: Any], let at = date(r["timestamp"]) {
+                for p in changes.keys where p.hasPrefix("/") { f.edits.append((id, (p as NSString).standardizingPath, at)) }
+                return
+            }
             guard has(line, "\"CommandExecution\""), has(line, "\"item_completed\""), mentionsCommit(line),
                   let r = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                   let item = (r["payload"] as? [String: Any])?["item"] as? [String: Any],
@@ -595,6 +651,50 @@ enum CommitLedger {
         readQueue.sync {
             guard let db = reader() else { return [] }
             return madeRows(db, "", { _ in }).filter { !isScratch($0.top) }
+        }
+    }
+
+    /// The files written in these conversations — one card's — each with the last time it was.
+    static func edits(inTranscripts paths: [String]) -> [String: Date] {
+        guard !paths.isEmpty else { return [:] }
+        return readQueue.sync {
+            guard let db = reader() else { return [:] }
+            var out: [String: Date] = [:]
+            for start in stride(from: 0, to: paths.count, by: 400) {
+                let batch = Array(paths[start..<min(start + 400, paths.count)])
+                let marks = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                var s: OpaquePointer?
+                guard sqlite3_prepare_v2(db, "SELECT path, MAX(at) FROM edit WHERE transcript IN (\(marks)) GROUP BY path",
+                                         -1, &s, nil) == SQLITE_OK else { continue }
+                for (i, p) in batch.enumerated() { bind(s, Int32(i + 1), p) }
+                while sqlite3_step(s) == SQLITE_ROW {
+                    let d = Date(timeIntervalSince1970: sqlite3_column_double(s, 1))
+                    out[text(s, 0)] = max(out[text(s, 0)] ?? .distantPast, d)
+                }
+                sqlite3_finalize(s)
+            }
+            return out
+        }
+    }
+
+    /// The conversation that wrote each of these files last, whoever's it was.
+    static func lastWriters(of files: [String]) -> [String: String] {
+        guard !files.isEmpty else { return [:] }
+        return readQueue.sync {
+            guard let db = reader() else { return [:] }
+            var out: [String: String] = [:]
+            for start in stride(from: 0, to: files.count, by: 400) {
+                let batch = Array(files[start..<min(start + 400, files.count)])
+                let marks = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                var s: OpaquePointer?
+                // SQLite answers a bare column beside MAX() from the row that holds the maximum.
+                guard sqlite3_prepare_v2(db, "SELECT path, transcript, MAX(at) FROM edit WHERE path IN (\(marks)) GROUP BY path",
+                                         -1, &s, nil) == SQLITE_OK else { continue }
+                for (i, p) in batch.enumerated() { bind(s, Int32(i + 1), p) }
+                while sqlite3_step(s) == SQLITE_ROW { out[text(s, 0)] = text(s, 1) }
+                sqlite3_finalize(s)
+            }
+            return out
         }
     }
 

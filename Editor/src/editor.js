@@ -71,7 +71,7 @@ const WORDS = {
     rootCommit: "第一个提交", binary: "二进制文件，不显示内容", untrackedDir: "还没被 git 跟踪的文件夹，里面的文件不逐个列出",
     showInTree: "在目录树中显示", tooLong: "还有 $ 行没有显示", seeAll: "并排看全部", truncated: "diff 太大，只显示了开头",
     noChange: "内容没有变化（可能只改了权限）", refresh: "刷新", worktree: "工作区", nothing: "（无）", against: "相对",
-    moreFiles: "还有 $ 个文件没有列出", noFiles: "没有改动", close: "关闭", failed: "读不出来", newFile: "新文件",
+    moreFiles: "还有 $ 个文件没有列出", noFiles: "没有改动", filterFiles: "筛选文件…", noMatch: "没有匹配的文件", close: "关闭", failed: "读不出来", newFile: "新文件",
     phrases: {
       "Find": "查找", "Replace": "替换", "next": "下一个", "previous": "上一个", "all": "全部",
       "match case": "区分大小写", "regexp": "正则", "by word": "整词", "replace": "替换",
@@ -91,7 +91,7 @@ const WORDS = {
     untrackedDir: "A folder git does not track yet; its files are not listed one by one", showInTree: "Show in tree",
     tooLong: "$ more lines not shown", seeAll: "See all side by side", truncated: "The diff is large; only its start is shown",
     noChange: "No change in content (perhaps only the mode)", refresh: "Refresh", worktree: "working tree", nothing: "(none)",
-    against: "against", moreFiles: "$ more files not listed", noFiles: "No changes", close: "Close", failed: "Could not read it",
+    against: "against", moreFiles: "$ more files not listed", noFiles: "No changes", filterFiles: "Filter files…", noMatch: "No matching files", close: "Close", failed: "Could not read it",
     newFile: "new file",
     phrases: {},
   },
@@ -445,7 +445,10 @@ async function loadHead(d) {
 
 function stash() {
   const d = docs.get(active);
-  if (d && d.kind === "changes" && d.ch && host.changes.style.display !== "none") d.ch.scroll = host.changes.scrollTop;
+  if (d && d.kind === "changes" && d.ch && host.changes.style.display !== "none") {
+    d.ch.scroll = host.chBody.scrollTop;
+    d.ch.treeScroll = host.chTree.scrollTop;
+  }
   if (!d || !d.state) return;
   d.state = view.state;
   // A hidden editor reports 0: keep where it was instead.
@@ -469,7 +472,8 @@ function showDoc(d) {
     if (!d.ch) { renderInfo({kind: "loading", title: words.loading}); display("info"); return; }
     renderChanges(d);
     display("changes");
-    host.changes.scrollTop = d.ch.scroll || 0;
+    host.chBody.scrollTop = d.ch.scroll || 0;
+    host.chTree.scrollTop = d.ch.treeScroll || 0;
     return;
   }
   if (!d.state) { renderInfo({kind: "loading", title: words.loading}); display("info"); return; }
@@ -896,7 +900,10 @@ async function loadChanges(d) {
   try { data = JSON.parse(r.text); } catch (e) { d.info = {kind: "error", title: words.failed}; return false; }
   d.info = null;
   const before = d.ch;
-  d.ch = {data, open: new Set(), patches: new Map(), scroll: before ? before.scroll : 0};
+  d.ch = {data, open: new Set(), patches: new Map(), scroll: before ? before.scroll : 0,
+          // The file tree's own state, kept across a refresh: folders folded shut, the filter, the file last picked.
+          closed: before ? before.closed : new Set(), filter: before ? before.filter : "", picked: before ? before.picked : null,
+          treeScroll: before ? before.treeScroll : 0};
   if (before) {
     // A refresh keeps what was unfolded, by path; the diffs themselves are read again.
     for (const f of data.files) if (before.open.has(f.path)) d.ch.open.add(f.path);
@@ -924,8 +931,86 @@ function renderChanges(d) {
   for (const f of data.files) h += fileBlock(d, f);
   if (!data.files.length) h += `<div class="chnote">${words.noFiles}</div>`;
   if (data.more > 0) h += `<div class="chmore">${words.moreFiles.replace("$", data.more)}</div>`;
-  host.changes.innerHTML = h + "</div></div>";
+  host.chBody.innerHTML = h + "</div></div>";
+  renderTree(d);
   for (const f of data.files) if (d.ch.open.has(f.path) && !d.ch.patches.has(f.path)) loadPatch(d, f);
+}
+
+// ---------------------------------------------------------------- changes: the file tree beside them
+
+/* The changed files as folders, on the left, the way a pull request lists them: a filter on top,
+   folders first, a chain of single folders as one row ("Sources/FleetView/Files"), each file
+   marked added, changed, removed or renamed. A click unfolds the file's diff and brings it into
+   view. One file has nothing to find, so it gets no tree. */
+function renderTree(d) {
+  const files = d.ch.data.files;
+  host.chTree.classList.toggle("none", files.length < 2);
+  if (files.length < 2) { host.chTree.innerHTML = ""; return; }
+  host.chTree.innerHTML = `<div class="ctf"><input type="search" spellcheck="false" placeholder="${words.filterFiles}"></div><div class="ctl"></div>`;
+  const input = host.chTree.querySelector("input");
+  input.value = d.ch.filter || "";
+  // Typing redraws the list alone, so the field keeps its focus and caret.
+  input.addEventListener("input", () => { d.ch.filter = input.value; renderTreeList(d); });
+  renderTreeList(d);
+}
+
+function treeOf(files) {
+  const root = {dirs: new Map(), files: []};
+  for (const f of files) {
+    const parts = f.path.split("/");
+    let node = root;
+    for (const p of parts.slice(0, -1)) {
+      if (!node.dirs.has(p)) node.dirs.set(p, {dirs: new Map(), files: []});
+      node = node.dirs.get(p);
+    }
+    node.files.push(f);
+  }
+  return root;
+}
+
+function renderTreeList(d) {
+  const q = (d.ch.filter || "").trim().toLowerCase();
+  const files = q ? d.ch.data.files.filter(f => f.path.toLowerCase().includes(q)) : d.ch.data.files;
+  let h = "";
+  const walk = (node, prefix, depth) => {
+    for (const name of [...node.dirs.keys()].sort((a, b) => a.localeCompare(b))) {
+      let label = name, path = prefix + name, sub = node.dirs.get(name);
+      // A folder holding one folder and nothing else is one row, as GitHub draws it.
+      while (sub.files.length === 0 && sub.dirs.size === 1) {
+        const [only, next] = [...sub.dirs.entries()][0];
+        label += "/" + only; path += "/" + only; sub = next;
+      }
+      // A filter opens everything it matched in; folding is for browsing.
+      const shut = !q && d.ch.closed.has(path);
+      h += `<div class="ctn dir${shut ? " shut" : ""}" data-act="tdir" data-path="${escapeHTML(path)}" style="--depth:${depth}">`
+         + `<span class="chev">›</span>${ICON.folder}<span class="nm">${escapeHTML(label)}</span></div>`;
+      if (!shut) walk(sub, path + "/", depth + 1);
+    }
+    for (const f of [...node.files].sort((a, b) => a.path.localeCompare(b.path))) {
+      const st = f.status === "?" ? "U" : f.status;
+      const name = f.path.split("/").pop();
+      h += `<div class="ctn file s${st}${d.ch.picked === f.path ? " on" : ""}" data-act="tfile" data-i="${f.i}" style="--depth:${depth}"`
+         + ` title="${escapeHTML(f.path)}">${fileIcon(st)}<span class="nm">${escapeHTML(name)}</span></div>`;
+    }
+  };
+  walk(treeOf(files), "", 0);
+  if (!files.length) h = `<div class="ctmore">${words.noMatch}</div>`;
+  else if (!q && d.ch.data.more > 0) h += `<div class="ctmore">${words.moreFiles.replace("$", d.ch.data.more)}</div>`;
+  host.chTree.querySelector(".ctl").innerHTML = h;
+}
+
+const ICON = {
+  folder: `<svg class="ic" viewBox="0 0 16 16"><path d="M1.75 3h4.1l1.5 1.5h6.9c.41 0 .75.34.75.75v7.5c0 .41-.34.75-.75.75H1.75A.75.75 0 0 1 1 12.75v-9C1 3.34 1.34 3 1.75 3Z" fill="currentColor" opacity=".55"/></svg>`,
+};
+
+/* A page with what happened to it on it: + added, − removed, ± changed, → renamed. */
+function fileIcon(st) {
+  const mark = st === "A" || st === "U" ? `<path d="M8 6.5v5M5.5 9h5"/>`
+             : st === "D" ? `<path d="M5.5 9h5"/>`
+             : st === "R" || st === "C" ? `<path d="M5.5 9h5M8.5 7l2 2-2 2"/>`
+             : `<path d="M8 5.5v4M6 7.5h4M6 11h4"/>`;
+  return `<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">`
+       + `<path d="M3.5 1.75h6l3 3v9.5h-9z"/>${mark}</svg>`;
 }
 
 /* Nothing when no file was counted: a list read without counts (a commit the size of a whole tree)
@@ -1140,6 +1225,21 @@ function onChangesClick(e) {
       case "cmpwt": post("compareWorktree", {tab: d.id, sha: act.dataset.sha}); return;
       case "commit": post("openCommit", {tab: d.id, sha: act.dataset.sha}); return;
       case "refresh": refreshChanges(d); return;
+      case "tdir": {
+        const p = act.dataset.path;
+        if (d.ch.closed.has(p)) d.ch.closed.delete(p); else d.ch.closed.add(p);
+        renderTreeList(d);
+        return;
+      }
+      case "tfile": {
+        const file = d.ch.data.files[+act.dataset.i];
+        if (!file) return;
+        d.ch.picked = file.path;
+        for (const el of host.chTree.querySelectorAll(".ctn.on")) el.classList.remove("on");
+        act.classList.add("on");
+        focusFile(d, file.path);
+        return;
+      }
     }
   }
   // A line of a diff: open the file there. Not when the click ended a text selection.
@@ -1389,6 +1489,8 @@ function boot() {
   host.toc = document.getElementById("toc");
   host.info = document.getElementById("info");
   host.changes = document.getElementById("changes");
+  host.chTree = document.getElementById("chtree");
+  host.chBody = document.getElementById("chbody");
   host.compare = document.getElementById("compare");
   host.compareBody = document.getElementById("compareBody");
   host.compareText = document.getElementById("compareText");
