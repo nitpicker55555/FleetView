@@ -211,6 +211,18 @@ extension GitReader {
         return GitLog.parse(r.out)
     }
 
+    /// The files in one untracked folder, as `status` would list them one by one: what `.gitignore`
+    /// leaves out stays out. Scoped to that folder and bounded — `ls-files --others` across a whole
+    /// repository is what took 42 s on the one with eight million files.
+    public func untrackedFiles(_ repo: Repo, under dir: String, limit: Int = 2000) -> [String] {
+        let r = run(["ls-files", "--others", "--exclude-standard", "-z", "--", dir], in: repo.toplevel,
+                    timeout: 10, limit: 1 << 20)
+        guard r.status == 0 || r.truncated else { return [] }
+        var list = r.out
+        if r.truncated, let cut = list.lastIndex(of: 0) { list = list.prefix(upTo: cut + 1) }
+        return Array(GitReader.splitNUL(Data(list)).prefix(limit))
+    }
+
     /// The working trees of a repository, its own first: they share its commits, so a commit made in
     /// any of them is one of its commits. `worktree list` only reads.
     public func worktrees(_ repo: Repo) -> [String] {

@@ -699,22 +699,6 @@ enum CommitLedger {
         }
     }
 
-    /// The files under a folder that any agent wrote — how a new folder git lists as one line is
-    /// opened back up into its files.
-    static func written(under dir: String) -> [String] {
-        readQueue.sync {
-            guard let db = reader() else { return [] }
-            var out: [String] = []
-            var s: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT DISTINCT path FROM edit WHERE path >= ? AND path < ?", -1, &s, nil) == SQLITE_OK else { return [] }
-            defer { sqlite3_finalize(s) }
-            let prefix = dir.hasSuffix("/") ? dir : dir + "/"
-            bind(s, 1, prefix); bind(s, 2, prefix + "\u{10FFFF}")
-            while sqlite3_step(s) == SQLITE_ROW { out.append(text(s, 0)) }
-            return out
-        }
-    }
-
     /// The conversation that wrote each of these files last, whoever's it was.
     static func lastWriters(of files: [String]) -> [String: String] {
         guard !files.isEmpty else { return [:] }
