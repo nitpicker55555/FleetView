@@ -283,6 +283,9 @@ extension FileBrowserModel {
                                          "date": c.date.timeIntervalSince1970, "refs": c.refs, "coAuthors": c.coAuthors,
                                          "message": result.message ?? c.subject]
                 if let a = c.agent { cj["agent"] = a }
+                if let f = c.files { cj["files"] = f }
+                if let a = c.added { cj["added"] = a }
+                if let d = c.deleted { cj["deleted"] = d }
                 out["commit"] = cj
             }
         case .between(let a, let b):

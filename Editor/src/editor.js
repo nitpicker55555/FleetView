@@ -928,15 +928,20 @@ function renderChanges(d) {
   for (const f of data.files) if (d.ch.open.has(f.path) && !d.ch.patches.has(f.path)) loadPatch(d, f);
 }
 
+/* Nothing when no file was counted: a list read without counts (a commit the size of a whole tree)
+   would otherwise claim +0 −0. */
 function totals(files) {
-  let a = 0, x = 0;
-  for (const f of files) { a += f.add || 0; x += f.del || 0; }
-  return `<span class="a">+${a}</span> <span class="d">−${x}</span>`;
+  let a = 0, x = 0, counted = false;
+  for (const f of files) { if (f.add != null) counted = true; a += f.add || 0; x += f.del || 0; }
+  return counted ? `<span class="a">+${a}</span> <span class="d">−${x}</span>` : "";
 }
 
 function changesHeader(d) {
   const data = d.ch.data, c = data.commit;
-  const count = `${data.files.length + (data.more || 0)} ${words.files} · ${totals(data.files)}`;
+  // A commit's own counts (git's shortstat) hold when its file list was cut short or read uncounted.
+  const n = c && c.files != null ? c.files : data.files.length + (data.more || 0);
+  const t = c && c.added != null ? `<span class="a">+${c.added}</span> <span class="d">−${c.deleted || 0}</span>` : totals(data.files);
+  const count = `${n} ${words.files}` + (t ? ` · ${t}` : "");
   if (c) {
     const lines = c.message.split("\n");
     const subject = lines.shift(), body = lines.join("\n").trim();

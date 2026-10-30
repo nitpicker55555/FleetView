@@ -261,7 +261,16 @@ extension GitReader {
         var spec = ["--"]
         if let under, !under.isEmpty { spec.append(under) }
         let names = run(diffArgs(range, ["--name-status"]) + spec, in: repo.toplevel, timeout: 15, limit: 16 << 20)
-        guard names.status == 0 else { return nil }
+        guard names.status == 0 || names.truncated else { return nil }
+        // A commit that adds a whole tree is shown by the files that were read, without counts: one
+        // here added 190,793 files — 17 MB of names, past the limit, and 19 s of counting, past the
+        // timeout — and the tab said only that git had failed. The page lists the first few thousand.
+        if names.truncated || names.out.count > 1 << 20 {
+            var list = names.out
+            // The last record is cut in half; what is before its separator is whole.
+            if names.truncated, let cut = list.lastIndex(of: 0) { list = list.prefix(upTo: cut + 1) }
+            return GitChanges.parse(nameStatus: Data(list), numstat: Data())
+        }
         let nums = run(diffArgs(range, ["--numstat"]) + spec, in: repo.toplevel, timeout: 15, limit: 16 << 20)
         if case .worktree = range {
             return GitChanges.parse(nameStatus: names.out, numstat: nums.out, onlyCounted: true)
@@ -304,7 +313,10 @@ extension GitReader {
 
     /// One commit's details (for a tab opened from a link or a sha).
     public func commit(_ repo: Repo, _ sha: String) -> GitCommit? {
-        let r = run(["log", "--no-color", "-n", "1", "--format=" + GitLog.format, "--shortstat", sha, "--"], in: repo.toplevel)
+        var r = run(["log", "--no-color", "-n", "1", "--format=" + GitLog.format, "--shortstat", sha, "--"], in: repo.toplevel)
+        // Counting a commit the size of a whole tree can outlast the timeout; the commit itself still
+        // has a message, an author and a date to show.
+        if r.status != 0 { r = run(["log", "--no-color", "-n", "1", "--format=" + GitLog.format, sha, "--"], in: repo.toplevel) }
         return r.status == 0 ? GitLog.parse(r.out).first : nil
     }
 
