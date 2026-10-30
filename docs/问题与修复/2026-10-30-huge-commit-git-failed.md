@@ -3,7 +3,7 @@
 | 字段 | 内容 |
 |---|---|
 | 发现日期 | 2026-10-30 |
-| 状态 | 已修复（未部署） |
+| 状态 | 已修复（build 249 部署） |
 | 影响 | 卡片 code_sense-19 的提交列表里只有一个 commit，点开只显示"git 没读出来"。凡是一次加入一整个目录树的 commit 都会这样 |
 | 对应代码版本 | `9b0453e` |
 | 修复 | `Sources/FleetViewFiles/GitHistory.swift`（`changes`、`commit`）；`Sources/FleetView/Files/FileBrowserModel+History.swift`；`Editor/src/editor.js`（重新打包了 `Editor/dist`） |
