@@ -114,6 +114,7 @@ extension FileBrowserModel {
         cardCommits = []
         cardUncommitted = []
         cardCommitsLoading = true
+        sidebarHidden = false            // asked for from a card: the list is what was asked to see
         if sideMode != .history { sideMode = .history }
         guard let app else { cardCommitsLoading = false; return }
         authorsGeneration += 1
@@ -153,39 +154,7 @@ extension FileBrowserModel {
     /// card wrote too is that card's. A file changed afterwards by hand still counts as the last
     /// agent's — nothing records the hand.
     private func loadUncommitted(of card: CommitAuthor, book: AppState.CardBook, gen: Int) async {
-        let found = await onUtility { () -> [(repo: GitReader.Repo, files: [String], untracked: [String])] in
-            let mine = AppState.transcripts(ofCard: card.id, book)
-            let written = CommitLedger.edits(inTranscripts: mine)
-            var byTop: [String: [String]] = [:]
-            for p in written.keys {
-                let top = CommitLedger.toplevel((p as NSString).deletingLastPathComponent)
-                if !top.isEmpty && !CommitLedger.isScratch(top) { byTop[top, default: []].append(p) }
-            }
-            var dirty: [(repo: GitReader.Repo, files: [(abs: String, untracked: Bool)])] = []
-            for (top, files) in byTop {
-                guard let repo = GitReader.shared.repo(at: top), let status = GitReader.shared.status(repo) else { continue }
-                let wanted = Set(files)
-                var hit: [(abs: String, untracked: Bool)] = []
-                for e in status where e.mark != .deleted {
-                    let abs = repo.toplevel + "/" + e.path
-                    if e.mark == .untracked && e.path.hasSuffix("/") {
-                        // A new folder is one status line; the card's files in it are its own lines here.
-                        hit += files.filter { $0.hasPrefix(abs) }.map { ($0, true) }
-                    } else if wanted.contains(abs) {
-                        hit.append((abs, e.mark == .untracked))
-                    }
-                }
-                if !hit.isEmpty { dirty.append((repo, hit)) }
-            }
-            let last = CommitLedger.lastWriters(of: dirty.flatMap { $0.files.map(\.abs) })
-            let own = Set(mine)
-            return dirty.compactMap { d in
-                let kept = d.files.filter { last[$0.abs].map(own.contains) ?? false }
-                guard !kept.isEmpty else { return nil }
-                let rel = { (abs: String) in String(abs.dropFirst(d.repo.toplevel.count + 1)) }
-                return (d.repo, kept.map { rel($0.abs) }.sorted(), kept.filter(\.untracked).map { rel($0.abs) })
-            }
-        }
+        let found = await onUtility { AppState.uncommitted(ofCard: card.id, book) }
         guard gen == authorsGeneration else { return }
         let common = await onUtility { CommitLedger.commonDirs() }
         var list: [CardUncommitted] = []

@@ -24,10 +24,7 @@ struct EditableText: View {
                     .onSubmit(commit)
                     .onExitCommand { editing = false }
             } else {
-                Text(text)
-                    .font(font)
-                    .foregroundColor(color)
-                    .lineLimit(1)
+                NameText(name: text, font: font, color: color)
                     .onTapGesture(count: 2) { editing = true }
             }
         }
@@ -43,6 +40,26 @@ struct EditableText: View {
         editing = false
         let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if !t.isEmpty { onCommit(t) }
+    }
+}
+
+/// A card's name on one line, its distinguishing tail — the `(2)` a taken name was given, or the time
+/// an older duplicate got — kept whole while the rest gives way. Cut at the end, two cards called
+/// `code_sense review (2)` and `code_sense review (3)` read the same.
+struct NameText: View {
+    let name: String
+    var font: Font = .fvBody
+    /// nil leaves the colour to the caller's own `foregroundColor`, which an inner one would override.
+    var color: Color? = nil
+
+    var body: some View {
+        let (base, suffix) = TerminalNames.split(name)
+        let line = HStack(spacing: 0) {
+            Text(base).lineLimit(1).truncationMode(.tail)
+            if let suffix { Text(suffix).lineLimit(1).fixedSize() }
+        }
+        .font(font)
+        if let color { line.foregroundColor(color) } else { line }
     }
 }
 

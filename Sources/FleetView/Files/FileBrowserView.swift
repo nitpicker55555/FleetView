@@ -9,9 +9,11 @@ struct FileBrowserView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            FileSidebar(model: model)
-                .frame(width: sidebarWidth)
-            FileSidebarDivider(width: $sidebarWidth)
+            if !model.sidebarHidden {
+                FileSidebar(model: model)
+                    .frame(width: sidebarWidth)
+                FileSidebarDivider(width: $sidebarWidth) { model.sidebarHidden = true }
+            }
             VStack(spacing: 0) {
                 FileTabBar(model: model)
                 if model.active != nil { FileToolbar(model: model) }
@@ -62,6 +64,8 @@ private struct FileShortcuts: View {
             Button("") { model.key("searchFiles") }.keyboardShortcut("f", modifiers: [.command, .shift])
             Button("") { model.key("back") }.keyboardShortcut("-", modifiers: .control)
             Button("") { model.key("forward") }.keyboardShortcut("-", modifiers: [.control, .shift])
+            // The system's own key for a sidebar (View › Hide Sidebar).
+            Button("") { model.sidebarHidden.toggle() }.keyboardShortcut("s", modifiers: [.command, .control])
         }
         .opacity(0).frame(width: 0, height: 0).allowsHitTesting(false)
     }
@@ -69,6 +73,8 @@ private struct FileShortcuts: View {
 
 private struct FileSidebarDivider: View {
     @Binding var width: CGFloat
+    /// Dragged well past the narrowest the sidebar goes: it is put away, as a split view does it.
+    let collapse: () -> Void
     @State private var start: CGFloat?
     /// Pushes and pops must pair: an unpaired pop takes the cursor of whatever pushed before us.
     @State private var pushed = false
@@ -84,7 +90,9 @@ private struct FileSidebarDivider: View {
                 .gesture(DragGesture(minimumDistance: 1)
                     .onChanged { g in
                         if start == nil { start = width }
-                        width = min(520, max(180, (start ?? width) + g.translation.width))
+                        let wanted = (start ?? width) + g.translation.width
+                        width = min(520, max(180, wanted))
+                        if wanted < 110 { start = nil; collapse() }
                     }
                     .onEnded { _ in start = nil }))
     }
@@ -103,6 +111,10 @@ struct FileSidebar: View {
                     Text("⎇ " + b).font(.fvMono).foregroundColor(Theme.subtext).lineLimit(1)
                 }
                 Spacer(minLength: 0)
+                Button { model.sidebarHidden = true } label: {
+                    Image(systemName: "sidebar.left").font(.system(size: 12)).foregroundColor(Theme.subtext)
+                }
+                .buttonStyle(.borderless).help(L(.filesHideSidebar))
             }
             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 6)
             Picker("", selection: $model.sideMode) {
@@ -510,9 +522,20 @@ struct FileTabBar: View {
     @ObservedObject var model: FileBrowserModel
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                ForEach(model.tabs) { tab in FileTabView(model: model, tab: tab) }
+        HStack(spacing: 0) {
+            // With the sidebar put away, the way back is where it was: the window's top left.
+            if model.sidebarHidden {
+                Button { model.sidebarHidden = false } label: {
+                    Image(systemName: "sidebar.left").font(.system(size: 12)).foregroundColor(Theme.subtext)
+                        .frame(width: 34, height: 34).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).help(L(.filesShowSidebar))
+                Rectangle().fill(Theme.outlineVariant).frame(width: 1, height: 34)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(model.tabs) { tab in FileTabView(model: model, tab: tab) }
+                }
             }
         }
         .frame(height: 34)

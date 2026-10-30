@@ -387,6 +387,8 @@ extension UIText {
         case .filesNoEditor: return "编辑器页面不在这个构建里（Editor/dist 缺失）。用 Editor/build.sh 生成，或从 package_app.sh 打包的 app 打开。"
         case .filesMissing: return "文件不在了"
         case .filesTabHistory: return "提交"
+        case .filesHideSidebar: return "收起侧栏 (⌃⌘S)"
+        case .filesShowSidebar: return "展开侧栏 (⌃⌘S)"
         case .histNotARepo: return "这个项目不是 git 仓库，里面也没找到仓库。"
         case .histNoRepo: return "它不在任何 git 仓库里"
         case .histCurrentBranch(let b): return "当前分支（\(b)）"

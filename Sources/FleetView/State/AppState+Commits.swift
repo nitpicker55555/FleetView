@@ -106,6 +106,103 @@ extension AppState {
         }
     }
 
+    /// The files one card wrote that are still uncommitted, by repository: what its agents' Edit and
+    /// Write calls (and Codex's patches) touched, against `git status` of each repository they are in.
+    /// A file a later card wrote too is that card's. A file changed afterwards by hand still counts as
+    /// the last agent's — nothing records the hand. Runs git: call off the main actor.
+    nonisolated static func uncommitted(ofCard id: UUID, _ book: CardBook)
+        -> [(repo: GitReader.Repo, files: [String], untracked: [String])] {
+        let mine = transcripts(ofCard: id, book)
+        let written = CommitLedger.edits(inTranscripts: mine)
+        var byTop: [String: [String]] = [:]
+        for p in written.keys {
+            let top = CommitLedger.toplevel((p as NSString).deletingLastPathComponent)
+            if !top.isEmpty && !CommitLedger.isScratch(top) { byTop[top, default: []].append(p) }
+        }
+        var dirty: [(repo: GitReader.Repo, files: [(abs: String, untracked: Bool)])] = []
+        for (top, files) in byTop {
+            guard let repo = GitReader.shared.repo(at: top), let status = GitReader.shared.status(repo) else { continue }
+            let wanted = Set(files)
+            var hit: [(abs: String, untracked: Bool)] = []
+            for e in status where e.mark != .deleted {
+                let abs = repo.toplevel + "/" + e.path
+                if e.mark == .untracked && e.path.hasSuffix("/") {
+                    // A new folder is one status line; the card's files in it are its own lines here.
+                    hit += files.filter { $0.hasPrefix(abs) }.map { ($0, true) }
+                } else if wanted.contains(abs) {
+                    hit.append((abs, e.mark == .untracked))
+                }
+            }
+            if !hit.isEmpty { dirty.append((repo, hit)) }
+        }
+        let last = CommitLedger.lastWriters(of: dirty.flatMap { $0.files.map(\.abs) })
+        let own = Set(mine)
+        return dirty.compactMap { d in
+            let kept = d.files.filter { last[$0.abs].map(own.contains) ?? false }
+            guard !kept.isEmpty else { return nil }
+            let rel = { (abs: String) in String(abs.dropFirst(d.repo.toplevel.count + 1)) }
+            return (d.repo, kept.map { rel($0.abs) }.sorted(), kept.filter(\.untracked).map { rel($0.abs) })
+        }
+    }
+
+    /// `GET /commits?id=`: one card's commits and uncommitted files, as `project-manager commits`
+    /// prints them. Runs git and waits on the ledger: call off the main actor.
+    nonisolated static func gitReport(card id: UUID, name: String, project: String, _ book: CardBook) -> Data {
+        let made = CommitLedger.made(inTranscripts: transcripts(ofCard: id, book))
+        var seen = Set<String>()
+        let commits: [[String: Any]] = made.filter { !CommitLedger.isScratch($0.top) && seen.insert($0.sha).inserted }.map {
+            ["sha": $0.sha, "repo": $0.top, "committed": Int($0.committed.timeIntervalSince1970),
+             "author": $0.author, "subject": $0.subject]
+        }
+        let open: [[String: Any]] = uncommitted(ofCard: id, book).map {
+            ["repo": $0.repo.toplevel, "files": $0.files, "untracked": $0.untracked]
+        }
+        let body: [String: Any] = ["id": id.uuidString, "name": name, "project": project,
+                                   "commits": commits, "uncommitted": open]
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data("{}".utf8)
+    }
+
+    /// `GET /writers?path=`: which card's agent wrote a file — or, for a folder, each uncommitted file
+    /// in it — the latest writer first. A file no agent wrote (a shell command, a hand) has none.
+    /// Runs git: call off the main actor.
+    nonisolated static func writersReport(path raw: String, _ book: CardBook) -> Data {
+        let path = (raw as NSString).standardizingPath
+        var isDir: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+        let top = CommitLedger.toplevel(isDir.boolValue ? path : (path as NSString).deletingLastPathComponent)
+        var status: [String: String] = [:]      // absolute path → git's mark
+        var files: [String] = []
+        if !top.isEmpty, let repo = GitReader.shared.repo(at: top), let st = GitReader.shared.status(repo) {
+            for e in st {
+                let abs = repo.toplevel + "/" + e.path
+                if e.mark == .untracked && e.path.hasSuffix("/") {
+                    // A new folder is one line to git; the files agents wrote in it are its contents here.
+                    for f in CommitLedger.written(under: abs) { status[f] = GitStatus.Mark.untracked.rawValue }
+                } else {
+                    status[abs] = e.mark.rawValue
+                }
+            }
+        }
+        if isDir.boolValue {
+            files = status.keys.filter { $0 == path || $0.hasPrefix(path.hasSuffix("/") ? path : path + "/") }.sorted()
+        } else {
+            files = [path]
+        }
+        let cards = cardsByTranscript(book)
+        let writers = CommitLedger.writers(of: files)
+        let rows: [[String: Any]] = files.map { f in
+            let who: [[String: Any]] = (writers[f] ?? []).map { w in
+                var row: [String: Any] = ["at": Int(w.at.timeIntervalSince1970), "transcript": w.transcript]
+                if let a = cards[w.transcript] { row["id"] = a.id.uuidString; row["name"] = a.name; row["removed"] = a.removed }
+                return row
+            }
+            return ["path": top.isEmpty ? f : String(f.dropFirst(top.count + 1)),
+                    "status": status[f] ?? (exists || isDir.boolValue ? "clean" : "missing"), "writers": who]
+        }
+        let body: [String: Any] = ["repo": top, "path": path, "files": rows]
+        return (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data("{}".utf8)
+    }
+
     /// Each card's uncommitted files, the whole board at once: every file a card on it wrote, against
     /// one `git status` per repository they are in, each dirty file going to the card that wrote it
     /// last. The same rule as a card's own list (FileBrowserModel+Commits).

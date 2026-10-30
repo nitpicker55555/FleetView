@@ -1395,13 +1395,83 @@ def cmd_subagent(a):
     done("subagent %s in %s (%s) — task delivered" % (c("1", full), proj["name"], kind))
 
 
+def cmd_commits(a):
+    """One card's commits, in every repository it committed to, and the files it wrote that are
+    still uncommitted. FleetView works both out from the agents' own transcripts (its CommitLedger),
+    so this answers for the machine the card is on — with -u, another Mac's card."""
+    t = resolve(state(), a.sel)
+    r = api_json("/commits?" + urllib.parse.urlencode({"id": t["id"]}))
+    if "error" in r:
+        sys.exit(r["error"])
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return
+    print("%s  %s  %s" % (t["id"][:8].lower(), c("1", r["name"]), c("90", r.get("project", ""))))
+    unc, commits = r.get("uncommitted", []), r.get("commits", [])
+    if not unc and not commits:
+        print("nothing committed or changed by this card yet")
+        return
+    for u in unc:
+        new = set(u["untracked"])
+        print(c("33", "uncommitted") + "  %s  (%d file%s)" % (u["repo"], len(u["files"]), "" if len(u["files"]) == 1 else "s"))
+        for f in u["files"]:
+            print("  %s %s" % (c("32", "A") if f in new else c("33", "M"), f))
+    repos = {m["repo"] for m in commits}
+    shown = commits[:a.limit] if a.limit else commits
+    print(c("36", "commits") + "  %d%s" % (len(commits), "" if len(shown) == len(commits) else ", newest %d shown (-n 0 for all)" % len(shown)))
+    for m in shown:
+        when = time.strftime("%m-%d %H:%M", time.localtime(m["committed"]))
+        # The repository only when there is more than one: otherwise it is the same word on every line.
+        where = ("  " + c("90", os.path.basename(m["repo"]))) if len(repos) > 1 else ""
+        print("  %s  %s%s  %s" % (c("33", m["sha"][:7]), when, where, m["subject"]))
+    if len(repos) == 1:
+        print(c("90", "  in %s" % next(iter(repos))))
+    print(c("90", "read one: git -C <repo> show <sha>    uncommitted: git -C <repo> diff -- <file>"))
+
+def cmd_writers(a):
+    """Which card's agent wrote a file — or, given a folder, each uncommitted file in it. Answered by
+    FleetView from the agents' transcripts, so a file changed by a shell command or by hand has no
+    writer. Paths are this shell's, made absolute here."""
+    for raw in a.paths:
+        path = raw if is_remote() and raw.startswith("/") else os.path.abspath(os.path.expanduser(raw))
+        r = api_json("/writers?" + urllib.parse.urlencode({"path": path}))
+        if "error" in r:
+            sys.exit(r["error"])
+        if a.json:
+            print(json.dumps(r, ensure_ascii=False, indent=2))
+            continue
+        files = r.get("files", [])
+        if r.get("repo"):
+            print(c("90", r["repo"]))
+        if not files:
+            print("nothing uncommitted under %s" % path)
+            continue
+        mark = {"M": c("33", "M"), "A": c("32", "A"), "U": c("32", "?"), "D": c("31", "D"), "R": c("33", "R"),
+                "C": c("31", "C"), "clean": c("90", " "), "missing": c("31", "!")}
+        for f in files:
+            ws = f.get("writers", [])
+            shown = ws if a.all else ws[:1]
+            if not shown:
+                print("%s %s  %s" % (mark.get(f["status"], "?"), f["path"], c("90", "← no agent wrote it (a shell command, or by hand)")))
+                continue
+            for i, w in enumerate(shown):
+                who = ("%s  %s%s" % (w["id"].lower(), w.get("name", ""), c("90", " (removed)") if w.get("removed") else "")
+                       if "id" in w else c("90", "a conversation no card is known for: " + w["transcript"]))
+                when = time.strftime("%m-%d %H:%M", time.localtime(w["at"]))
+                head = "%s %s" % (mark.get(f["status"], "?"), f["path"]) if i == 0 else " " * (len(f["path"]) + 2)
+                print("%s  ← %s  %s" % (head, who, c("90", when)))
+
 def cmd_rename(a):
     t = resolve(state(), a.sel)
     name = " ".join(a.text).strip()
     if not name:
         sys.exit("empty name")
     _rename(t["id"], name)
-    print("%s  %s -> %s" % (t["id"][:8].lower(), t["name"], c("1", name)))
+    # What it is called now, which is not always what was asked: a name another card has, on the
+    # board or among removed ones, comes back with a number after it ("tasks (2)").
+    now = next((x["name"] for x in state()["terminals"] if x["id"] == t["id"]), name)
+    note = "" if now == name else c("90", "  (%r was taken)" % name)
+    print("%s  %s -> %s%s" % (t["id"][:8].lower(), t["name"], c("1", now), note))
 
 def cmd_rm(a):
     t = resolve(state(), a.sel)
@@ -2839,6 +2909,12 @@ def main():
     s.add_argument("--bytes-from", type=int, help=argparse.SUPPRESS)   # /pm plumbing, see _log_remote
     s.add_argument("--tailing", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_log)
+    s = sub.add_parser("commits", help="a card's commits (any repository) and its uncommitted files")
+    s.add_argument("sel"); s.add_argument("-n", "--limit", type=int, default=30, help="commits shown (0 = all)")
+    s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_commits)
+    s = sub.add_parser("writers", help="which card wrote a file, or each uncommitted file under a folder")
+    s.add_argument("paths", nargs="+"); s.add_argument("-a", "--all", action="store_true", help="every card that wrote it, not just the last")
+    s.add_argument("--json", action="store_true"); s.set_defaults(fn=cmd_writers)
     s = sub.add_parser("new", help="open a terminal in a project")
     s.add_argument("sel", help="project")
     s.add_argument("label", nargs="?", help="label the new terminal (same as -n)")

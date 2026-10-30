@@ -387,6 +387,8 @@ extension UIText {
         case .filesNoEditor: return "The editor page is missing from this build (no Editor/dist). Run Editor/build.sh, or open the app packaged by package_app.sh."
         case .filesMissing: return "The file is gone"
         case .filesTabHistory: return "Commits"
+        case .filesHideSidebar: return "Hide Sidebar (⌃⌘S)"
+        case .filesShowSidebar: return "Show Sidebar (⌃⌘S)"
         case .histNotARepo: return "This project is not a git repository, and none was found inside it."
         case .histNoRepo: return "It is not in a git repository"
         case .histCurrentBranch(let b): return "Current branch (\(b))"

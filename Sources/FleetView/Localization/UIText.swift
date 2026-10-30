@@ -395,6 +395,8 @@ enum UIText {
     case filesNoEditor
     case filesMissing
     case filesTabHistory
+    case filesHideSidebar
+    case filesShowSidebar
     case histNotARepo
     case histNoRepo
     case histCurrentBranch(String)

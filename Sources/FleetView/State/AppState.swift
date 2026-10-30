@@ -1031,7 +1031,7 @@ final class AppState: ObservableObject {
         }
         return audited(AuditIntent("terminal.create",
                                    data: ["name_source": .string(name == nil ? "auto" : "user")])) {
-            let unique = TerminalNames.unique(name ?? defaultTerminalName(for: proj), at: Date(),
+            let unique = TerminalNames.unique(name ?? defaultTerminalName(for: proj),
                                               taken: takenTerminalNames(except: id))
             var t = TerminalSession(projectId: projectId, name: unique,
                                     clusterId: clusterId, cwd: cwd ?? proj.path, autoRunClaude: autoRunClaude)
@@ -1596,7 +1596,7 @@ final class AppState: ObservableObject {
     func renameTerminal(_ id: UUID, to name: String) {
         audited(AuditIntent("terminal.rename")) {
             guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
-            let unique = TerminalNames.unique(name, at: Date(), taken: takenTerminalNames(except: id))
+            let unique = TerminalNames.unique(name, taken: takenTerminalNames(except: id))
             terminals[idx].name = unique
             controllers[id]?.setTitle(unique)
             save()
@@ -3012,23 +3012,13 @@ final class AppState: ObservableObject {
     ///
     /// Who keeps it: a card on the board over one in the drawer — the board's are the names in use,
     /// and renaming one would change a window title under the user — then the earliest. The rest
-    /// get the time their conversation began (the transcript's creation, falling back to when the
-    /// card was last active or removed), which is what tells two `tasks` apart.
+    /// get the next free number (`TerminalNames.unique`).
     ///
     /// Run after the audit log has started, so each rename is on record.
     func deduplicateTerminalNames() {
-        func began(_ transcript: String?) -> Date? {
-            guard let transcript else { return nil }
-            return (try? FileManager.default.attributesOfItem(atPath: transcript))?[.creationDate] as? Date
-        }
         let archive = terminalArchive.indices.sorted { terminalArchive[$0].removedAt < terminalArchive[$1].removedAt }
-        let claims = terminals.map { t in
-            TerminalNames.Claim(id: t.id, name: t.name,
-                                since: began(t.transcriptPath) ?? t.lastActivity ?? Date())
-        } + archive.map { i in
-            let a = terminalArchive[i]
-            return TerminalNames.Claim(id: a.id, name: a.name, since: began(a.transcriptPath) ?? a.removedAt)
-        }
+        let claims = terminals.map { TerminalNames.Claim(id: $0.id, name: $0.name) }
+            + archive.map { TerminalNames.Claim(id: terminalArchive[$0].id, name: terminalArchive[$0].name) }
         let renamed = TerminalNames.deduplicated(claims)
         guard renamed.contains(where: { $0 != nil }) else { return }
         audited(AuditIntent("terminal.deduplicate_names",
