@@ -108,6 +108,8 @@ final class AppState: ObservableObject {
     /// How many commits each card on the board has made, for the git chip on its card
     /// (AppState+Commits). Absent for a card that has made none.
     @Published var cardCommitCounts: [UUID: Int] = [:]
+    /// How many files each card's agent wrote that are still uncommitted (AppState+Commits).
+    @Published var cardUncommittedCounts: [UUID: Int] = [:]
     var commitCountWork: DispatchWorkItem?
     /// When an agent CLI was last started in each terminal, and the command line that started it,
     /// from the shell's report. Only rollouts written since then — or the one it was told to resume

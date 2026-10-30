@@ -8,8 +8,12 @@ button that lists its commits.
 
 ## What it shows
 
-- **On a card**, once its agent has committed: a chip with a branch glyph and how many commits. A click opens the
-  project's file window on the 提交 page, listing that card's commits. The card's menu has the same, "这张卡的提交".
+- **On a card**, once its agent has changed anything: a chip with a branch glyph, how many commits it made and —
+  after an orange dot, the 提交 page's mark for uncommitted work — how many files it wrote that are still
+  uncommitted ("所有卡片上只要有文件改动，就要显示这个按钮"). A click opens the project's file window on the 提交
+  page, listing that card's uncommitted files and commits. The card's menu has the same, "这张卡的提交". The
+  uncommitted counts are worked out for the whole board at once: one `git status` per repository its cards wrote in
+  (21 cards, 949 files, 8 repositories: 0.5 s), five seconds after a run ends and every five minutes.
 - **On the 提交 page**, each commit names the card that made it, in place of the author (on this machine the author
   is the same person on every commit). A card no longer on the board is drawn faded. Clicking the name lists that
   card's commits.

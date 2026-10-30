@@ -1,3 +1,4 @@
+import FleetViewFiles
 import Foundation
 
 /// The card a commit is credited to: the one whose conversation made the call (CommitLedger).
@@ -85,8 +86,8 @@ extension AppState {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
     }
 
-    /// How many commits each card on the board has made, every repository counted — read from the
-    /// ledger alone, which has already matched each call to its commits.
+    /// For the git chip on each card: how many commits it has made, every repository counted (read
+    /// from the ledger alone), and how many files it wrote that are still uncommitted.
     func refreshCommitCounts() {
         let book = cardBook()
         Task.detached(priority: .utility) { [weak self] in
@@ -96,9 +97,47 @@ extension AppState {
                 if let a = cards[m.transcript], !a.removed { made[a.id, default: []].insert(m.sha) }
             }
             let counts = made.mapValues(\.count)
+            let open = AppState.uncommittedCounts(book, cards: cards)
             await MainActor.run { [weak self] in
-                if let self, self.cardCommitCounts != counts { self.cardCommitCounts = counts }
+                guard let self else { return }
+                if self.cardCommitCounts != counts { self.cardCommitCounts = counts }
+                if self.cardUncommittedCounts != open { self.cardUncommittedCounts = open }
             }
         }
+    }
+
+    /// Each card's uncommitted files, the whole board at once: every file a card on it wrote, against
+    /// one `git status` per repository they are in, each dirty file going to the card that wrote it
+    /// last. The same rule as a card's own list (FileBrowserModel+Commits).
+    nonisolated static func uncommittedCounts(_ book: CardBook, cards: [String: CommitAuthor]) -> [UUID: Int] {
+        let bindings = CommitLedger.bindings()
+        var written = Set<String>()
+        for card in book.live {
+            written.formUnion(CommitLedger.edits(inTranscripts: transcripts(ofCard: card.id, book, bindings: bindings)).keys)
+        }
+        // Each file's repository, found on disk once per folder.
+        var topOf: [String: String] = [:]
+        var byTop: [String: [String]] = [:]
+        for f in written {
+            let dir = (f as NSString).deletingLastPathComponent
+            let top = topOf[dir] ?? CommitLedger.toplevel(dir)
+            topOf[dir] = top
+            if !top.isEmpty && !CommitLedger.isScratch(top) { byTop[top, default: []].append(f) }
+        }
+        var dirty: [String] = []
+        for (top, files) in byTop {
+            guard let repo = GitReader.shared.repo(at: top), let status = GitReader.shared.status(repo) else { continue }
+            let wanted = Set(files)
+            for e in status where e.mark != .deleted {
+                let abs = repo.toplevel + "/" + e.path
+                if e.mark == .untracked && e.path.hasSuffix("/") { dirty += files.filter { $0.hasPrefix(abs) } }
+                else if wanted.contains(abs) { dirty.append(abs) }
+            }
+        }
+        var out: [UUID: Int] = [:]
+        for (_, transcript) in CommitLedger.lastWriters(of: dirty) {
+            if let a = cards[transcript], !a.removed { out[a.id, default: 0] += 1 }
+        }
+        return out
     }
 }

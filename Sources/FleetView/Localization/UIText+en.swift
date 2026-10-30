@@ -382,7 +382,7 @@ extension UIText {
         case .projFiles: return "Browse files"
         case .cardOpenFiles: return "Open Its Folder in the File Browser"
         case .cardCommits: return "This Card's Commits"
-        case .cardCommitsHelp(let a): return "This card committed \(a) time\(a == 1 ? "" : "s"); click to see its commits, in any repository"
+        case .cardCommitsHelp(let a, let b): return (a > 0 ? "This card committed \(a) time\(a == 1 ? "" : "s")" : "This card hasn't committed yet") + (b > 0 ? ", and \(b) file\(b == 1 ? " it wrote is" : "s it wrote are") still uncommitted" : "") + ". Click to see its commits and changes, in any repository"
         case .filesWindowTitle(let n): return "\(n) — Files"
         case .filesNoEditor: return "The editor page is missing from this build (no Editor/dist). Run Editor/build.sh, or open the app packaged by package_app.sh."
         case .filesMissing: return "The file is gone"

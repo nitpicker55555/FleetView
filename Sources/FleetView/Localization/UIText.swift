@@ -390,7 +390,7 @@ enum UIText {
     case projFiles
     case cardOpenFiles
     case cardCommits
-    case cardCommitsHelp(Int)
+    case cardCommitsHelp(Int, Int)
     case filesWindowTitle(String)
     case filesNoEditor
     case filesMissing
