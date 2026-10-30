@@ -1,5 +1,8 @@
 import Foundation
 import SQLite3
+#if canImport(FleetViewFiles)
+import FleetViewFiles
+#endif
 
 /// Which agent call made which commit — read from the agents' own transcripts, so it covers every
 /// card, any repository, and commits made before anything here was watching.
@@ -18,6 +21,12 @@ import SQLite3
 ///
 /// Read incrementally by byte offset, like the search index, but on its own offsets and in a file of
 /// its own (`commits.db`): it reads lines the index skips, and must not be able to disturb it.
+///
+/// Everything a screen asks is answered from the file alone. Which commits a call landed on is worked
+/// out once, when the call is over, one `git log` per repository for all its new calls, and written
+/// down (`made`); which card each conversation was is copied from the audit log as it grows
+/// (`binding`). The first version matched at the time of asking — a `git log` per call, through the
+/// two git slots the file window's own status and diffs wait on — and the window crawled.
 enum CommitLedger {
 
     struct Call: Sendable, Hashable {
@@ -46,6 +55,10 @@ enum CommitLedger {
     /// Utility: the first pass reads every transcript, and nothing on screen waits on it.
     private static let queue = DispatchQueue(label: "fleetview.commit-ledger", qos: .utility)
     private static var handle: OpaquePointer?
+    /// Reads go through a connection of their own: under WAL they never wait for a pass to finish,
+    /// which on the first launch takes half a minute.
+    private static let readQueue = DispatchQueue(label: "fleetview.commit-ledger.read", qos: .userInitiated)
+    private static var readHandle: OpaquePointer?
     private static var running = false
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -55,9 +68,21 @@ enum CommitLedger {
 
     private static func open() -> OpaquePointer? {
         if let handle { return handle }
+        handle = connect()
+        return handle
+    }
+
+    private static func reader() -> OpaquePointer? {
+        if let readHandle { return readHandle }
+        readHandle = connect()
+        return readHandle
+    }
+
+    private static func connect() -> OpaquePointer? {
         FV.ensureSupportDir()
         var db: OpaquePointer?
         guard sqlite3_open(dbURL.path, &db) == SQLITE_OK, let db else { return nil }
+        sqlite3_busy_timeout(db, 5000)
         let schema = """
         PRAGMA journal_mode=WAL;
         PRAGMA synchronous=NORMAL;
@@ -71,28 +96,54 @@ enum CommitLedger {
             t1 REAL,
             dir TEXT NOT NULL,
             top TEXT NOT NULL,
-            sha TEXT NOT NULL
+            sha TEXT NOT NULL,
+            resolved INTEGER NOT NULL DEFAULT 0   -- its commits are in `made`
         );
         CREATE INDEX IF NOT EXISTS call_top ON call(top, t0);
         CREATE INDEX IF NOT EXISTS call_transcript ON call(transcript);
+        CREATE TABLE IF NOT EXISTS made(
+            call TEXT NOT NULL,
+            sha TEXT NOT NULL,
+            top TEXT NOT NULL,
+            committed REAL NOT NULL,
+            author TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            PRIMARY KEY(call, sha)
+        );
+        CREATE INDEX IF NOT EXISTS made_sha ON made(sha);
+        CREATE TABLE IF NOT EXISTS repo(top TEXT PRIMARY KEY, common TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS binding(
+            path TEXT PRIMARY KEY,
+            terminal TEXT NOT NULL,
+            name TEXT NOT NULL,
+            project TEXT NOT NULL,
+            cwd TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS auditscan(file TEXT PRIMARY KEY, done INTEGER NOT NULL);
         """
         guard sqlite3_exec(db, schema, nil, nil, nil) == SQLITE_OK else { sqlite3_close(db); return nil }
-        handle = db
+        // A file from the first version has no `resolved`; adding it again to a new one only fails.
+        sqlite3_exec(db, "ALTER TABLE call ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0", nil, nil, nil)
         return db
     }
 
     // MARK: - Reading the transcripts
 
-    /// Bring the ledger up to date with every transcript under `roots`. The first pass reads all of
-    /// them (the lines it wants are found by byte search before any JSON is decoded); after that only
-    /// what was appended. `done` runs on the ledger's queue.
-    static func refresh(roots: [(url: URL, codex: Bool)], done: (() -> Void)? = nil) {
+    /// Bring the ledger up to date: every transcript under `roots`, the audit log in `logs`, and the
+    /// commits of every call that has finished. The first pass reads all of them (the lines it wants
+    /// are found by byte search before any JSON is decoded); after that only what was appended.
+    /// `canonical` puts a path as an agent reported it back where the ledger files it (AgentHome).
+    /// `done` runs on the ledger's queue.
+    static func refresh(roots: [(url: URL, codex: Bool)], logs: URL?, canonical: @escaping (String) -> String = { $0 },
+                        done: (() -> Void)? = nil) {
         queue.async {
             defer { done?() }
             guard !running, let db = open() else { return }
             running = true
             defer { running = false }
             scan(db, roots: roots)
+            if let logs { scanAudit(db, logs, canonical: canonical) }
+            resolve(db)
         }
     }
 
@@ -185,6 +236,124 @@ enum CommitLedger {
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
         FV.log(String(format: "commits: read %d transcripts, %d commit calls, in %.1fs",
                       jobs.count, calls, Date().timeIntervalSince(started)))
+    }
+
+    // MARK: - Which card each conversation was
+
+    /// The audit log's record of each conversation bound to a card (`transcript_bound`): a card goes
+    /// through several — a `/clear`, a reopen that could not resume — and the board keeps only the
+    /// last. Read by offset like the transcripts: the log runs to hundreds of megabytes, and only
+    /// today's file grows. A later binding of the same conversation wins.
+    private static func scanAudit(_ db: OpaquePointer, _ dir: URL, canonical: (String) -> String) {
+        var seen: [String: Int] = [:]
+        query(db, "SELECT file, done FROM auditscan") { s in seen[text(s, 0)] = Int(sqlite3_column_int64(s, 1)) }
+        let files = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { $0.hasPrefix("audit-") && $0.hasSuffix(".jsonl") }.sorted()
+        var upsert: OpaquePointer?, mark: OpaquePointer?
+        sqlite3_exec(db, "BEGIN", nil, nil, nil)
+        sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO binding(path, terminal, name, project, cwd) VALUES(?,?,?,?,?)",
+                           -1, &upsert, nil)
+        sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO auditscan(file, done) VALUES(?,?)", -1, &mark, nil)
+        for f in files {
+            let url = dir.appendingPathComponent(f)
+            let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? 0
+            let from = seen[f] ?? 0
+            guard size > from else { continue }
+            let done = lines(url, from: from) { line in
+                guard has(line, "\"fleetview.terminal.transcript_bound\""),
+                      let r = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                      let target = r["fleetview.target"] as? [String: Any],
+                      let id = target["terminal.id"] as? String,
+                      let to = (r["fleetview.data"] as? [String: Any])?["transcript.to"] as? String else { return }
+                sqlite3_reset(upsert)
+                bind(upsert, 1, canonical(to)); bind(upsert, 2, id)
+                bind(upsert, 3, target["terminal.name"] as? String ?? "")
+                bind(upsert, 4, target["project.id"] as? String ?? "")
+                bind(upsert, 5, target["terminal.cwd"] as? String ?? "")
+                sqlite3_step(upsert)
+            }
+            sqlite3_reset(mark)
+            bind(mark, 1, f); sqlite3_bind_int64(mark, 2, Int64(done))
+            sqlite3_step(mark)
+        }
+        sqlite3_finalize(upsert); sqlite3_finalize(mark)
+        sqlite3_exec(db, "COMMIT", nil, nil, nil)
+    }
+
+    // MARK: - Which commits each call made
+
+    /// Work out, once, the commits of every call that is over — answered half a minute ago, or sent
+    /// ten minutes ago and never answered — and write them down. One `git log` per repository for all
+    /// of its new calls, weighed against every call made in it over the same span; a repository's
+    /// worktrees are the same repository, since they share its commits. A commit already credited to
+    /// a call stays with it.
+    private static func resolve(_ db: OpaquePointer) {
+        #if canImport(FleetViewFiles) || LEDGER_STANDALONE
+        let started = Date()
+        let now = started.timeIntervalSince1970
+        let pending = rows(db, "SELECT \(columns) FROM call WHERE resolved = 0 AND ((t1 IS NOT NULL AND t1 < ?) OR (t1 IS NULL AND t0 < ?))") { s in
+            sqlite3_bind_double(s, 1, now - 30)
+            sqlite3_bind_double(s, 2, now - 600)
+        }
+        guard !pending.isEmpty else { return }
+
+        // Each repository by its common git directory, which its worktrees share. Written down: a
+        // directory is asked once, and one that has gone answers "" from then on.
+        var common: [String: String] = [:]
+        query(db, "SELECT top, common FROM repo") { s in common[text(s, 0)] = text(s, 1) }
+        var learn: OpaquePointer?
+        sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO repo(top, common) VALUES(?,?)", -1, &learn, nil)
+        for top in Set(pending.map(\.top)) where !top.isEmpty && !isScratch(top) && common[top] == nil {
+            let c = GitReader.shared.repo(at: top)?.commonDir ?? ""
+            common[top] = c
+            sqlite3_reset(learn); bind(learn, 1, top); bind(learn, 2, c); sqlite3_step(learn)
+        }
+        sqlite3_finalize(learn)
+
+        var groups: [String: [Call]] = [:]
+        for c in pending where !c.top.isEmpty && !isScratch(c.top) {
+            if let dir = common[c.top], !dir.isEmpty { groups[dir, default: []].append(c) }
+        }
+        var found: [(Call, GitCommit)] = []
+        for (dir, calls) in groups {
+            let tops = common.filter { $0.value == dir }.map(\.key)
+            guard let lo = calls.map(\.window.lowerBound).min(), let hi = calls.map(\.window.upperBound).max(),
+                  let here = tops.first(where: { FileManager.default.fileExists(atPath: $0) }),
+                  let repo = GitReader.shared.repo(at: here) else { continue }
+            let marks = Array(repeating: "?", count: tops.count).joined(separator: ",")
+            let rivals = rows(db, "SELECT \(columns) FROM call WHERE top IN (\(marks)) AND t0 BETWEEN ? AND ?") { s in
+                for (i, t) in tops.enumerated() { bind(s, Int32(i + 1), t) }
+                sqlite3_bind_double(s, Int32(tops.count + 1), lo.timeIntervalSince1970 - 600)
+                sqlite3_bind_double(s, Int32(tops.count + 2), hi.timeIntervalSince1970)
+            }
+            var claimed = Set<String>()
+            query(db, "SELECT sha FROM made WHERE committed BETWEEN \(lo.timeIntervalSince1970) AND \(hi.timeIntervalSince1970)") { s in
+                claimed.insert(text(s, 0))
+            }
+            let commits = GitReader.shared.commits(repo, from: lo, to: hi, limit: 100_000).filter { !claimed.contains($0.sha) }
+            let mine = Set(calls.map(\.id))
+            let made = attribute(commits.map { (sha: $0.sha, committed: $0.committed) }, to: rivals)
+            for c in commits { if let call = made[c.sha], mine.contains(call.id) { found.append((call, c)) } }
+        }
+
+        sqlite3_exec(db, "BEGIN", nil, nil, nil)
+        var write: OpaquePointer?, done: OpaquePointer?
+        sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO made(call, sha, top, committed, author, subject) VALUES(?,?,?,?,?,?)",
+                           -1, &write, nil)
+        sqlite3_prepare_v2(db, "UPDATE call SET resolved = 1 WHERE id = ?", -1, &done, nil)
+        for (call, c) in found {
+            sqlite3_reset(write)
+            bind(write, 1, call.id); bind(write, 2, c.sha); bind(write, 3, call.top)
+            sqlite3_bind_double(write, 4, c.committed.timeIntervalSince1970)
+            bind(write, 5, c.author); bind(write, 6, c.subject)
+            sqlite3_step(write)
+        }
+        for c in pending { sqlite3_reset(done); bind(done, 1, c.id); sqlite3_step(done) }
+        sqlite3_finalize(write); sqlite3_finalize(done)
+        sqlite3_exec(db, "COMMIT", nil, nil, nil)
+        FV.log(String(format: "commits: matched %d calls in %d repositories to %d commits in %.1fs",
+                      pending.count, groups.count, found.count, Date().timeIntervalSince(started)))
+        #endif
     }
 
     /// A subagent's transcript (`<sid>/subagents/agent-*.jsonl`) belongs to its conversation.
@@ -366,9 +535,6 @@ enum CommitLedger {
             .contains { top.hasPrefix($0) }
     }
 
-    /// The calls worth listing: in a repository that still exists and is not a throwaway one.
-    static func listable(_ calls: [Call]) -> [Call] { calls.filter { !$0.top.isEmpty && !isScratch($0.top) } }
-
     static func committedSha(_ out: String) -> String {
         let ns = out as NSString
         guard let m = shaLine.firstMatch(in: out, range: NSRange(location: 0, length: ns.length)) else { return "" }
@@ -377,35 +543,101 @@ enum CommitLedger {
 
     // MARK: - Asking
 
-    /// The calls made in a repository over a span — what the commits listed for it are matched with.
-    static func calls(inRepo top: String, from: Date, to: Date) -> [Call] {
-        queue.sync {
-            guard let db = open() else { return [] }
-            return rows(db, "SELECT \(columns) FROM call WHERE top = ? AND t0 BETWEEN ? AND ?") { s in
-                bind(s, 1, top)
-                sqlite3_bind_double(s, 2, from.timeIntervalSince1970 - 600)
-                sqlite3_bind_double(s, 3, to.timeIntervalSince1970 + 5)
-            }
-        }
+    /// One commit, as written down for the call that made it.
+    struct Made: Sendable, Hashable {
+        let sha: String
+        let top: String
+        let committed: Date
+        let author: String
+        let subject: String
+        /// The conversation of the call.
+        let transcript: String
     }
 
-    /// The calls made in these conversations — one card's, across every repository.
-    static func calls(inTranscripts paths: [String]) -> [Call] {
+    /// The commits made in these conversations — one card's, every repository — newest first.
+    static func made(inTranscripts paths: [String]) -> [Made] {
         guard !paths.isEmpty else { return [] }
-        return queue.sync {
-            guard let db = open() else { return [] }
+        return readQueue.sync {
+            guard let db = reader() else { return [] }
             // In batches: a project's cards have had hundreds of conversations, and SQLite limits how
             // many values one statement can take.
-            var out: [Call] = []
+            var out: [Made] = []
             for start in stride(from: 0, to: paths.count, by: 400) {
                 let batch = Array(paths[start..<min(start + 400, paths.count)])
                 let marks = Array(repeating: "?", count: batch.count).joined(separator: ",")
-                out += rows(db, "SELECT \(columns) FROM call WHERE transcript IN (\(marks))") { s in
+                out += madeRows(db, "WHERE c.transcript IN (\(marks))") { s in
                     for (i, p) in batch.enumerated() { bind(s, Int32(i + 1), p) }
                 }
             }
-            return out.sorted { $0.start > $1.start }
+            return out.sorted { $0.committed > $1.committed }
         }
+    }
+
+    /// Who made these commits: each one's conversation, by sha.
+    static func conversations(of shas: [String]) -> [String: String] {
+        guard !shas.isEmpty else { return [:] }
+        return readQueue.sync {
+            guard let db = reader() else { return [:] }
+            var out: [String: String] = [:]
+            for start in stride(from: 0, to: shas.count, by: 400) {
+                let batch = Array(shas[start..<min(start + 400, shas.count)])
+                let marks = Array(repeating: "?", count: batch.count).joined(separator: ",")
+                for m in madeRows(db, "WHERE m.sha IN (\(marks))", { s in
+                    for (i, p) in batch.enumerated() { bind(s, Int32(i + 1), p) }
+                }) { out[m.sha] = m.transcript }
+            }
+            return out
+        }
+    }
+
+    /// Every commit written down, without the scratch ones: what the cards' counts are made from.
+    static func allMade() -> [Made] {
+        readQueue.sync {
+            guard let db = reader() else { return [] }
+            return madeRows(db, "", { _ in }).filter { !isScratch($0.top) }
+        }
+    }
+
+    /// Each repository the ledger has seen, by top level: its common git directory, which its
+    /// worktrees share ("" for one that has gone).
+    static func commonDirs() -> [String: String] {
+        readQueue.sync {
+            guard let db = reader() else { return [:] }
+            var out: [String: String] = [:]
+            query(db, "SELECT top, common FROM repo") { s in out[text(s, 0)] = text(s, 1) }
+            return out
+        }
+    }
+
+    /// Every conversation the audit log saw bound to a card.
+    struct Binding: Sendable { let terminal: UUID; let name: String; let project: UUID?; let cwd: String?; let path: String }
+
+    static func bindings() -> [Binding] {
+        readQueue.sync {
+            guard let db = reader() else { return [] }
+            var out: [Binding] = []
+            query(db, "SELECT path, terminal, name, project, cwd FROM binding") { s in
+                guard let id = UUID(uuidString: text(s, 1)) else { return }
+                let cwd = text(s, 4)
+                out.append(Binding(terminal: id, name: text(s, 2), project: UUID(uuidString: text(s, 3)),
+                                   cwd: cwd.isEmpty ? nil : cwd, path: text(s, 0)))
+            }
+            return out
+        }
+    }
+
+    private static func madeRows(_ db: OpaquePointer, _ filter: String, _ bindings: (OpaquePointer?) -> Void) -> [Made] {
+        var out: [Made] = []
+        var s: OpaquePointer?
+        let sql = "SELECT m.sha, m.top, m.committed, m.author, m.subject, c.transcript FROM made m JOIN call c ON c.id = m.call " + filter
+        guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(s) }
+        bindings(s)
+        while sqlite3_step(s) == SQLITE_ROW {
+            out.append(Made(sha: text(s, 0), top: text(s, 1), committed: Date(timeIntervalSince1970: sqlite3_column_double(s, 2)),
+                            author: text(s, 3), subject: text(s, 4), transcript: text(s, 5)))
+        }
+        return out
     }
 
     /// Which call made each commit: the one whose output named it, else the one it was committed

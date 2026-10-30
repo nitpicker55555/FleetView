@@ -18,6 +18,14 @@ public struct GitCommit: Equatable, Sendable {
     public let added: Int?
     public let deleted: Int?
 
+    public init(sha: String, parents: [String] = [], author: String, date: Date, committed: Date,
+                refs: [String] = [], subject: String, coAuthors: [String] = [],
+                files: Int? = nil, added: Int? = nil, deleted: Int? = nil) {
+        self.sha = sha; self.parents = parents; self.author = author; self.date = date
+        self.committed = committed; self.refs = refs; self.subject = subject; self.coAuthors = coAuthors
+        self.files = files; self.added = added; self.deleted = deleted
+    }
+
     public var short: String { String(sha.prefix(7)) }
 
     /// "claude" or "codex" when a Co-Authored-By trailer names one of them.

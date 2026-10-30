@@ -55,20 +55,29 @@ this session's on `FleetView-1` and none on its duplicate `FleetView-1 ⑂`, the
 
 ## What it costs
 
-- The ledger is its own SQLite file, `~/.fleetview/commits.db`, read by byte offset like the search index but on
-  its own offsets, so it cannot disturb the index. The first pass reads every transcript once: 11,953 files in
-  15.6 s on this machine, at utility priority, the wanted lines found by byte search before any JSON is decoded.
-  Every pass after reads what was appended (0.1–0.2 s). It runs at launch, with the search index's five-minute
-  refresh, five seconds after a run ends, and when the 提交 page is shown.
-- The audit log is 269 MB. Only `transcript_bound` lines are decoded, and each file is read once; only a file that
-  has grown since — today's — is read again.
-- A card's count is the commits its calls landed on, one `git log --since/--until` per call. A call that has been
-  over for 30 s has its answer remembered, so each finished call costs one `git log`, once.
+Every screen reads `~/.fleetview/commits.db` and nothing else; git is not run to draw a list, a chip or a menu.
+
+- **Calls.** The transcripts are read by byte offset like the search index, but on offsets of their own and in a
+  file of their own, so the ledger cannot disturb the index. The first pass reads every transcript once (11,960
+  files in about 25 s on this machine, at utility priority; the wanted lines are found by byte search before any
+  JSON is decoded). Every pass after reads what was appended.
+- **Commits.** A call is matched once, half a minute after it was answered: one `git log --all --since --until`
+  per repository for all of its new calls, and the result written down (`made`). The whole history — 1,148
+  calls in 21 repositories, 723 commits — took 0.9 s.
+- **Cards.** The audit log's `transcript_bound` lines are copied into the file as the log grows (`binding`), read
+  by offset too: the log is 269 MB, and only today's file grows.
+- **Asking.** One card's commits, the cards of a page of commits, every card's count: under 5 ms each, on a read
+  connection of its own that does not wait for a pass in progress. What is written down is shown at once; the
+  ledger then catches up (about 0.4 s, most of it listing the transcript folders) and the screen is redrawn if
+  anything changed. Passes run at launch, with the search index's five-minute refresh, five seconds after a run
+  ends, and when the 提交 page is shown.
+
+The first version matched at the time of asking: a `git log` per call. Git runs two at a time here, shared with
+the file window's own status, log and diffs, so counting the board's cards — 765 calls, two git processes each —
+queued everything behind it, and the window crawled.
 
 ## Not covered
 
 - Commits made by hand in a card's shell are not in any transcript, so they are not put on a card. Neither are
   commits made by a script the agent ran (`./release.sh` that commits inside).
-- Two cards committing to one repository within the same couple of seconds can both count the pair on their chips;
-  their lists weigh the calls against each other and do not.
 - The web dashboard has no commit history yet, so the git chip is on the desktop board only.
