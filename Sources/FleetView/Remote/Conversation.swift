@@ -769,7 +769,12 @@ enum Conversation {
             return
         }
         var m = m
-        m.text = clip(m.text, 6000)
+        // The agent's reply is what the chat is for, so it is never clipped: a 7,100-character
+        // final answer showed its first 6,000 and an ellipsis, and the rest was nowhere on the
+        // page. The payload stays bounded anyway — only the last `tailBytes` of the file are read.
+        // Prompts and thinking keep the cap; there it is mostly task notifications carrying a
+        // subagent's whole report.
+        if !(m.role == "assistant" && m.kind == "text") { m.text = clip(m.text, 6000) }
         msgs.append(m)
     }
 
