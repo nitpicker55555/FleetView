@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Twilight sky: light at the horizon, deep up top. -->
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#2B5BB0"/>
+      <stop offset="0.45" stop-color="#3E78CF"/>
+      <stop offset="0.72" stop-color="#5E9BE0"/>
+      <stop offset="1"    stop-color="#8FC3EE"/>
+    </linearGradient>
+
+    <!-- The sea at the base. -->
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17407E"/>
+      <stop offset="1" stop-color="#0E2A57"/>
+    </linearGradient>
+
+    <!-- Warm glow radiating from the lantern. -->
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0"    stop-color="#FFF4C2" stop-opacity="0.95"/>
+      <stop offset="0.35" stop-color="#FFD873" stop-opacity="0.55"/>
+      <stop offset="0.7"  stop-color="#FFC24D" stop-opacity="0.18"/>
+      <stop offset="1"    stop-color="#FFC24D" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Beams fade outward from the lantern itself, so every ray is bright at
+         the source and gone by the rim no matter which way it points. -->
+    <radialGradient id="beam" cx="512" cy="362" r="430" gradientUnits="userSpaceOnUse">
+      <stop offset="0"    stop-color="#FFF1BE" stop-opacity="0.85"/>
+      <stop offset="0.45" stop-color="#FFE39A" stop-opacity="0.4"/>
+      <stop offset="1"    stop-color="#FFE39A" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Tower body: soft left-to-right shading for a touch of roundness. -->
+    <linearGradient id="tower" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0"    stop-color="#E9EEF5"/>
+      <stop offset="0.5"  stop-color="#FFFFFF"/>
+      <stop offset="1"    stop-color="#D4DCE8"/>
+    </linearGradient>
+
+    <linearGradient id="band" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0"   stop-color="#E24B46"/>
+      <stop offset="0.5" stop-color="#F26B5E"/>
+      <stop offset="1"   stop-color="#C73C3C"/>
+    </linearGradient>
+
+    <radialGradient id="lantern" cx="0.5" cy="0.4" r="0.6">
+      <stop offset="0"   stop-color="#FFFBE8"/>
+      <stop offset="0.5" stop-color="#FFDE7E"/>
+      <stop offset="1"   stop-color="#F2A93B"/>
+    </radialGradient>
+
+    <!-- Rounded-square mask in the macOS grid: 824 wide, centred, generous corners. -->
+    <clipPath id="squircle">
+      <rect x="100" y="100" width="824" height="824" rx="185" ry="185"/>
+    </clipPath>
+
+    <!-- Tower silhouette, reused to clip the bands. -->
+    <clipPath id="towerClip">
+      <path d="M 441 438 L 583 438 L 611 772 L 413 772 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- soft contact shadow under the whole tile -->
+  <rect x="118" y="134" width="788" height="788" rx="185" ry="185"
+        fill="#0B1E3D" opacity="0.28"/>
+
+  <g clip-path="url(#squircle)">
+    <!-- sky -->
+    <rect x="100" y="100" width="824" height="824" fill="url(#sky)"/>
+
+    <!-- light sweeping from the lantern: a symmetric fan, brightest up high -->
+    <g>
+      <polygon points="512,362 128,150 128,352" fill="url(#beam)"/>
+      <polygon points="512,362 896,150 896,352" fill="url(#beam)"/>
+      <polygon points="512,362 150,432 150,648" fill="url(#beam)" opacity="0.6"/>
+      <polygon points="512,362 874,432 874,648" fill="url(#beam)" opacity="0.6"/>
+    </g>
+
+    <!-- lantern glow -->
+    <circle cx="512" cy="362" r="260" fill="url(#glow)"/>
+
+    <!-- sea -->
+    <path d="M 100 788 Q 300 760 512 782 T 924 786 L 924 924 L 100 924 Z" fill="url(#sea)"/>
+    <path d="M 100 812 Q 340 792 512 806 T 924 808 L 924 924 L 100 924 Z"
+          fill="#1C4C92" opacity="0.6"/>
+
+    <!-- rock the tower stands on -->
+    <path d="M 372 792 Q 512 752 652 792 L 672 836 Q 512 812 352 836 Z"
+          fill="#20334F"/>
+
+    <!-- tower body + bands -->
+    <g clip-path="url(#towerClip)">
+      <rect x="400" y="430" width="224" height="350" fill="url(#tower)"/>
+      <rect x="400" y="470" width="224" height="46" fill="url(#band)"/>
+      <rect x="400" y="560" width="224" height="50" fill="url(#band)"/>
+      <rect x="400" y="660" width="224" height="56" fill="url(#band)"/>
+      <!-- a little door -->
+      <path d="M 486 772 L 486 712 Q 512 690 538 712 L 538 772 Z" fill="#3A4C68"/>
+    </g>
+    <!-- tower outline -->
+    <path d="M 441 438 L 583 438 L 611 772 L 413 772 Z"
+          fill="none" stroke="#C3CCDA" stroke-width="3" opacity="0.6"/>
+
+    <!-- gallery platform below the lantern -->
+    <rect x="430" y="412" width="164" height="30" rx="8" fill="#334A6B"/>
+    <rect x="430" y="406" width="164" height="10" rx="5" fill="#44608A"/>
+
+    <!-- lantern room -->
+    <path d="M 456 410 L 568 410 L 558 338 L 466 338 Z" fill="#1C2E4A"/>
+    <rect x="470" y="344" width="84" height="62" rx="6" fill="url(#lantern)"/>
+    <!-- muntins on the glass -->
+    <g stroke="#1C2E4A" stroke-width="5" opacity="0.8">
+      <line x1="498" y1="344" x2="498" y2="406"/>
+      <line x1="526" y1="344" x2="526" y2="406"/>
+    </g>
+
+    <!-- roof cap + finial -->
+    <path d="M 460 338 L 564 338 L 512 292 Z" fill="#C73C3C"/>
+    <path d="M 460 338 L 512 292 L 512 338 Z" fill="#E24B46"/>
+    <circle cx="512" cy="286" r="9" fill="#F2C14E"/>
+  </g>
+
+  <!-- crisp inner rim to seat it as a macOS tile -->
+  <rect x="100.5" y="100.5" width="823" height="823" rx="184.5" ry="184.5"
+        fill="none" stroke="#FFFFFF" stroke-width="1" opacity="0.18"/>
+</svg>

@@ -37,6 +37,9 @@ fi
 mkdir -p "$APP/Contents/Resources/editor"
 cp "$ROOT/Editor/dist/index.html" "$ROOT/Editor/dist/editor.js" "$ROOT/Editor/dist/editor.css" \
    "$ROOT/Editor/dist/THIRD_PARTY_LICENSES.txt" "$APP/Contents/Resources/editor/"
+# App icon. Built from icon/lighthouse.svg by icon/build-icns.sh; committed so a build needs no
+# render step. CFBundleIconFile below points Finder/Dock at it.
+cp "$ROOT/icon/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -47,6 +50,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>FleetView</string>
     <key>CFBundleIdentifier</key><string>ai.eigent.fleetview</string>
     <key>CFBundleExecutable</key><string>FleetView</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$BUILD</string>

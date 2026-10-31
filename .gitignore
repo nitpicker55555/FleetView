@@ -42,3 +42,6 @@ examples/*
 # The editor page's build dependencies. Its built output (Editor/dist/) is committed, so neither
 # `swift build` nor package_app.sh needs Node; only Editor/build.sh does.
 Editor/node_modules/
+
+# dev
+.vscode/
