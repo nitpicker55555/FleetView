@@ -47,6 +47,9 @@ enum Snapshot {
             state.dialog = .closeAll
             shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
                   to: "\(dir)/dialog-close-\(suffix).png")
+            state.dialog = .shareSettings
+            shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
+                  to: "\(dir)/dialog-share-\(suffix).png")
             state.dialog = nil
             shoot(FleetTriggersPopover().environmentObject(state), size: NSSize(width: 500, height: 640),
                   appearance: appearance, to: "\(dir)/fleet-triggers-\(suffix).png")

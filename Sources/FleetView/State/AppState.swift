@@ -1822,7 +1822,7 @@ final class AppState: ObservableObject {
     // MARK: - Drag-to-act (self-managed gesture + manual hit-testing)
 
     enum DragZone: String, CaseIterable, Identifiable {
-        case done, duplicate, rename, tree, leaveCluster, remove
+        case done, duplicate, rename, tree, share, leaveCluster, remove
         var id: String { rawValue }
     }
 
@@ -1848,12 +1848,22 @@ final class AppState: ObservableObject {
 
     func availableZones(for id: UUID) -> [DragZone] {
         var zones: [DragZone] = [.done, .duplicate, .rename, .tree]
+        // Only a card with a conversation has anything to share; a plain shell card has none. The
+        // stored path, not `lastSessionFile`: this runs on every frame of a drag, and that one reads
+        // a pointer file and stats the transcript.
+        if terminals.first(where: { $0.id == id })?.transcriptPath != nil { zones.append(.share) }
         if terminals.first(where: { $0.id == id })?.clusterId != nil { zones.append(.leaveCluster) }
         zones.append(.remove)
         return zones
     }
 
     func setZoneFrames(_ frames: [DragZone: CGRect]) { zoneFrames = frames }
+
+    /// The share flow for one card, in a window of its own (see ShareWindows).
+    func openShareWindow(_ id: UUID) {
+        guard let t = terminals.first(where: { $0.id == id }) else { return }
+        ShareWindows.shared.open(terminal: id, name: t.name, port: web.port)
+    }
 
     func dragChanged(_ id: UUID, to point: CGPoint) {
         if draggingTerminalId != id { draggingTerminalId = id }
@@ -2043,6 +2053,7 @@ final class AppState: ObservableObject {
         case .duplicate:    duplicateTerminal(id)
         case .rename:       requestRename(id)
         case .tree:         openSessionTree(id)
+        case .share:        openShareWindow(id)
         case .leaveCluster: removeFromCluster(id)
         case .remove:       removeTerminal(id)
         }

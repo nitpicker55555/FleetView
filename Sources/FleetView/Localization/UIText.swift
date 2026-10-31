@@ -537,6 +537,17 @@ enum UIText {
     case fleetTrigRemove
     case fleetTrigConfirmRemove
     case fleetTrigOutput
+    case menuShareSettings
+    case shareSettingsTitle
+    case shareSettingsBody
+    case shareSettingsEndpoint
+    case shareSettingsToken
+    case shareSettingsProtocol
+    case shareSettingsTest
+    case shareSettingsClear
+    case shareSettingsWorks(String)
+    case dockShare
+    case shareWindowTitle(String)
 }
 
 /// The language the UI is drawn in: Chinese when the first preferred language is any Chinese,

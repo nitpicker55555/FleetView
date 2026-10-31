@@ -4,18 +4,21 @@ import Foundation
 /// again. FleetView's own server is LAN- and tailnet-only by design, so a link anyone can open has
 /// to live somewhere else: a small HTTP service that stores the page and answers with its public URL.
 ///
-/// The service is named in `~/.fleetview/share.json`, never in this source:
+/// The service is named in `~/.fleetview/share.json` — set from FleetView → 分享设置…, never in
+/// this source, since every user points it at a server of their own:
 ///
 ///     {"endpoint": "https://example.com", "token": "…"}
+///
+/// `examples/share-server.mjs` is a complete one: Node, no dependencies, pages kept as files.
 ///
 /// It takes `POST <endpoint>/api/shares` with `{"title","html"}` and a Bearer token, answers
 /// `{"id","url"}`, and `DELETE <endpoint>/api/shares/<id>` withdraws one. The token lives here and
 /// not in the web page because that page is served without auth to the whole LAN; the page asks
 /// FleetView, and FleetView asks the service.
 enum ShareService {
-    struct Config: Decodable {
-        let endpoint: String
-        let token: String
+    struct Config: Codable, Equatable {
+        var endpoint: String
+        var token: String
     }
 
     struct Published { let id: String; let url: String }
@@ -39,6 +42,35 @@ enum ShareService {
 
     static var configFile: URL { FV.supportDir.appendingPathComponent("share.json") }
 
+    /// Write the settings, readable by this user only: the token is what lets anyone holding it
+    /// publish under that address. nil removes the file — sharing then offers only a download.
+    static func save(_ c: Config?) throws {
+        guard let c else {
+            try? FileManager.default.removeItem(at: configFile)
+            return
+        }
+        try FileManager.default.createDirectory(at: FV.supportDir, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(Config(endpoint: c.endpoint.trimmingCharacters(in: .whitespaces),
+                                                   token: c.token.trimmingCharacters(in: .whitespaces)))
+        try data.write(to: configFile, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configFile.path)
+    }
+
+    /// Publish a small page and take it down again — the whole round trip a real share makes, so a
+    /// pass means sharing will work, not merely that something answered at that address.
+    static func test(_ c: Config, completion: @escaping @Sendable (Result<String, Failure>) -> Void) {
+        let page = Data("<!doctype html><meta charset=utf-8><title>FleetView</title><p>FleetView share test</p>".utf8)
+        publish(html: page, title: "FleetView share test", config: c) { r in
+            switch r {
+            case .failure(let f): completion(.failure(f))
+            case .success(let p):
+                withdraw(id: p.id, config: c) { w in
+                    completion(w.map { _ in p.url })
+                }
+            }
+        }
+    }
+
     /// Read on every share, so editing the file takes effect without a relaunch.
     static func config() -> Config? {
         guard let data = try? Data(contentsOf: configFile),
@@ -56,9 +88,9 @@ enum ShareService {
         return URLSession(configuration: cfg)
     }()
 
-    static func publish(html: Data, title: String,
+    static func publish(html: Data, title: String, config override: Config? = nil,
                         completion: @escaping @Sendable (Result<Published, Failure>) -> Void) {
-        guard let c = config(), let url = URL(string: c.endpoint.trimmingTrailingSlashes + "/api/shares")
+        guard let c = override ?? config(), let url = URL(string: c.endpoint.trimmingTrailingSlashes + "/api/shares")
         else { completion(.failure(.notConfigured)); return }
         let payload: [String: Any] = ["title": title, "html": String(decoding: html, as: UTF8.self)]
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
@@ -79,8 +111,9 @@ enum ShareService {
         }
     }
 
-    static func withdraw(id: String, completion: @escaping @Sendable (Result<Void, Failure>) -> Void) {
-        guard let c = config(),
+    static func withdraw(id: String, config override: Config? = nil,
+                         completion: @escaping @Sendable (Result<Void, Failure>) -> Void) {
+        guard let c = override ?? config(),
               let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               let url = URL(string: c.endpoint.trimmingTrailingSlashes + "/api/shares/" + escaped)
         else { completion(.failure(.notConfigured)); return }

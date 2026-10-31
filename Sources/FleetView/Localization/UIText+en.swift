@@ -529,6 +529,17 @@ extension UIText {
         case .fleetTrigRemove: return "Remove"
         case .fleetTrigConfirmRemove: return "Confirm remove"
         case .fleetTrigOutput: return "Last output"
+        case .menuShareSettings: return "Share Settings…"
+        case .shareSettingsTitle: return "Sharing"
+        case .shareSettingsBody: return "Sharing turns a conversation into one HTML page and sends it to the service below, which answers with a public link — from the web chat's share button and from dropping a card on Share. With nothing set here, sharing can only download the page."
+        case .shareSettingsEndpoint: return "Service address"
+        case .shareSettingsToken: return "Token"
+        case .shareSettingsProtocol: return "The service answers two requests: POST /api/shares (Authorization: Bearer <token>, JSON {title, html}, returns {id, url}) and DELETE /api/shares/<id>. examples/share-server.mjs in the repository is a ready one."
+        case .shareSettingsTest: return "Test"
+        case .shareSettingsClear: return "Clear"
+        case .shareSettingsWorks(let a): return "Works: a test page went up at \(a) and was taken down"
+        case .dockShare: return "Share"
+        case .shareWindowTitle(let a): return "Share · \(a)"
         }
     }
 }

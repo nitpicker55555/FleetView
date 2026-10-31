@@ -35,6 +35,7 @@ scripts/*
 !scripts/fleetview-send
 examples/*
 !examples/fleet-panel.html
+!examples/share-server.mjs
 
 # Scratch space for anything an agent needs to write inside the repo.
 .scratch/

@@ -4755,16 +4755,20 @@ async function tick(){
    these out, so scanning one lands exactly where tapping that card here would — the chat, not the
    raw terminal it used to be. Acted on after a /state, because until then the page cannot tell a
    terminal that is attachable from one that is closed or gone. */
-let pendingT=null;
+let pendingT=null, pendingShare=false;
 function readTermHash(){
-  const m=location.hash.match(/^#t=([0-9A-Fa-f-]{36})$/);
-  pendingT=m?m[1].toUpperCase():null;
+  const m=location.hash.match(/^#(t|share)=([0-9A-Fa-f-]{36})$/);
+  pendingT=m?m[2].toUpperCase():null;
+  pendingShare=!!m&&m[1]==='share';
 }
 function openPendingTerm(s){
   if(!pendingT||!s) return;
-  const id=pendingT; pendingT=null;
+  const id=pendingT, share=pendingShare; pendingT=null; pendingShare=false;
   const t=(s.terminals||[]).find(x=>x.id===id);
   if(!t){ toast(tr('toast.gone')); termSyncHash(); return; }
+  /* #share=<id> — the Mac's "drop on 分享" window. A share needs only the transcript, so a closed
+     card is as shareable as a live one; it opens straight onto the share sheet. */
+  if(share){ openTerm(t.id,t.name); openShare(); return; }
   if(t.canOpen) openTerm(t.id,t.name); else { toast(tr('toast.openOnMac')); termSyncHash(); }
 }
 /* The address bar follows the open conversation, so a reload or a shared link comes back to it.

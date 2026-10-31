@@ -13,11 +13,14 @@ enum AppDialog: Identifiable, Equatable {
     case webLink(terminalId: UUID?)
     /// Stop every terminal (and optionally the board), with the quit setting beside it.
     case closeAll
+    /// Where a shared conversation is published (FleetView → 分享设置…).
+    case shareSettings
 
     var id: String {
         switch self {
         case .webLink(let t): return "webLink-\(t?.uuidString ?? "board")"
         case .closeAll:       return "closeAll"
+        case .shareSettings:  return "shareSettings"
         }
     }
 }
@@ -39,6 +42,8 @@ struct DialogHost: View {
                         WebLinkDialog(terminalId: terminalId)
                     case .closeAll:
                         CloseAllDialog()
+                    case .shareSettings:
+                        ShareSettingsDialog()
                     }
                 }
                 .background(Theme.surfaceContainerHigh)
@@ -258,5 +263,108 @@ struct CloseAllDialog: View {
         }
         .padding(24)
         .frame(width: 420)
+    }
+}
+
+/// Where "share" publishes a conversation. FleetView itself serves only the LAN, so a link anyone can
+/// open is minted by a service of the user's own (see ShareService for what it must answer, and
+/// examples/share-server.mjs for one that does). With nothing set, sharing offers a download only.
+struct ShareSettingsDialog: View {
+    @EnvironmentObject var state: AppState
+    @State private var endpoint = ShareService.config()?.endpoint ?? ""
+    @State private var token = ShareService.config()?.token ?? ""
+    @State private var testing = false
+    @State private var verdict: (ok: Bool, text: String)?
+
+    private var draft: ShareService.Config? {
+        let e = endpoint.trimmingCharacters(in: .whitespaces), t = token.trimmingCharacters(in: .whitespaces)
+        guard !e.isEmpty, !t.isEmpty, let u = URL(string: e), u.scheme == "http" || u.scheme == "https",
+              u.host != nil else { return nil }
+        return ShareService.Config(endpoint: e, token: t)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "square.and.arrow.up").font(.system(size: 16)).foregroundColor(Theme.primary)
+                Text(L(.shareSettingsTitle)).font(.fvTitleMedium).foregroundColor(Theme.onSurface)
+                Spacer()
+            }
+            .padding(.bottom, 12)
+            Text(L(.shareSettingsBody)).font(.fvBodySmall).foregroundColor(Theme.onSurfaceVariant)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L(.shareSettingsEndpoint)).font(.fvLabel).foregroundColor(Theme.onSurface)
+                TextField("https://example.com", text: $endpoint).textFieldStyle(.roundedBorder)
+                Text(L(.shareSettingsToken)).font(.fvLabel).foregroundColor(Theme.onSurface).padding(.top, 6)
+                SecureField("", text: $token).textFieldStyle(.roundedBorder)
+            }
+            .padding(.top, 14)
+            Text(L(.shareSettingsProtocol)).font(.fvLabelSmall).foregroundColor(Theme.onSurfaceVariant)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                .padding(.top, 10)
+            if let verdict {
+                Label(verdict.text, systemImage: verdict.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.fvBodySmall).foregroundColor(verdict.ok ? Theme.primary : Theme.error)
+                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    .padding(.top, 10)
+            }
+            HStack(spacing: 8) {
+                Button { test() } label: {
+                    HStack(spacing: 6) {
+                        if testing { ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12) }
+                        Text(L(.shareSettingsTest)).font(.fvLabel)
+                    }
+                    .foregroundColor(Theme.primary).padding(.horizontal, 12).frame(height: 40).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(draft == nil || testing)
+                if ShareService.config() != nil {
+                    Button {
+                        try? ShareService.save(nil)
+                        endpoint = ""; token = ""; verdict = nil
+                    } label: {
+                        Text(L(.shareSettingsClear)).font(.fvLabel).foregroundColor(Theme.error)
+                            .padding(.horizontal, 12).frame(height: 40).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+                Button { state.dialog = nil } label: {
+                    Text(L(.cancel)).font(.fvLabel).foregroundColor(Theme.primary)
+                        .padding(.horizontal, 16).frame(height: 40).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Button {
+                    do {
+                        try ShareService.save(draft)
+                        state.dialog = nil
+                    } catch {
+                        verdict = (false, error.localizedDescription)
+                    }
+                } label: {
+                    Text(L(.save)).font(.fvLabel).foregroundColor(Theme.onPrimary)
+                        .padding(.horizontal, 20).frame(height: 40)
+                        .background(Theme.primary).clipShape(Capsule())
+                }
+                .buttonStyle(.plain).disabled(draft == nil).opacity(draft == nil ? 0.5 : 1)
+            }
+            .padding(.top, 16)
+        }
+        .padding(24)
+        .frame(width: 480)
+    }
+
+    private func test() {
+        guard let c = draft else { return }
+        testing = true; verdict = nil
+        ShareService.test(c) { r in
+            Task { @MainActor in
+                testing = false
+                switch r {
+                case .success(let url): verdict = (true, L(.shareSettingsWorks(url)))
+                case .failure(let f): verdict = (false, f.message)
+                }
+            }
+        }
     }
 }
