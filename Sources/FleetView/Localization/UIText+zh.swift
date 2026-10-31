@@ -529,6 +529,17 @@ extension UIText {
         case .fleetTrigRemove: return "移除"
         case .fleetTrigConfirmRemove: return "确认移除"
         case .fleetTrigOutput: return "最近一次输出"
+        case .menuShareSettings: return "分享设置…"
+        case .shareSettingsTitle: return "分享设置"
+        case .shareSettingsBody: return "分享会把一段会话做成一页 HTML，发到下面这个分享服务，由它给出公网链接。web 端 chat 的分享按钮和把卡片拖到「分享」都用它。不设置的话，分享只能下载 HTML。"
+        case .shareSettingsEndpoint: return "服务地址"
+        case .shareSettingsToken: return "令牌"
+        case .shareSettingsProtocol: return "服务要实现两个接口：POST /api/shares（Authorization: Bearer <令牌>，JSON {title, html}，返回 {id, url}）和 DELETE /api/shares/<id>。仓库里的 examples/share-server.mjs 就是一个现成的实现。"
+        case .shareSettingsTest: return "测试"
+        case .shareSettingsClear: return "清除"
+        case .shareSettingsWorks(let a): return "能用：测试页已发到 \(a)，并已撤回"
+        case .dockShare: return "分享"
+        case .shareWindowTitle(let a): return "分享 · \(a)"
         }
     }
 }

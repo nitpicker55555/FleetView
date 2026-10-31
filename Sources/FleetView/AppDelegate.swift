@@ -65,6 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let update = NSMenuItem(title: L(.menuCheckUpdates), action: #selector(checkForUpdates), keyEquivalent: "")
         update.target = self
         appMenu.addItem(update)
+        let share = NSMenuItem(title: L(.menuShareSettings), action: #selector(openShareSettings), keyEquivalent: "")
+        share.target = self
+        appMenu.addItem(share)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L(.menuHide), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
@@ -150,6 +153,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func clearBoard() {
         BoardActions.confirmClear(state, reason: "menu")
+    }
+
+    @objc private func openShareSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        state.dialog = .shareSettings
     }
 
     @objc private func revealSupport() {

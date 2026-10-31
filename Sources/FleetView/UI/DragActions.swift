@@ -68,6 +68,7 @@ struct ActionZoneView: View {
         case .duplicate:    return L(.dockDuplicate)
         case .rename:       return L(.dockRename)
         case .tree:         return L(.dockTree)
+        case .share:        return L(.dockShare)
         case .leaveCluster: return L(.dockLeaveCluster)
         case .remove:       return L(.dockRemove)
         }
@@ -79,6 +80,7 @@ struct ActionZoneView: View {
         case .duplicate:    return "plus.square.on.square"
         case .rename:       return "pencil"
         case .tree:         return "arrow.triangle.branch"
+        case .share:        return "square.and.arrow.up"
         case .leaveCluster: return "rectangle.portrait.and.arrow.right"
         case .remove:       return "trash"
         }
