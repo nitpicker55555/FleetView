@@ -388,6 +388,15 @@ final class WebAudit: @unchecked Sendable {
                             .merging(facts) { own, _ in own },
                          categories: ["web", "file"])
 
+        case "/share":
+            // A conversation made public. The page itself is not kept — its hash and size are, with
+            // the link it went to, so what is out there can be traced back to who sent it and when.
+            if let id = query["del"] {
+                return event("fleetview.web.share_withdrawn", "withdrew share \(id)", facts)
+            }
+            let url = facts["share.url"]?.displayString ?? "nowhere — it failed"
+            return event("fleetview.web.shared", "shared \(query["title"] ?? "a conversation") → \(url)", facts)
+
         case "/pm":
             // Another Mac running `project-manager -u <this one>`: what it asked, and what it got.
             var words: [String] = []

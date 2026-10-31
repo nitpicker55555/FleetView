@@ -70,7 +70,9 @@ struct ConversationSpec: Sendable {
     var tmuxPath: String?
     var tmuxSession: String
 
-    func respond(limit: Int) -> Data {
+    /// - Parameter whole: the entire transcript rather than its tail — what a "share the whole
+    ///   conversation" needs. Not cached and not on the 3 s poll: it runs once per share.
+    func respond(limit: Int, whole: Bool = false) -> Data {
         guard let path else {
             // The pane's own scrollback is the readable content then, and it scrolls natively on
             // a phone.
@@ -80,7 +82,9 @@ struct ConversationSpec: Sendable {
             return (try? JSONEncoder().encode(ConvResult(messages: [], info: info)))
                 ?? Data(#"{"messages":[],"info":{"shell":true}}"#.utf8)
         }
-        var result = Conversation.parseCached(path: path, cwd: cwd, limit: limit, ownPrompt: ownPrompt)
+        var result = whole
+            ? Conversation.parse(path: path, cwd: cwd, limit: .max, ownPrompt: ownPrompt, whole: true)
+            : Conversation.parseCached(path: path, cwd: cwd, limit: limit, ownPrompt: ownPrompt)
         result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
                                                               used: result.info.contextTokens)
         result.info.status = status
@@ -347,9 +351,9 @@ enum Conversation {
     }
 
     static func parse(path: String, cwd: String = "", limit: Int = 120,
-                      ownPrompt: String = "") -> ConvResult {
+                      ownPrompt: String = "", whole: Bool = false) -> ConvResult {
         var info = ConvInfo()
-        guard let text = tail(path) else { return ConvResult(messages: [], info: info) }
+        guard let text = tail(path, whole: whole) else { return ConvResult(messages: [], info: info) }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
         var msgs: [ConvMsg] = []
         var toolIndex: [String: Int] = [:]      // tool_use / call id → index in msgs
@@ -748,11 +752,11 @@ enum Conversation {
     /// for one bad byte anywhere, so the conversation came back empty and the web chat said there
     /// was none, for a 15 MB transcript that was perfectly readable. It also moved as the file grew,
     /// which is what made it look intermittent.
-    private static func tail(_ path: String) -> String? {
+    private static func tail(_ path: String, whole: Bool = false) -> String? {
         guard let h = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
         defer { try? h.close() }
         guard let size = try? h.seekToEnd() else { return nil }
-        let start = size > tailBytes ? size - tailBytes : 0
+        let start = size > tailBytes && !whole ? size - tailBytes : 0
         try? h.seek(toOffset: start)
         guard var data = try? h.readToEnd() else { return nil }
         if start > 0, let nl = data.firstIndex(of: 0x0A) {
@@ -769,7 +773,12 @@ enum Conversation {
             return
         }
         var m = m
-        m.text = clip(m.text, 6000)
+        // The agent's reply is what the chat is for, so it is never clipped: a 7,100-character
+        // final answer showed its first 6,000 and an ellipsis, and the rest was nowhere on the
+        // page. The poll's payload stays bounded anyway — it reads only the last `tailBytes`.
+        // Prompts and thinking keep the cap; there it is mostly task notifications carrying a
+        // subagent's whole report.
+        if !(m.role == "assistant" && m.kind == "text") { m.text = clip(m.text, 6000) }
         msgs.append(m)
     }
 

@@ -959,6 +959,59 @@ enum WebDashboardPage {
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);background:var(--codeBg);
     border:1px solid var(--outlineVariant);border-radius:12px;outline:none;tab-size:4}
   textarea.fbedit:focus{border-color:var(--accent)}
+  /* Sharing a conversation: the trigger list's sheet, with a choice of what goes out. */
+  #share{display:none;position:fixed;inset:0;z-index:60}
+  #share.on{display:block}
+  #share .tscrim{position:absolute;inset:0;background:var(--scrim)}
+  #share .tsheet{position:absolute;top:0;right:0;bottom:0;width:min(440px,100vw);display:flex;flex-direction:column;
+    background:var(--panel);box-shadow:0 0 24px rgba(0,0,0,.35)}
+  @media (max-width:640px){ #share .tsheet{top:auto;left:0;width:auto;max-height:86dvh;border-radius:16px 16px 0 0} }
+  #share .thead{display:flex;align-items:center;gap:10px;padding:12px 8px 10px 20px;border-bottom:1px solid var(--outlineVariant)}
+  #share .thead b{font-size:16px;line-height:24px;font-weight:500}
+  #share .thead .tname{flex:1;min-width:0;font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #share .thead button{flex:none;width:40px;height:40px;border:0;background:none;color:var(--sub);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;border-radius:999px}
+  #sharebody{overflow:auto;padding:12px 16px calc(24px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch}
+  .sopt{display:flex;gap:12px;align-items:flex-start;background:var(--card);border:1px solid transparent;border-radius:12px;
+    padding:12px;margin-bottom:8px;cursor:pointer}
+  .sopt.on{border-color:var(--accentEdgeOn);background:var(--accentSoft)}
+  .sopt input{flex:none;width:18px;height:18px;margin:1px 0 0;accent-color:var(--accent)}
+  .sopt b{display:block;font-size:14px;line-height:20px;font-weight:500}
+  .sopt span{display:block;font-size:12px;line-height:18px;color:var(--sub);margin-top:2px}
+  .sopt.off{opacity:.45;pointer-events:none}
+  .snote{font-size:12px;line-height:18px;color:var(--sub);margin:12px 2px 0}
+  .sbtns{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .sbtn{height:40px;padding:0 18px;border:0;border-radius:999px;background:var(--card);color:var(--text);
+    font-size:14px;font-weight:500;cursor:pointer}
+  .sbtn.pri{background:var(--accent);color:var(--onAccent)}
+  .sbtn:disabled{opacity:.45;cursor:default}
+  .slink{margin-top:4px;padding:12px;border-radius:8px;background:var(--bg);font-size:13px;line-height:19px;word-break:break-all;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;-webkit-user-select:all;user-select:all}
+  .sbusy{display:flex;align-items:center;gap:10px;padding:18px 2px;font-size:14px;color:var(--sub)}
+  .serr{padding:12px;border-radius:12px;background:var(--errorContainer);color:var(--onErrorContainer);
+    font-size:13px;line-height:19px;word-break:break-word}
+  .sok{font-size:14px;line-height:20px;font-weight:500;margin:4px 2px 8px}
+  /* Picking what to share: a ring beside every message, filled once it is in. Thinking stays out of
+     reach — it is never shared. Links are inert while picking, so a tap only ever picks. */
+  #chat.picking .msg{position:relative;padding-left:36px;cursor:pointer;-webkit-user-select:none;user-select:none}
+  #chat.picking .msg.tool{padding-left:44px}
+  #chat.picking .msg::before{content:"";position:absolute;left:4px;top:0;width:22px;height:22px;border-radius:999px;
+    border:2px solid var(--outline);box-sizing:border-box}
+  #chat.picking .msg.user::before{top:11px}
+  #chat.picking .msg.tool::before{left:12px;top:7px}
+  #chat.picking .msg.picked::before{background:var(--accent);border-color:var(--accent)}
+  #chat.picking .msg.picked::after{content:"";position:absolute;left:12px;top:4px;width:5px;height:10px;
+    border:solid var(--onAccent);border-width:0 2px 2px 0;transform:rotate(45deg)}
+  #chat.picking .msg.user.picked::after{top:15px}
+  #chat.picking .msg.tool.picked::after{left:20px;top:11px}
+  #chat.picking .msg.think{opacity:.3;pointer-events:none}
+  #chat.picking .msg .cp{display:none}
+  #chat.picking a{pointer-events:none}
+  #pickbar{display:none;flex:none;align-items:center;gap:8px;background:var(--panel);border-top:1px solid var(--outlineVariant);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
+  #pickbar .pn{flex:1;min-width:0;font-size:14px;line-height:20px;font-weight:500}
+  #term.picking #pickbar{display:flex}
+  #term.picking #inputbar,#term.picking #jump,#term.picking #perm{display:none}
   /* The trigger list: a sheet from the right on a wide screen, from the bottom on a phone. */
   #trig{display:none;position:fixed;inset:0;z-index:60}
   #trig.on{display:block}
@@ -1041,6 +1094,7 @@ enum WebDashboardPage {
         <button id="tabChat" class="on" onclick="setView('chat')" data-i18n="tab.chat"></button>
         <button id="tabTerm" onclick="setView('term')" data-i18n="tab.term"></button>
       </div>
+      <button class="ib" id="sharebtn" onclick="openShare()" data-i18n-title="share.button" data-i18n-aria="share.button"><i data-ic="share"></i></button>
       <button class="ib" onclick="popTerm()" data-i18n-title="term.popOut" data-i18n-aria="term.popOut"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>
     </div>
   </div>
@@ -1050,6 +1104,10 @@ enum WebDashboardPage {
   <iframe id="termframe" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
   <div id="termerr"></div>
   <div id="perm"></div>
+  <div id="pickbar"><span class="pn" id="pickn"></span>
+    <button class="sbtn" onclick="endPick()" data-i18n="share.cancel"></button>
+    <button class="sbtn pri" id="pickgo" onclick="sharePicked()" data-i18n="share.pickGo"></button>
+  </div>
   <div id="inputbar">
     <div id="grip"><span class="gbar"></span><span class="gtools">
       <button class="fsz" onclick="taFont(-1)" data-i18n-title="composer.smaller">A−</button>
@@ -1118,6 +1176,15 @@ enum WebDashboardPage {
     <div class="thead"><b data-i18n="trig.title"></b><span class="tname" id="trigname"></span>
       <button onclick="closeTrig()" data-i18n-title="common.back" data-i18n-aria="common.back"><i data-ic="x"></i></button></div>
     <div id="triglist"></div>
+  </div>
+</div>
+
+<div id="share">
+  <div class="tscrim" onclick="closeShare()"></div>
+  <div class="tsheet" role="dialog" aria-modal="true">
+    <div class="thead"><b data-i18n="share.title"></b><span class="tname" id="sharename"></span>
+      <button onclick="closeShare()" data-i18n-title="common.back" data-i18n-aria="common.back"><i data-ic="x"></i></button></div>
+    <div id="sharebody"></div>
   </div>
 </div>
 
@@ -1252,6 +1319,18 @@ const I18N={
     'net.reconnecting':'正在重连…','net.reconnected':'已重新连接','net.back':'已重新连上 Mac',
     'toast.attachedTo':'文件已附加到「{name}」的输入框',
     'trig.title':'触发器','trig.chip':'{n} 个触发器 · 点击查看',
+    'share.button':'分享','share.title':'分享会话',
+    'share.all':'完整会话','share.allDetail':'从第一句到最后一句，所有的输入和回复',
+    'share.pick':'挑选消息','share.pickDetail':'在对话里勾选要分享的输入和输出',
+    'share.tools':'包含工具调用','share.toolsDetail':'每个一行：工具名和摘要，不含输入输出',
+    'share.note':'生成的是公网链接，拿到链接的人都能打开。思考过程和子代理内部的对话不会放进去。',
+    'share.make':'生成链接','share.startPick':'开始挑选','share.download':'下载 HTML',
+    'share.working':'正在生成…','share.done':'链接已生成','share.copy':'复制链接','share.open':'打开',
+    'share.withdraw':'撤回','share.withdrawConfirm':'撤回后这个链接就打不开了。确定吗？','share.withdrawn':'已撤回，链接已失效',
+    'share.failed':'没能生成链接','share.retry':'重试','share.loadFailed':'读不到会话：{err}',
+    'share.unconfigured':'这台 Mac 还没配置分享服务：在 ~/.fleetview/share.json 写上 {"endpoint","token"}。可以先下载 HTML。',
+    'share.picked':'已选 {n} 条','share.pickGo':'分享所选','share.cancel':'取消','share.empty':'没有可分享的消息',
+    'share.docAll':'完整会话','share.docPart':'节选','share.docCount':'{n} 条消息','share.docFooter':'由 FleetView 分享',
     'trig.secCron':'定时任务','trig.secBg':'后台任务 · 结束或有动静时唤醒 agent','trig.secLaunchd':'launchd 定时',
     'trig.every':'每 {n} 分钟','trig.hourly':'每小时 {m}','trig.daily':'每天 {t}','trig.weekdays':'工作日 {t}',
     'trig.once':'{t} 一次','trig.interval':'每 {t}',
@@ -1361,6 +1440,18 @@ const I18N={
     'net.reconnecting':'Reconnecting…','net.reconnected':'Reconnected','net.back':'Back in touch with the Mac',
     'toast.attachedTo':'Attached to {name}’s message box',
     'trig.title':'Triggers','trig.chip':{one:'1 trigger · tap to see',other:'{n} triggers · tap to see'},
+    'share.button':'Share','share.title':'Share conversation',
+    'share.all':'Whole conversation','share.allDetail':'Every prompt and reply, first to last',
+    'share.pick':'Pick messages','share.pickDetail':'Tick the prompts and replies to include',
+    'share.tools':'Include tool calls','share.toolsDetail':'One line each: the tool and its summary, no input or output',
+    'share.note':'The link is public: anyone who has it can open it. Thinking and subagents’ own conversations are left out.',
+    'share.make':'Create link','share.startPick':'Start picking','share.download':'Download HTML',
+    'share.working':'Creating…','share.done':'Link created','share.copy':'Copy link','share.open':'Open',
+    'share.withdraw':'Withdraw','share.withdrawConfirm':'Once withdrawn, the link stops working. Withdraw it?','share.withdrawn':'Withdrawn — the link no longer works',
+    'share.failed':'Could not create the link','share.retry':'Retry','share.loadFailed':'Could not read the conversation: {err}',
+    'share.unconfigured':'No share service is set up on this Mac: put {"endpoint","token"} in ~/.fleetview/share.json. You can download the HTML meanwhile.',
+    'share.picked':{one:'1 picked',other:'{n} picked'},'share.pickGo':'Share these','share.cancel':'Cancel','share.empty':'Nothing to share',
+    'share.docAll':'Whole conversation','share.docPart':'Excerpt','share.docCount':{one:'1 message',other:'{n} messages'},'share.docFooter':'Shared from FleetView',
     'trig.secCron':'Scheduled','trig.secBg':'Background work · wakes the agent when it reports','trig.secLaunchd':'launchd jobs',
     'trig.every':'every {n} min','trig.hourly':'hourly at {m}','trig.daily':'daily at {t}','trig.weekdays':'weekdays at {t}',
     'trig.once':'once, {t}','trig.interval':'every {t}',
@@ -1475,6 +1566,7 @@ const IC={
   search:'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
   globe:'<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20"/>',
   bot:'<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>',
+  share:'<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="m16 6-4-4-4 4"/><path d="M12 2v13"/>',
   dot:'<circle cx="12" cy="12" r="2.5" fill="currentColor"/>'
 };
 function ic(name,cls){
@@ -1734,6 +1826,7 @@ function unlockBoard(id){
 }
 function openTerm(id,name){
   if(curId&&curId!==id){ savePos(); saveDraft(); }          // leaving one card for another
+  endPick(); closeShare();
   curId=id;curUrl='';termLoaded=false;chatFails=0;termGone=false;
   // Shown before anything is drawn into it: a pane that is not laid out cannot be scrolled.
   document.getElementById('term').classList.add('show');
@@ -1831,6 +1924,7 @@ function closeTerm(){
   syncViewport();                          // drop the keyboard-era height/offset
   document.getElementById('termframe').src='about:blank';
   document.getElementById('termerr').classList.remove('on');
+  endPick(); closeShare();
   curId='';termLoaded=false;stopChatPoll();pendingPos=null;settle=null;
   beaconSelect('','');
   termSyncHash();
@@ -1848,7 +1942,8 @@ function setView(v){
   document.getElementById('keys').classList.toggle('chatview',v==='chat');
   placeJump();                   // the key row just came or went, so the bar is a different height
   updateStickyPrompt();          // it belongs to the chat pane — never leave it over the terminal
-  if(v==='term'){showTermHead();stopChatPoll();ensureTerm();}   // nothing of ours scrolls there to bring it back
+  syncShareBtn();
+  if(v==='term'){endPick();showTermHead();stopChatPoll();ensureTerm();}   // nothing of ours scrolls there to bring it back
   else{loadChat();startChatPoll();}
 }
 /* Is ttyd actually answering on that port, from THIS device? An iframe cannot tell us: a failed
@@ -2119,6 +2214,7 @@ async function renderShell(){
 function renderInfo(i){
   const el=document.getElementById('sinfo');
   document.getElementById('tabChat').textContent=tr((i&&i.shell)?'tab.output':'tab.chat');   // shell has no chat
+  syncShareBtn();                                                                   // nor anything to share
   if(!i||(!i.model&&!i.contextTokens&&!i.status)){el.innerHTML='';return;}
   let h='';
   // Chat had no sign of whether the agent was actually working — the transcript just stopped growing.
@@ -2354,6 +2450,11 @@ function statHTML(d){
 
 // Tool/thinking cards expand on tap — one delegated listener, so re-rendering can't lose handlers.
 document.getElementById('chat').addEventListener('click',e=>{
+  if(picking){                                            // picking what to share: a tap picks
+    const n=e.target.closest?e.target.closest('.msg'):null;
+    if(n&&!n.classList.contains('think')){ e.preventDefault(); togglePick(n); }
+    return;
+  }
   if(e.target.dataset&&e.target.dataset.copy){          // "copy" on a message
     const msg=e.target.closest('.msg'), t=msg?msg.querySelector('.mtext'):null;
     if(t)copyText(t.innerText||t.textContent||'');
@@ -2440,6 +2541,7 @@ function renderChat(msgs,note){
   const st=curInfo||{};
   const sig=msgs.length+':'+(last.text||'').length+':'+(last.output||'').length+
             ':'+(st.status||'')+':'+(st.pendingText||'');
+  chatMsgs=msgs;
   if(el.dataset.sig===sig)return;      // unchanged → don't rebuild at all
   const nearBottom=stickBottom||el.scrollHeight-el.scrollTop-el.clientHeight<120;
   // Read before the rebuild: the message you are on, to hold it still while the window slides.
@@ -2454,6 +2556,7 @@ function renderChat(msgs,note){
   if(open.size) Array.prototype.forEach.call(el.querySelectorAll('.msg'),n=>{
     if(n.dataset.k&&open.has(n.dataset.k)) n.classList.add('open');
   });
+  tagPicks(el,msgs);
   reconcileSent(el);
   if(flyNext){                       // only when the conversation is first put on screen
     flyNext=false;
@@ -2467,6 +2570,255 @@ function renderChat(msgs,note){
   else if(reading) goTo(el,reading);
   stickBottom=false;
   updateStickyPrompt();
+}
+
+/* ---------- sharing a conversation ----------
+   The page that goes out is built here, by the same md() the chat renders with, so a shared
+   conversation reads exactly like the one on screen. FleetView only carries it: POST /share hands
+   it to the service named in ~/.fleetview/share.json and returns the public link. The page is
+   static — no script at all — and the service serves it under a CSP that forbids any. */
+let chatMsgs=[], picking=false, picked=new Set(), pickMsgs={}, pickOrder={}, pickSeq=0;
+let shareOpt={mode:'all',tools:false}, lastShare=null;
+/* Messages are re-rendered from scratch every few seconds, so a pick is remembered by content —
+   msgKey, plus which repeat of that key it is — and put back on the new nodes (see renderChat). */
+function tagPicks(el,msgs){
+  const nodes=el.querySelectorAll('.msg'), seen={};
+  for(let i=0;i<msgs.length&&i<nodes.length;i++){
+    const k=msgKey(msgs[i]); seen[k]=(seen[k]||0)+1;
+    const p=k+'.'+seen[k];
+    nodes[i].dataset.p=p;
+    if(!picking) continue;
+    pickMsgs[p]=msgs[i];
+    // First seen = conversation order: each list is in order, and new messages only ever join at the end.
+    if(!(p in pickOrder)) pickOrder[p]=pickSeq++;
+    if(picked.has(p)) nodes[i].classList.add('picked');
+  }
+}
+function startPick(){
+  picking=true; picked=new Set(); pickMsgs={}; pickOrder={}; pickSeq=0;
+  const el=document.getElementById('chat');
+  el.classList.add('picking'); document.getElementById('term').classList.add('picking');
+  tagPicks(el,chatMsgs); syncPick();
+}
+function endPick(){
+  if(!picking) return;
+  picking=false; picked=new Set();
+  const el=document.getElementById('chat');
+  el.classList.remove('picking'); document.getElementById('term').classList.remove('picking');
+  Array.prototype.forEach.call(el.querySelectorAll('.msg.picked'),n=>n.classList.remove('picked'));
+}
+function togglePick(n){
+  const p=n.dataset.p; if(!p) return;
+  if(picked.has(p)) picked.delete(p); else picked.add(p);
+  n.classList.toggle('picked',picked.has(p)); syncPick();
+}
+function syncPick(){
+  document.getElementById('pickn').textContent=tr('share.picked',{n:picked.size});
+  document.getElementById('pickgo').disabled=!picked.size;
+}
+/* Only where there is a conversation on screen: a shell has none, and the Terminal tab is showing
+   the pane — and on a phone the bar has no room to spare for a button that does nothing there. */
+function syncShareBtn(){
+  document.getElementById('sharebtn').style.display=(curView==='term'||(curInfo&&curInfo.shell))?'none':'';
+}
+function shareCard(){
+  const t=((state&&state.terminals)||[]).find(x=>x.id===curId)||{};
+  const p=((state&&state.projects)||[]).find(x=>x.id===t.projectId)||{};
+  return {name:t.name||document.getElementById('termname').textContent||'FleetView',
+          project:p.name||'', agent:t.agent||'', model:(curInfo&&curInfo.model)||''};
+}
+function openShare(){
+  if(!curId) return;
+  lastShare=null;
+  document.getElementById('sharename').textContent=shareCard().name;
+  renderShareOpts();
+  document.getElementById('share').classList.add('on');
+}
+function closeShare(){ document.getElementById('share').classList.remove('on'); }
+function shareBody(h){ const b=document.getElementById('sharebody'); b.innerHTML=h; paintIcons(b); }
+function renderShareOpts(){
+  const o=shareOpt, opt=(on,click,input,title,detail,off)=>
+    '<label class="sopt'+(on?' on':'')+(off?' off':'')+'" onclick="'+click+'">'+input+
+    '<div><b>'+esc(tr(title))+'</b><span>'+esc(tr(detail))+'</span></div></label>';
+  shareBody(
+    opt(o.mode==='all',"shareSet(event,'mode','all')",'<input type="radio" name="smode"'+(o.mode==='all'?' checked':'')+'>','share.all','share.allDetail')+
+    opt(o.mode==='pick',"shareSet(event,'mode','pick')",'<input type="radio" name="smode"'+(o.mode==='pick'?' checked':'')+'>','share.pick','share.pickDetail')+
+    // When picking, what you tick is what goes — a tool call included — so this only steers "whole".
+    opt(o.tools,"shareSet(event,'tools',"+(!o.tools)+")",'<input type="checkbox"'+(o.tools?' checked':'')+'>','share.tools','share.toolsDetail',o.mode==='pick')+
+    '<div class="snote">'+esc(tr('share.note'))+'</div>'+
+    '<div class="sbtns">'+(o.mode==='pick'
+      ? '<button class="sbtn pri" onclick="closeShare();startPick()">'+esc(tr('share.startPick'))+'</button>'
+      : '<button class="sbtn pri" onclick="shareWhole(\'link\')">'+esc(tr('share.make'))+'</button>'+
+        '<button class="sbtn" onclick="shareWhole(\'file\')">'+esc(tr('share.download'))+'</button>')+'</div>');
+}
+// preventDefault: a label also clicks the input inside it, which would run this a second time.
+function shareSet(e,k,v){ e.preventDefault(); shareOpt[k]=v; renderShareOpts(); }
+function shareBusy(){ shareBody('<div class="sbusy"><span class="spin"></span>'+esc(tr('share.working'))+'</div>'); }
+function shareFail(msg,canDownload){
+  shareBody('<div class="sok">'+esc(tr('share.failed'))+'</div><div class="serr">'+esc(msg)+'</div>'+
+    '<div class="sbtns">'+(canDownload?'<button class="sbtn pri" onclick="shareDownload()">'+esc(tr('share.download'))+'</button>':'')+
+    '<button class="sbtn" onclick="renderShareOpts()">'+esc(tr('share.retry'))+'</button></div>');
+}
+/* What a whole conversation leaves out: thinking, a subagent's own exchange (its result reaches the
+   main thread anyway), and the user-role records the CLI writes itself — a background task
+   reporting back, a reminder, a local command's echo. They are machinery, not something anyone said. */
+function shareFilter(msgs,whole){
+  return msgs.filter(m=>{
+    if(m.kind==='thinking') return false;
+    if(!whole) return true;
+    if(m.sub) return false;
+    if(m.kind==='tool') return shareOpt.tools;
+    if(m.role==='user'&&/^\s*<(task-notification|system-reminder|local-command|command-)/.test(m.text||'')) return false;
+    return !!String(m.text||'').trim();
+  });
+}
+async function shareWhole(kind){
+  const id=curId; shareBusy();
+  let j;
+  try{
+    const r=await fetch('/conversation?id='+encodeURIComponent(id)+'&full=1',{cache:'no-store',timeout:90000});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    j=await r.json();
+  }catch(e){ if(id===curId) shareFail(tr('share.loadFailed',{err:e.message||e}),false); return; }
+  if(id!==curId) return;
+  await shareOut(shareFilter(j.messages||[],true),true,kind);
+}
+async function sharePicked(){
+  const list=[...picked].sort((a,b)=>pickOrder[a]-pickOrder[b]).map(p=>pickMsgs[p]).filter(Boolean);
+  if(!list.length) return;
+  document.getElementById('sharename').textContent=shareCard().name;
+  document.getElementById('share').classList.add('on');
+  shareBusy();
+  await shareOut(shareFilter(list,false),false,'link');
+  endPick();
+}
+async function shareOut(msgs,whole,kind){
+  if(!msgs.length){ shareFail(tr('share.empty'),false); return; }
+  const card=shareCard(), doc=shareDoc(msgs,card,whole);
+  lastShare={doc:doc,name:card.name,id:'',url:''};
+  if(kind==='file'){ shareDownload(); renderShareOpts(); return; }
+  try{
+    const r=await fetch('/share?title='+encodeURIComponent(card.name),
+      {method:'POST',body:doc,headers:{'Content-Type':'text/html; charset=utf-8'},timeout:180000});
+    const j=await r.json().catch(()=>({error:'HTTP '+r.status}));
+    if(!r.ok||!j.url){ shareFail(j.unconfigured?tr('share.unconfigured'):(j.error||('HTTP '+r.status)),true); return; }
+    lastShare.id=j.id; lastShare.url=j.url;
+    shareBody('<div class="sok">'+esc(tr('share.done'))+'</div><div class="slink">'+esc(j.url)+'</div>'+
+      '<div class="sbtns"><button class="sbtn pri" onclick="copyText(lastShare.url)">'+esc(tr('share.copy'))+'</button>'+
+      '<button class="sbtn" onclick="window.open(lastShare.url,\'_blank\',\'noopener\')">'+esc(tr('share.open'))+'</button>'+
+      '<button class="sbtn" onclick="shareDownload()">'+esc(tr('share.download'))+'</button>'+
+      '<button class="sbtn" onclick="shareWithdraw()">'+esc(tr('share.withdraw'))+'</button></div>');
+  }catch(e){ shareFail(e.message||String(e),true); }
+}
+async function shareWithdraw(){
+  if(!lastShare||!lastShare.id||!confirm(tr('share.withdrawConfirm'))) return;
+  try{
+    const r=await fetch('/share?del='+encodeURIComponent(lastShare.id),{method:'POST',timeout:30000});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ toast(j.error||('HTTP '+r.status),3000); return; }
+    toast(tr('share.withdrawn'),2400); lastShare.id=''; closeShare();
+  }catch(e){ toast(e.message||String(e),3000); }
+}
+function shareDownload(){
+  if(!lastShare) return;
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([lastShare.doc],{type:'text/html;charset=utf-8'}));
+  a.download=(lastShare.name||'conversation').replace(/[\\/:*?"<>|\s]+/g,'_')+'.html';
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },1500);
+}
+/* Self-contained: its own palette (the dashboard's, light and dark by the reader's setting, since
+   there is no script to pick one), its own copy of the logo, nothing fetched from anywhere. */
+const SHARE_CSS=`
+:root{--bg:#fdf7ff;--card:#ece6ee;--stroke:#cac4cf;--text:#1d1b20;--sub:#49454e;--accent:#65558f;--onAccent:#fff;
+  --quoteBg:#e9ddff;--quoteFg:#4d3d75;--quoteCode:rgba(77,61,117,.10);--codeBg:#f2ecf4;--codeInline:rgba(29,27,32,.07);color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#141218;--card:#2b292f;--stroke:#49454e;--text:#e6e0e9;--sub:#cac4cf;--accent:#cfbdfe;
+  --onAccent:#36275d;--quoteBg:#4d3d75;--quoteFg:#e9ddff;--quoteCode:rgba(255,255,255,.10);--codeBg:#0f0d13;--codeInline:rgba(255,255,255,.08);color-scheme:dark}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:0 16px}
+.top{border-bottom:1px solid var(--stroke)}
+.top .wrap{display:flex;align-items:center;gap:10px;height:56px}
+.logo{width:28px;height:28px;border-radius:8px;background:var(--accent);color:var(--onAccent);display:grid;place-items:center;flex:none}
+.logo svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2.25;stroke-linecap:round;stroke-linejoin:round}
+.bname{font-size:15px;font-weight:600}
+.hero{padding:28px 0 4px}
+.kicker{font-size:12px;line-height:18px;color:var(--sub)}
+h1.name{margin:4px 0 6px;font-size:26px;line-height:1.3;font-weight:600;word-break:break-word}
+.meta{font-size:13px;line-height:20px;color:var(--sub)}
+.conv{padding:8px 0 40px}
+.day{margin:28px 0 12px;text-align:center;font-size:12px;color:var(--sub)}
+.msg{margin:0 0 18px}
+.msg.user{margin-top:26px}
+.when{display:block;margin:0 4px 4px;text-align:right;font-size:11px;line-height:16px;color:var(--sub)}
+.tag{margin-bottom:2px;font-size:11px;font-weight:600;color:var(--accent)}
+.msg.user .md{padding:12px 16px;border-radius:16px;background:var(--quoteBg);color:var(--quoteFg)}
+.msg.user .md code{background:var(--quoteCode)}
+.msg.user .md a{color:inherit}
+.tool{display:flex;align-items:baseline;gap:8px;min-width:0;margin:0 0 8px;padding:7px 12px;border-radius:10px;
+  background:var(--card);font-size:12px;line-height:18px}
+.tool .tn{flex:none;font-weight:600}
+.tool .ts{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--sub);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.md{word-break:break-word}
+.md p{margin:0 0 10px}.md p:last-child{margin-bottom:0}
+.md h1,.md h2,.md h3{margin:18px 0 8px;line-height:1.4;font-weight:600}
+.md h1,.md h2{font-size:18px}.md h3{font-size:16px}
+.md ul,.md ol{margin:4px 0 10px;padding-left:22px}
+.md li{margin:3px 0}
+.md blockquote{margin:8px 0;padding:2px 0 2px 12px;border-left:3px solid var(--stroke);color:var(--sub)}
+.md hr{margin:14px 0;border:0;border-top:1px solid var(--stroke)}
+.md a{color:var(--accent)}
+.md code{padding:1px 5px;border-radius:4px;background:var(--codeInline);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em}
+.md pre.code{position:relative;margin:10px 0;padding:12px 14px;border:1px solid var(--stroke);border-radius:10px;background:var(--codeBg);
+  overflow-x:auto;white-space:pre;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.55}
+.md pre.code i.lang{position:absolute;right:10px;top:4px;font-style:normal;font-size:11px;color:var(--sub)}
+.md table{display:block;margin:10px 0;overflow-x:auto;border-collapse:collapse;font-size:13px}
+.md th,.md td{padding:5px 9px;border:1px solid var(--stroke);text-align:left}
+.md th{background:var(--card);font-weight:600}
+.foot{border-top:1px solid var(--stroke);padding:20px 0 calc(28px + env(safe-area-inset-bottom));font-size:12px;color:var(--sub)}
+.foot .wrap{display:flex;align-items:center;gap:8px}
+.foot .logo{width:20px;height:20px;border-radius:6px}.foot .logo svg{width:12px;height:12px}
+`;
+function shareDoc(msgs,card,whole){
+  const valid=ts=>{ const d=ts?new Date(ts):null; return d&&!isNaN(d)?d:null; };
+  const dayOf=d=>d.toLocaleDateString(LOCALE,{year:'numeric',month:'long',day:'numeric',weekday:'short'});
+  let body='', lastDay='';
+  for(const m of msgs){
+    const d=valid(m.ts);
+    if(d&&dayOf(d)!==lastDay){ lastDay=dayOf(d); body+='<div class="day">'+esc(lastDay)+'</div>'; }
+    if(m.kind==='tool'){
+      body+='<div class="tool"><span class="tn">'+esc(m.tool||'')+'</span><span class="ts">'+esc(m.text||'')+'</span></div>';
+      continue;
+    }
+    const user=m.role==='user';
+    body+='<div class="msg '+(user?'user':'asst')+'">'+(m.sub?'<div class="tag">'+esc(tr('chat.subagent'))+'</div>':'')+
+      (user&&d?'<span class="when">'+esc(hhmm(m.ts))+'</span>':'')+'<div class="md">'+md(m.text)+'</div></div>';
+  }
+  const stamps=msgs.map(m=>valid(m.ts)).filter(Boolean);
+  const at=d=>d.toLocaleString(LOCALE,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  let span='';
+  if(stamps.length){
+    const a=stamps[0], b=stamps[stamps.length-1];
+    span=at(a)+(b-a>60000?' – '+(dayOf(a)===dayOf(b)?hhmm(b.toISOString()):at(b)):'');
+  }
+  const said=msgs.filter(m=>m.kind!=='tool').length;
+  const agent={claude:'Claude Code',codex:'Codex'}[card.agent]||'';
+  const kicker=[agent,card.project,(card.model||'').replace(/^claude-/,'')].filter(Boolean).join(' · ');
+  const meta=[tr(whole?'share.docAll':'share.docPart'),tr('share.docCount',{n:said}),span].filter(Boolean).join(' · ');
+  const logo='<span class="logo"><svg viewBox="0 0 24 24" aria-hidden="true">'+IC['layout-grid']+'</svg></span>';
+  return '<!doctype html><html lang="'+LOCALE+'"><head><meta charset="utf-8">'+
+    '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'+
+    '<meta name="robots" content="noindex"><meta name="generator" content="FleetView">'+
+    '<title>'+esc(card.name)+' · FleetView</title><style>'+SHARE_CSS+'</style></head><body>'+
+    '<header class="top"><div class="wrap">'+logo+'<span class="bname">FleetView</span></div></header>'+
+    '<main class="wrap"><div class="hero">'+(kicker?'<div class="kicker">'+esc(kicker)+'</div>':'')+
+    '<h1 class="name">'+esc(card.name)+'</h1><div class="meta">'+esc(meta)+'</div></div>'+
+    '<div class="conv">'+body+'</div></main>'+
+    '<footer class="foot"><div class="wrap">'+logo+'<span>'+esc(tr('share.docFooter'))+' · '+esc(at(new Date()))+'</span></div></footer>'+
+    '</body></html>';
 }
 async function key(k){if(!curId)return;try{await fetch('/key?id='+curId+'&k='+encodeURIComponent(k));}catch(e){}}
 /* A literal character rather than a key name — tmux `send-keys -l` takes text, and "/" is not in the
