@@ -49,7 +49,7 @@ History of the conversations (Claude + Codex) on this Mac — or, with -u, on th
 <id> (session) is a conversation: a session-id prefix, a FleetView card id, or a transcript path.
 <note-sel> matches a note by its number in `notes`, its id prefix, or a text substring.
 """
-import argparse, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
+import argparse, datetime, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 
 HOME = os.path.expanduser("~")
 
@@ -1332,7 +1332,9 @@ def cmd_subagent(a):
     an agent asking for one rarely means "somewhere else".
     """
     st = state()
-    if a.project:
+    if a.resume:
+        proj = None
+    elif a.project:
         ps = match_projects(st, a.project)
         if len(ps) != 1:
             sys.exit("specify one project (matched %d)" % len(ps))
@@ -1355,6 +1357,10 @@ def cmd_subagent(a):
     task = " ".join(a.text).strip()
     if not task:
         sys.exit("empty task")
+    if a.rm:
+        a.wait = True          # removing the card before its reply is in would throw the reply away
+    if a.resume:
+        return _subagent_resume(a, task)
 
     r = api_json("/new?projectId=" + proj["id"])
     tid = r.get("id") or ""
@@ -1398,13 +1404,87 @@ def cmd_subagent(a):
         # than leaving a card that looks like it was given a task.
         done("opened %s in %s — agent did not report ready within 120s, task NOT sent; "
              "send it with: project-manager send %s '<task>'" % (full, proj["name"], full[:8]), 1)
+    before = _term_now(tid)
     if not _send_task(tid, task):
         done("opened %s in %s — agent started but the task would not stick; "
              "send it with: project-manager send %s '<task>'" % (full, proj["name"], full[:8]), 1)
     if not _submit_if_pending(tid, task):
         done("subagent %s in %s (%s) — task typed but NOT submitted; press Enter with: "
              "project-manager key %s enter" % (c("1", full), proj["name"], kind, full[:8]), 1)
+    if a.wait:
+        say("subagent %s in %s (%s) — task delivered, waiting for its reply" % (c("1", full), proj["name"], kind))
+        sys.exit(_finish_subagent(a, tid, before, remove=a.rm))
     done("subagent %s in %s (%s) — task delivered" % (c("1", full), proj["name"], kind))
+
+
+def _term_now(tid):
+    return next((t for t in state()["terminals"] if t["id"].lower() == tid.lower()), None)
+
+
+def _finish_subagent(a, tid, before, remove):
+    """Wait for the turn the task started, print the reply, and — with --rm — remove the card.
+
+    The card goes only when the turn ended on its own. A timeout, or an agent stopped on a question,
+    leaves it on the board: removing it would kill a session that still has something to say, and
+    the whole point of a job that runs unattended is that someone can look at what it got stuck on.
+    """
+    w = argparse.Namespace(timeout=a.timeout or 0, full=True, quiet=False, any=False)
+    rc = _wait_turns([tid], w, before={tid: before} if before else None)
+    if remove:
+        if rc == 0:
+            api_json("/action?" + urllib.parse.urlencode({"id": tid, "do": "remove"}))
+            print(c("90", "removed card %s" % tid[:8].lower()), file=sys.stderr)
+        else:
+            print(c("90", "left card %s on the board (the turn did not end cleanly, exit %d)"
+                    % (tid[:8].lower(), rc)), file=sys.stderr)
+    return rc
+
+
+def _subagent_resume(a, task):
+    """`subagent --resume <session>`: the same job, in an existing conversation instead of a new one.
+
+    FleetView puts the conversation back where it belongs (see `restore`). The task is typed only
+    once the card's hook says an agent is running in it — a reopened card still carries the agent
+    of its last life, so "has an agent" is true before the CLI is up, and a task typed then lands
+    in the shell, Enter and all, as a command. Codex without trusted hooks never says so; that case
+    stops rather than guess.
+    """
+    try:
+        r = json.loads(_get("/restore?" + urllib.parse.urlencode({"sid": a.resume}), timeout=30))
+    except urllib.error.HTTPError as e:
+        try:
+            sys.exit(json.loads(e.read().decode("utf-8", "replace")).get("error", "HTTP %d" % e.code))
+        except ValueError:
+            sys.exit("%s does not know `restore` (HTTP %d)" % (BASE, e.code))
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach FleetView at %s (%s)." % (BASE, e))
+    tid = r["id"]          # as the board spells it: `_wait_turns` looks cards up by exact id
+    mine = r["action"] != "already_open"
+    print("%s %s  %s  %s · %s session %s" % (
+        RESTORED.get(r["action"], r["action"]), c("1", r["name"]), tid[:8].lower(), r["project"], r["agent"],
+        r["session"][:8]), file=sys.stderr)
+    deadline = time.time() + 120
+    while True:
+        t = _term_now(tid)
+        if t and t.get("status") in ("idle", "working", "needsYou"):
+            break
+        if time.time() > deadline:
+            sys.exit("%s is back on the board but no agent reported in within 120s — task NOT sent; "
+                     "look with: project-manager show %s" % (tid[:8].lower(), tid[:8].lower()))
+        time.sleep(1)
+    if t.get("status") == "working":
+        # Someone else's turn is running in it: queueing ours behind it would mix the two replies.
+        sys.exit("%s is busy with another turn — task NOT sent" % tid[:8].lower())
+    before = t
+    if not _send_task(tid, task) or not _submit_if_pending(tid, task):
+        sys.exit("resumed %s but the task would not stick; send it with: project-manager send %s '<task>'"
+                 % (tid[:8].lower(), tid[:8].lower()))
+    print("task delivered to %s" % tid[:8].lower(), file=sys.stderr)
+    if not a.wait:
+        print(tid.lower())
+        return
+    # A card that was already open was someone's before this job came along: it stays.
+    sys.exit(_finish_subagent(a, tid, before, remove=a.rm and mine))
 
 
 def cmd_commits(a):
@@ -1673,6 +1753,185 @@ def cmd_restore(a):
         time.sleep(1)
     print("  the terminal is open and the resume was typed, but no agent has reported in yet — "
           "look with: %s" % _cmd("project-manager show %s" % r["id"][:8].lower()))
+
+# ---- fleet triggers ----
+#
+# Triggers FleetView itself runs, independent of every card: a cron, an interval, a time, a file
+# that changes, a command that starts succeeding, or a fire from outside — and then any command,
+# typically this script opening or resuming an agent with a prompt. See the fleetview-trigger skill.
+
+def _fleet(method, path, obj=None, timeout=30):
+    data = json.dumps(obj).encode("utf-8") if obj is not None else (b"" if method == "POST" else None)
+    req = urllib.request.Request(BASE + path, data=data, method=method,
+                                 headers=_headers(**{"Content-Type": "application/json"}))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        try:
+            sys.exit(json.loads(raw).get("error", "HTTP %d" % e.code))
+        except ValueError:
+            sys.exit("%s does not know fleet triggers (HTTP %d): its FleetView predates them" % (BASE, e.code))
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach FleetView at %s (%s)." % (BASE, e))
+
+
+def _trigger(sel):
+    ts = _fleet("GET", "/fleet-triggers")["triggers"]
+    s = sel.lower()
+    hit = ([t for t in ts if t["id"] == s] or [t for t in ts if t["id"].startswith(s)]
+           or [t for t in ts if s in t["name"].lower()])
+    if len(hit) != 1:
+        sys.exit("no trigger matches %r" % sel if not hit else
+                 "%r matches %d triggers: %s" % (sel, len(hit), ", ".join(t["id"] + " " + t["name"] for t in hit)))
+    return hit[0]
+
+
+_DUR = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$")
+
+def _seconds(s):
+    m = _DUR.match(str(s or ""))
+    if not m:
+        sys.exit("not a duration: %r (like 90, 30s, 10m, 2h, 1d)" % s)
+    return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def _at(s):
+    """'2026-11-01 09:00', '09:00' (the next one to come), or '+30m' → ISO 8601 in this Mac's zone."""
+    s, now = s.strip(), datetime.datetime.now().astimezone()
+    if s.startswith("+"):
+        return (now + datetime.timedelta(seconds=_seconds(s[1:]))).isoformat(timespec="seconds")
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%H:%M"):
+        try:
+            p = datetime.datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+        if fmt == "%H:%M":
+            t = now.replace(hour=p.hour, minute=p.minute, second=0, microsecond=0)
+            if t <= now:
+                t += datetime.timedelta(days=1)
+            return t.isoformat(timespec="seconds")
+        return p.astimezone().isoformat(timespec="seconds")
+    sys.exit("not a time: %r (like '2026-11-01 09:00', '09:00' or '+30m')" % s)
+
+
+def _dur_text(sec):
+    sec = float(sec)
+    for n, u in ((86400, "d"), (3600, "h"), (60, "m")):
+        if sec >= n and sec % n == 0:
+            return "%d%s" % (sec // n, u)
+    return "%ds" % sec
+
+
+def _when_text(w):
+    k = w.get("kind")
+    if k == "cron":
+        return "cron " + w.get("cron", "")
+    if k == "every":
+        return "every " + _dur_text(w.get("every", 0))
+    if k == "at":
+        return "at " + _local(w.get("at"))
+    if k == "watch":
+        return "watch " + w.get("path", "").replace(HOME, "~")
+    if k == "check":
+        return "check `%s` /%s" % (w.get("check", "")[:30], _dur_text(w.get("interval") or 60))
+    return k or "?"
+
+
+def _local(iso, fmt="%m-%d %H:%M"):
+    if not iso:
+        return "-"
+    try:
+        return datetime.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone().strftime(fmt)
+    except ValueError:
+        return iso
+
+
+def _last_text(t):
+    if t.get("running"):
+        return c("33", "running since %s" % _local((t.get("last") or {}).get("at"), "%H:%M:%S"))
+    last = t.get("last")
+    if not last:
+        return "never ran"
+    if last.get("exit") is None:
+        return c("31", last.get("note") or "did not run")
+    ok = last["exit"] == 0 and not last.get("note")
+    return c("32" if ok else "31", "%s exit %d %s" % (_local(last["at"]), last["exit"],
+                                                    last.get("note") or "%.0fs" % (last.get("seconds") or 0)))
+
+
+def cmd_trigger(a):
+    act = a.taction or "ls"
+    if act == "ls":
+        ts = _fleet("GET", "/fleet-triggers")["triggers"]
+        if a.json:
+            print(json.dumps(ts, ensure_ascii=False, indent=2))
+            return
+        if not ts:
+            print("no fleet triggers. add one with: %s" % _cmd("project-manager trigger add NAME --cron '0 9 * * *' --run CMD"))
+            return
+        print(c("90", "%-8s  %-22s  %-26s  %-11s  %-26s  %s" % ("ID", "NAME", "WHEN", "NEXT", "LAST", "SOURCE CARD")))
+        for t in ts:
+            nxt = "paused" if t.get("paused") else _local(t.get("due"))
+            src = t.get("source") or ""
+            card = t.get("sourceCard") or {}
+            srcs = ("%s %s%s" % (src.lower(), card.get("name") or t.get("sourceName") or "",
+                                 " (removed)" if card.get("state") == "removed" else
+                                 " (gone)" if card.get("state") == "gone" else "")) if src else "-"
+            print("%-8s  %-22s  %-26s  %-11s  %-26s  %s" % (t["id"], t["name"][:22], _when_text(t["when"])[:26],
+                                                         nxt, _last_text(t), srcs))
+            print(c("90", "          $ " + t["run"].replace("\n", " ")[:110]))
+        return
+    if act == "add":
+        kinds = [k for k in ("cron", "every", "at", "watch", "check", "manual") if getattr(a, k)]
+        if len(kinds) != 1:
+            sys.exit("say when, exactly one of: --cron EXPR, --every DUR, --at TIME, --watch PATH, --check CMD, --manual")
+        k = kinds[0]
+        when = {"kind": k}
+        if k == "cron":
+            when["cron"] = a.cron
+        elif k == "every":
+            when["every"] = _seconds(a.every)
+        elif k == "at":
+            when["at"] = _at(a.at)
+        elif k == "watch":
+            when["path"] = os.path.abspath(os.path.expanduser(a.watch)) if not is_remote() else a.watch
+        elif k == "check":
+            when["check"] = a.check
+        if a.interval:
+            when["interval"] = _seconds(a.interval)
+        body = {"name": a.name, "when": when, "run": a.run}
+        if a.cwd:
+            body["cwd"] = os.path.abspath(os.path.expanduser(a.cwd)) if not is_remote() else a.cwd
+        if a.timeout:
+            body["timeout"] = _seconds(a.timeout)
+        t = _fleet("POST", "/fleet-triggers/add", body)
+        print("added %s %s — %s, next %s" % (c("1", t["id"]), t["name"], _when_text(t["when"]),
+                                             "on fire" if not t.get("due") else _local(t["due"])))
+        if t.get("source"):
+            print(c("90", "  source card %s" % t["source"].lower()))
+        print(c("90", "  see it: %s · its log: %s" % (_cmd("project-manager trigger ls"),
+                                                   _cmd("project-manager trigger log %s" % t["id"]))))
+        return
+    t = _trigger(a.sel) if a.sel else sys.exit("which trigger? (id, id prefix, or part of its name)")
+    q = "?" + urllib.parse.urlencode({"id": t["id"]})
+    if act == "rm":
+        _fleet("POST", "/fleet-triggers/rm" + q)
+        print("removed %s %s" % (t["id"], t["name"]))
+    elif act == "fire":
+        _fleet("POST", "/fleet-triggers/fire" + q)
+        print("fired %s %s — follow it with: %s" % (t["id"], t["name"], _cmd("project-manager trigger log %s" % t["id"])))
+    elif act in ("pause", "resume"):
+        _fleet("POST", "/fleet-triggers/pause" + q + "&on=" + ("1" if act == "pause" else "0"))
+        print("%sd %s %s" % (act, t["id"], t["name"]))
+    elif act == "log":
+        print(_fleet("GET", "/fleet-triggers/log" + q + "&n=%d" % a.lines)["log"])
+    elif act == "restore":
+        r = _fleet("POST", "/fleet-triggers/restore" + q)
+        print("%s %s  %s" % (RESTORED.get(r.get("action"), r.get("action")), c("1", r.get("name", "")),
+                              (r.get("id") or "")[:8].lower()))
+
 
 def cmd_notes(a):
     """The sidebar Notes list, which is also the web dashboard's quick-command chips.
@@ -3099,6 +3358,15 @@ def main():
                    help="open the agent but do not wait for it or send the task")
     s.add_argument("--id", dest="id_only", action="store_true",
                    help="print only the new terminal's uuid on stdout (status goes to stderr)")
+    s.add_argument("--resume", metavar="SESSION",
+                   help="give the task to this conversation (session id, or 8+ characters of it) instead of "
+                        "a new agent — restored into its card like `restore`")
+    s.add_argument("--wait", action="store_true", help="wait for the reply and print it")
+    s.add_argument("--rm", action="store_true",
+                   help="remove the card once the reply is in (implies --wait); a card that ends on a question, "
+                        "times out, or was already open beforehand is left on the board")
+    s.add_argument("-t", "--timeout", type=float, default=0,
+                   help="with --wait: give up after SEC (exit 124, card left on the board)")
     s.set_defaults(fn=cmd_subagent)
     s = sub.add_parser("rename", help="relabel a terminal")
     s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_rename)
@@ -3160,6 +3428,32 @@ def main():
     s.add_argument("--open", action="store_true", help="open it there with its default app")
     s.add_argument("-p", "--project", help="project whose terminal runs the cp/open (default: any on the board)")
     s.set_defaults(fn=cmd_put)
+    s = sub.add_parser("trigger", help="fleet triggers: run any command on a schedule, a file change, a "
+                                       "condition or a fire — held by FleetView, not by any card")
+    ts = s.add_subparsers(dest="taction", metavar="ACTION")
+    t = ts.add_parser("ls", help="list them: when, next run, last result, the card that set each up")
+    t.add_argument("--json", action="store_true")
+    t = ts.add_parser("add", help="add one: NAME, when (one of the options) and --run")
+    t.add_argument("name")
+    t.add_argument("--cron", metavar="EXPR", help="five-field cron, this Mac's time: '0 9 * * *' = 09:00 daily")
+    t.add_argument("--every", metavar="DUR", help="every DUR (min 10s): 90, 30s, 10m, 2h, 1d")
+    t.add_argument("--at", metavar="TIME", help="once: '2026-11-01 09:00', '09:00' (next one), '+30m'")
+    t.add_argument("--watch", metavar="PATH", help="when this file, or anything directly in this folder, changes")
+    t.add_argument("--check", metavar="CMD", help="when CMD starts exiting 0 (fires once per false→true)")
+    t.add_argument("--manual", action="store_true", help="only when fired (trigger fire, or POST /fleet-triggers/fire)")
+    t.add_argument("--interval", metavar="DUR", help="how often --watch/--check look (default 5s / 60s)")
+    t.add_argument("--run", required=True, metavar="CMD", help="what to run (zsh -lc, login PATH)")
+    t.add_argument("--cwd", metavar="DIR", help="run it here (default: home)")
+    t.add_argument("--timeout", metavar="DUR", help="stop a run after DUR (default 1h)")
+    for name, hlp in (("rm", "remove one (stops a run still going)"), ("fire", "run one now"),
+                      ("pause", "stop it firing"), ("resume", "let it fire again"),
+                      ("restore", "bring back the card that set it up, in its latest conversation")):
+        t = ts.add_parser(name, help=hlp)
+        t.add_argument("sel", help="id, id prefix, or part of its name")
+    t = ts.add_parser("log", help="its runs' output")
+    t.add_argument("sel")
+    t.add_argument("-n", "--lines", type=int, default=80)
+    s.set_defaults(fn=cmd_trigger, sel=None)
     s = sub.add_parser("notes", help="the shared Notes list / web quick-commands")
     s.add_argument("action", nargs="?", choices=("ls", "add", "rm"), help="default: ls")
     s.add_argument("rest", nargs="*", help="text to add, or which note to remove")

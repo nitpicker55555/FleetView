@@ -63,7 +63,7 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager ask <id> <q…>` | **"BTW" side-query**: ask the agent a question using its current context **without** touching/interrupting its live session (forked print-mode query; the answer is thrown away after printing). Takes ~10-40s |
 | `project-manager log <id> [-p\|-c\|-f]` | Locate the agent's transcript file; `-p` path only, `-c` cat, `-f` follow (tail -f). With `-u` all three read the file on that machine |
 | `project-manager new <project> [label]` | Open a terminal in a project. `--claude` starts a permission-bypassed Claude session in it, `-c CMD` runs any other command |
-| `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project, `-n` to name the card, `--id` for the bare uuid on stdout, `--no-wait` to start the agent without sending the task. With `-u` and no `-p`: the project of the same name over there |
+| `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project, `-n` to name the card, `--id` for the bare uuid on stdout, `--no-wait` to start the agent without sending the task, `--wait` to wait for its reply and print it, `--rm` to also remove the card once it has answered, `--resume SESSION` to give the task to an existing conversation instead of a new agent. With `-u` and no `-p`: the project of the same name over there |
 | `project-manager audit [<card>] [-d DAYS] [--full]` | **What agents did to each other through project-manager**, from the audit log: who (the calling card, with its machine), to whom (the target card), what (the words sent — in full, secrets redacted — the key, the command, the screen or conversation read), when. `<card>` narrows to actions by or on one card. With `-u` it reads that machine's log |
 | `project-manager rename <id> <name…>` | Relabel a terminal |
 | `project-manager rm <id>` | Remove a terminal (kills its session) |
@@ -172,6 +172,11 @@ Renaming is safe to do at any time: `name` is display-only, and every selector t
 `send`, `choose`) also takes the id, which does not change.
 
 ## Handing work to a subagent
+
+For work that has to happen later or repeatedly — "every morning, have an agent …" — do not keep a
+card alive for it: make a fleet trigger (`project-manager trigger add …`, see the
+**fleetview-trigger** skill). FleetView runs it itself, typically as
+`project-manager subagent -p <project> --rm '<task>'`.
 
 ```bash
 project-manager subagent "重跑 07 号任务的评分并汇报差异"      # in your own project, Claude

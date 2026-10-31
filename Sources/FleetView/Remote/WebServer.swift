@@ -42,6 +42,8 @@ struct WebSnapshot: Codable {
     let remoteOK: Bool            // tmux + ttyd present → terminals are interactive
     let remoteHint: String        // install hint when they're not
     let askGeo: Bool              // whether the page should ask the device for its position
+    let fleetTriggers: Int        // triggers FleetView itself runs (the header's ⚡ count)
+    let fleetTriggersRunning: Int
     /// The appearance the desktop window is drawing right now. The dashboard follows the Mac rather
     /// than the phone's own dark mode: it is a mirror of that window, and the two disagreeing reads
     /// as a bug rather than a preference.
@@ -215,6 +217,9 @@ final class WebServer {
         if path == "/read" { handleRead(conn, params, scope); return }
         if path == "/conversation" { handleConversation(conn, params, scope); return }
         if path == "/share" { handleShare(conn, request, body, params, scope); return }  // network; off it
+        if path == "/fleet-triggers" || path.hasPrefix("/fleet-triggers/") {          // has a body
+            handleFleetTriggers(conn, request, body, params, scope); return
+        }
         if path == "/commits" { handleCommits(conn, params, scope); return }
         if path == "/writers" { handleWriters(conn, params, scope); return }
         if path == "/repo" { handleRepo(conn, params, scope); return }  // parsing; off it
@@ -322,6 +327,29 @@ final class WebServer {
             let spec = MainActor.assumeIsolated { app.conversationSpec(id) }
             DispatchQueue.global(qos: .userInitiated).async {
                 answer("200 OK", spec.respond(limit: limit, whole: query["full"] == "1"))
+            }
+        }
+    }
+
+    /// `/fleet-triggers…` (see AppState.fleetTriggerResponse). Its own route only because `add`
+    /// carries a JSON body and the generic path does not pass one on; the work is on the main actor.
+    private func handleFleetTriggers(_ conn: NWConnection, _ head: HTTPRequestHead?, _ body: Data,
+                                     _ query: [String: String], _ scope: WebAudit.Scope) {
+        let path = head?.path ?? "/fleet-triggers"
+        let method = head?.method.uppercased() ?? "GET"
+        let caller = head?.headers["x-fv-caller"]
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
+            }
+            let (status, data) = MainActor.assumeIsolated {
+                AuditContext.with(scope.actor, trace: scope.trace) {
+                    app.fleetTriggerResponse(path: path, method: method, query: query, body: body, caller: caller)
+                }
+            }
+            WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query)
+            self.queue.async {
+                self.send(conn, status: status, type: "application/json", body: data, setCookie: scope.setCookie)
             }
         }
     }

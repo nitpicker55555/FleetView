@@ -94,6 +94,8 @@ final class AppState: ObservableObject {
 
     /// What each terminal's agent last said it has scheduled or left running, from its Stop hook.
     @Published var triggerReports: [UUID: TriggerReport] = [:]
+    /// The triggers FleetView itself runs, as the engine last published them (see FleetTriggers).
+    @Published var fleetTriggers: [FleetTriggerStatus] = []
     /// LaunchAgents that name a terminal, from the last look at ~/Library/LaunchAgents.
     @Published var launchdTriggers: [UUID: [AgentTrigger]] = [:]
     /// Cancellations sent to an agent and not yet carried out, by `terminal/trigger key`.
@@ -2818,6 +2820,8 @@ final class AppState: ObservableObject {
             remoteOK: remote.available,
             remoteHint: remote.unavailableReason,
             askGeo: AuditConfig.current.wantsBrowserLocation,
+            fleetTriggers: fleetTriggers.count,
+            fleetTriggersRunning: fleetTriggers.filter(\.running).count,
             dark: Theme.isDark)
     }
 

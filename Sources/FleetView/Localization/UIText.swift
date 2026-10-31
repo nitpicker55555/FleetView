@@ -508,6 +508,35 @@ enum UIText {
     case filesFilterCount(Int)
     case filesRecent
     case filesChangedBy(String)
+    case fleetTrigHelp
+    case fleetTrigTitle
+    case fleetTrigSubtitle
+    case fleetTrigEmpty
+    case fleetTrigEmptyBody
+    case fleetTrigWhenCron(String)
+    case fleetTrigWhenEvery(String)
+    case fleetTrigWhenAt(String)
+    case fleetTrigWhenWatch(String)
+    case fleetTrigWhenCheck(String)
+    case fleetTrigWhenManual
+    case fleetTrigNext(String)
+    case fleetTrigPaused
+    case fleetTrigDone
+    case fleetTrigRunning
+    case fleetTrigNever
+    case fleetTrigLastOK(String, String)
+    case fleetTrigLastFail(String, Int32)
+    case fleetTrigSource
+    case fleetTrigNoSource
+    case fleetTrigSourceRemoved
+    case fleetTrigSourceGone
+    case fleetTrigRestore
+    case fleetTrigRunNow
+    case fleetTrigPause
+    case fleetTrigResume
+    case fleetTrigRemove
+    case fleetTrigConfirmRemove
+    case fleetTrigOutput
 }
 
 /// The language the UI is drawn in: Chinese when the first preferred language is any Chinese,
