@@ -388,6 +388,14 @@ final class WebAudit: @unchecked Sendable {
                             .merging(facts) { own, _ in own },
                          categories: ["web", "file"])
 
+        case let p where p.hasPrefix("/fleet-triggers/") && p != "/fleet-triggers/log":
+            // Adding, removing, pausing or firing a trigger: the engine records what happened to the
+            // trigger; this records who asked, from where.
+            let what = String(p.dropFirst("/fleet-triggers/".count))
+            return event("fleetview.web.fleet_trigger_\(what)", "fleet trigger \(what) \(query["id"] ?? "")",
+                         AuditValue.compact(["trigger.id": query["id"].map { .string($0) }]),
+                         categories: ["web", "configuration"])
+
         case "/share":
             // A conversation made public. The page itself is not kept — its hash and size are, with
             // the link it went to, so what is out there can be traced back to who sent it and when.

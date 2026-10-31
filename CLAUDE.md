@@ -19,7 +19,7 @@ operational files from being swept into a commit by whoever runs `git add -A` ne
 | `docs/design/` | design notes, dated |
 | `docs/问题与修复/` | incident records, dated: symptom, root cause, fix, how it was verified (index in its README) |
 | `scripts/`, `examples/` | **ignored by default** — see below |
-| `~/.fleetview/` | all runtime state: `state.json`, `archive.json` (removed cards), `triggers.json` (agents' last-reported crons), logs, `ui/panel.html`, `sessions/`, `search.db` |
+| `~/.fleetview/` | all runtime state: `state.json`, `archive.json` (removed cards), `triggers.json` (agents' last-reported crons), `fleet-triggers.json` (triggers FleetView itself runs, logs in `logs/fleet-triggers/`), logs, `ui/panel.html`, `sessions/`, `search.db` |
 
 ### scripts/ and examples/ are whitelisted, not open
 
@@ -103,6 +103,12 @@ directory outside the repo when you have one.
   [`docs/design/2026-10-26-file-browser-editor.md`](docs/design/2026-10-26-file-browser-editor.md).
   The editor page is `Editor/` (CodeMirror); change it there and run `Editor/build.sh`. To look at
   the window without launching the app: `FV_SNAPSHOT_FILES=<folder> FleetView --snapshot <dir>`.
+- **Two kinds of trigger, and only one belongs to a card.** `AgentTrigger` (the per-card panel) is
+  what an agent's own CLI scheduled; it lives in that process and dies with it. `FleetTrigger`
+  (`FleetTriggerEngine`, the ⚡ toolbar list, `project-manager trigger`, the fleetview-trigger skill)
+  is run by the FleetView process itself — cron, interval, once, file change, a check command, or a
+  fire from outside — and outlives every card. It runs its command with `zsh -lc` and no
+  `FLEETVIEW_TERM_ID`, in the desktop app and headless alike.
 - Two agent backends, two transcript formats: Claude
   `~/.claude/projects/<slug>/…` (branches via `parentUuid`), Codex
   `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (branches via `forked_from_id`). Anything that

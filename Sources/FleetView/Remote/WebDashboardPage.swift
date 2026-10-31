@@ -1012,6 +1012,32 @@ enum WebDashboardPage {
   #pickbar .pn{flex:1;min-width:0;font-size:14px;line-height:20px;font-weight:500}
   #term.picking #pickbar{display:flex}
   #term.picking #inputbar,#term.picking #jump,#term.picking #perm{display:none}
+  /* FleetView's own triggers: the same sheet, opened from the board header instead of a card. */
+  #ftrig{display:none;position:fixed;inset:0;z-index:60}
+  #ftrig.on{display:block}
+  #ftrig .tscrim{position:absolute;inset:0;background:var(--scrim)}
+  #ftrig .tsheet{position:absolute;top:0;right:0;bottom:0;width:min(440px,100vw);display:flex;flex-direction:column;
+    background:var(--panel);box-shadow:0 0 24px rgba(0,0,0,.35)}
+  @media (max-width:640px){ #ftrig .tsheet{top:auto;left:0;width:auto;max-height:86dvh;border-radius:16px 16px 0 0} }
+  #ftrig .thead{display:flex;align-items:center;gap:10px;padding:12px 8px 10px 20px;border-bottom:1px solid var(--outlineVariant)}
+  #ftrig .thead b{font-size:16px;line-height:24px;font-weight:500}
+  #ftrig .thead .tname{flex:1;min-width:0;font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #ftrig .thead button{flex:none;width:40px;height:40px;border:0;background:none;color:var(--sub);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;border-radius:999px}
+  #ftriglist{overflow:auto;padding:12px 16px calc(24px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch}
+  #ftriglist .tnote{font-size:12px;line-height:18px;color:var(--sub);margin:2px 0 12px}
+  #ftrigcount:empty{display:none}
+  .trow .tg.run{color:var(--onPrimaryContainer);background:var(--primaryContainer);border-color:transparent}
+  .trow .tg.bad{color:var(--onErrorContainer);background:var(--errorContainer);border-color:transparent}
+  .trow .fsrc{margin-top:8px;font-size:12px;line-height:18px;color:var(--sub)}
+  .trow .fsrc b{font-weight:500;color:var(--text)}
+  .trow .fsrc code{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text);
+    word-break:break-all;-webkit-user-select:all;user-select:all}
+  .trow .facts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .trow .facts button{height:30px;padding:0 12px;border:0;border-radius:999px;background:var(--secondaryContainer);
+    color:var(--onSecondaryContainer);font-size:12px;font-weight:500;cursor:pointer}
+  .trow .facts button.danger{background:var(--errorContainer);color:var(--onErrorContainer)}
+  .trow .facts button:disabled{opacity:.45;cursor:default}
   /* The trigger list: a sheet from the right on a wide screen, from the bottom on a phone. */
   #trig{display:none;position:fixed;inset:0;z-index:60}
   #trig.on{display:block}
@@ -1065,6 +1091,7 @@ enum WebDashboardPage {
   <span class="spacer"></span>
   <span id="pills"></span>
   <button id="markbtn" class="tb" onclick="toggleOnlyMarked()" data-i18n-title="head.markFilter"><i data-ic="bookmark"></i><span id="markcount"></span></button>
+  <button id="ftrigbtn" class="tb" onclick="openFtrig()" data-i18n-title="ftrig.title" data-i18n-aria="ftrig.title"><i data-ic="zap"></i><span id="ftrigcount"></span></button>
   <button id="schemebtn" class="tb" onclick="cycleScheme()"></button>
   <button id="projbtn" class="tb" onclick="toggleProjects()" data-i18n-title="head.projTitle" data-i18n-aria="head.projAria"><i data-ic="folder-open"></i></button>
   <button id="traybtn" class="tb" onclick="toggleTray()" data-i18n-title="head.trayTitle" data-i18n-aria="head.trayAria"><i data-ic="inbox"></i><span id="traybadge"></span></button>
@@ -1168,6 +1195,15 @@ enum WebDashboardPage {
   </div>
   <div id="fbpath"><span id="fbcrumbs"></span><button class="fbcopy" onclick="fbCopyHere()"><i data-ic="copy" class="s14"></i><span data-i18n="fb.copyPathBtn"></span></button></div>
   <div id="fbbody"></div>
+</div>
+
+<div id="ftrig">
+  <div class="tscrim" onclick="closeFtrig()"></div>
+  <div class="tsheet" role="dialog" aria-modal="true">
+    <div class="thead"><b data-i18n="ftrig.title"></b><span class="tname" data-i18n="ftrig.sub"></span>
+      <button onclick="closeFtrig()" data-i18n-title="common.back" data-i18n-aria="common.back"><i data-ic="x"></i></button></div>
+    <div id="ftriglist"></div>
+  </div>
 </div>
 
 <div id="trig">
@@ -1319,6 +1355,13 @@ const I18N={
     'net.reconnecting':'正在重连…','net.reconnected':'已重新连接','net.back':'已重新连上 Mac',
     'toast.attachedTo':'文件已附加到「{name}」的输入框',
     'trig.title':'触发器','trig.chip':'{n} 个触发器 · 点击查看',
+    'ftrig.title':'FleetView 触发器','ftrig.sub':'由 FleetView 运行，不依赖任何卡片','ftrig.empty':'没有触发器',
+    'ftrig.cron':'cron {c}','ftrig.every':'每 {d}','ftrig.at':'一次 · {t}','ftrig.watch':'变化时 · {p}',
+    'ftrig.check':'条件成立时 · {c}','ftrig.manual':'手动 / 外部触发','ftrig.paused':'已暂停','ftrig.done':'已执行过（一次性）',
+    'ftrig.running':'运行中','ftrig.ok':'{t} 成功','ftrig.exit':'{t} 退出码 {n}',
+    'ftrig.source':'来源卡片','ftrig.removed':'已移除','ftrig.gone':'已不在','ftrig.noSource':'不是在卡片里创建的',
+    'ftrig.restore':'恢复卡片','ftrig.fire':'立即运行','ftrig.pause':'暂停','ftrig.resume':'继续',
+    'ftrig.rm':'移除','ftrig.confirmRm':'确认移除',
     'share.button':'分享','share.title':'分享会话',
     'share.all':'完整会话','share.allDetail':'从第一句到最后一句，所有的输入和回复',
     'share.pick':'挑选消息','share.pickDetail':'在对话里勾选要分享的输入和输出',
@@ -1440,6 +1483,13 @@ const I18N={
     'net.reconnecting':'Reconnecting…','net.reconnected':'Reconnected','net.back':'Back in touch with the Mac',
     'toast.attachedTo':'Attached to {name}’s message box',
     'trig.title':'Triggers','trig.chip':{one:'1 trigger · tap to see',other:'{n} triggers · tap to see'},
+    'ftrig.title':'FleetView triggers','ftrig.sub':'run by FleetView, not by any card','ftrig.empty':'No triggers',
+    'ftrig.cron':'cron {c}','ftrig.every':'every {d}','ftrig.at':'once · {t}','ftrig.watch':'on change · {p}',
+    'ftrig.check':'when it holds · {c}','ftrig.manual':'manual / fired from outside','ftrig.paused':'paused','ftrig.done':'done (once)',
+    'ftrig.running':'running','ftrig.ok':'{t} ok','ftrig.exit':'{t} exit {n}',
+    'ftrig.source':'Source card','ftrig.removed':'removed','ftrig.gone':'gone','ftrig.noSource':'Not created from a card',
+    'ftrig.restore':'Restore card','ftrig.fire':'Run now','ftrig.pause':'Pause','ftrig.resume':'Resume',
+    'ftrig.rm':'Remove','ftrig.confirmRm':'Confirm remove',
     'share.button':'Share','share.title':'Share conversation',
     'share.all':'Whole conversation','share.allDetail':'Every prompt and reply, first to last',
     'share.pick':'Pick messages','share.pickDetail':'Tick the prompts and replies to include',
@@ -1567,6 +1617,7 @@ const IC={
   globe:'<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20"/>',
   bot:'<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/>',
   share:'<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="m16 6-4-4-4 4"/><path d="M12 2v13"/>',
+  zap:'<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
   dot:'<circle cx="12" cy="12" r="2.5" fill="currentColor"/>'
 };
 function ic(name,cls){
@@ -3838,6 +3889,109 @@ function trigRow(it,i){
     (it.cancelling?`<div class="tbusy">${tr(it.kind==='launchd'?'trig.removing':'trig.cancelling')}</div>`:'')+
     `</div>${act}</div>`;
 }
+/* ---------- FleetView's own triggers ----------
+   Not a card's (that is the sheet above): these the FleetView process runs, on a schedule, a file
+   change or a condition, whatever happens to the cards — see FleetTriggerEngine. Each row says
+   which card set it up, and "restore" brings that card back in its latest conversation. */
+let ftrigItems=[], ftrigTimer=null, ftrigOpen=new Set(), ftrigConfirm=null;
+function openFtrig(){
+  ftrigConfirm=null;
+  document.getElementById('ftriglist').innerHTML='<div class="tnote">'+tr('common.loading')+'</div>';
+  document.getElementById('ftrig').classList.add('on');
+  loadFtrig();
+  clearInterval(ftrigTimer); ftrigTimer=poll(loadFtrig,5000,false);
+}
+function closeFtrig(){
+  clearInterval(ftrigTimer); ftrigTimer=null; ftrigConfirm=null;
+  document.getElementById('ftrig').classList.remove('on');
+}
+async function loadFtrig(){
+  try{
+    const r=await fetch('/fleet-triggers',{cache:'no-store'});
+    const j=await r.json(); ftrigItems=j.triggers||[]; renderFtrig();
+  }catch(e){}
+}
+function ftrigDur(s){
+  s=Math.round(s||0);
+  for(const [n,u] of [[86400,'d'],[3600,'h'],[60,'m']]) if(s>=n&&s%n===0) return (s/n)+u;
+  return s+'s';
+}
+function ftrigTime(iso){ const d=new Date(iso); return isNaN(d)?'':trigClock(d); }
+function ftrigWhen(t){
+  const w=t.when||{};
+  switch(w.kind){
+    case 'cron': return tr('ftrig.cron',{c:w.cron||''});
+    case 'every': return tr('ftrig.every',{d:ftrigDur(w.every)});
+    case 'at': return tr('ftrig.at',{t:ftrigTime(w.at)});
+    case 'watch': return tr('ftrig.watch',{p:w.path||''});
+    case 'check': return tr('ftrig.check',{c:w.check||''});
+    default: return tr('ftrig.manual');
+  }
+}
+function ftrigRow(t,i){
+  const kind=(t.when||{}).kind;
+  const icon={cron:'calendar-clock',at:'alarm-clock',every:'repeat',watch:'file',check:'activity'}[kind]||'zap';
+  const meta=[ftrigWhen(t)];
+  if(t.paused) meta.push(tr('ftrig.paused'));
+  else if(t.due) meta.push(tr('trig.next',{t:ftrigTime(t.due)}));
+  else if(kind==='at'&&t.last) meta.push(tr('ftrig.done'));
+  let st='';
+  if(t.running) st=`<span class="tg run">${esc(tr('ftrig.running'))}</span>`;
+  else if(t.last){
+    const ok=t.last.exit===0&&!t.last.note;
+    const words=t.last.exit==null?(t.last.note||'?'):tr(ok?'ftrig.ok':'ftrig.exit',{t:ftrigTime(t.last.at),n:t.last.exit});
+    st=`<span class="tg${ok?'':' bad'}" title="${esc(t.last.note||'')}">${esc(words)}</span>`;
+  }
+  const card=t.sourceCard||{};
+  const fate=card.state==='removed'?' ('+tr('ftrig.removed')+')':card.state==='gone'?' ('+tr('ftrig.gone')+')':'';
+  const src=t.source
+    ?`<div class="fsrc">${esc(tr('ftrig.source'))} · <b>${esc(card.name||t.sourceName||'')}</b>${esc(fate)}<br><code>${esc(t.source.toLowerCase())}</code></div>`
+    :`<div class="fsrc">${esc(tr('ftrig.noSource'))}</div>`;
+  const open=ftrigOpen.has(t.id);
+  const tail=open&&t.last&&t.last.tail?`<div class="ttext">${esc(t.last.tail)}</div>`:'';
+  const acts=`<div class="facts">`+
+    (t.source?`<button onclick="ftrigRestore(${i})">${esc(tr('ftrig.restore'))}</button>`:'')+
+    `<button ${t.running?'disabled':''} onclick="ftrigAct('fire',${i})">${esc(tr('ftrig.fire'))}</button>`+
+    `<button onclick="ftrigAct('pause',${i},'&on=${t.paused?0:1}')">${esc(tr(t.paused?'ftrig.resume':'ftrig.pause'))}</button>`+
+    (ftrigConfirm===t.id
+      ?`<button class="danger" onclick="ftrigAct('rm',${i})">${esc(tr('ftrig.confirmRm'))}</button>`
+      :`<button onclick="ftrigConfirm=ftrigItems[${i}].id;renderFtrig()">${esc(tr('ftrig.rm'))}</button>`)+
+    `</div>`;
+  return `<div class="trow${t.paused?' busy':''}"><span class="ti">${ic(icon,'s16')}</span><div class="tm">`+
+    `<div class="tt"><b>${esc(t.name)}</b><span class="tg">${esc(t.id)}</span>${st}</div>`+
+    `<div class="tmeta">${esc(meta.join(' · '))}</div>`+
+    `<div class="tbody${open?' open':''}" onclick="ftrigToggle(${i},this)"><div class="tcode">$ ${esc(t.run)}</div>${tail}</div>`+
+    src+acts+`</div></div>`;
+}
+function renderFtrig(){
+  const el=document.getElementById('ftriglist');
+  el.innerHTML=ftrigItems.length?ftrigItems.map(ftrigRow).join(''):`<div class="tnote">${esc(tr('ftrig.empty'))}</div>`;
+}
+function ftrigToggle(i){
+  const t=ftrigItems[i]; if(!t) return;
+  if(ftrigOpen.has(t.id)) ftrigOpen.delete(t.id); else ftrigOpen.add(t.id);
+  renderFtrig();
+}
+async function ftrigAct(act,i,extra){
+  const t=ftrigItems[i]; if(!t) return;
+  ftrigConfirm=null;
+  try{
+    const r=await fetch('/fleet-triggers/'+act+'?id='+encodeURIComponent(t.id)+(extra||''),{method:'POST'});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok) toast(j.error||('HTTP '+r.status),3000);
+  }catch(e){ toast(e.message||String(e),3000); }
+  loadFtrig();
+}
+/* Restoring lands you in the card: that is what you came back for. */
+async function ftrigRestore(i){
+  const t=ftrigItems[i]; if(!t) return;
+  try{
+    const r=await fetch('/fleet-triggers/restore?id='+encodeURIComponent(t.id),{method:'POST',timeout:30000});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.id){ toast(j.error||('HTTP '+r.status),3000); return; }
+    closeFtrig(); await refreshState(); openTerm(j.id,j.name||'');
+  }catch(e){ toast(e.message||String(e),3000); }
+}
 function renderTrig(j){
   document.getElementById('trigname').textContent=j.name||'';
   trigItems=j.items||[];
@@ -4457,6 +4611,11 @@ function render(s,poll){
   mb.style.display=(marked||onlyMarked)?'':'none';
   mb.classList.toggle('on',onlyMarked);
   document.getElementById('markcount').textContent=marked?marked:'';
+  // FleetView's own triggers: shown once there are any, lit while one runs.
+  const fb=document.getElementById('ftrigbtn'), fn=s.fleetTriggers||0;
+  fb.style.display=fn?'':'none';
+  fb.classList.toggle('on',(s.fleetTriggersRunning||0)>0);
+  document.getElementById('ftrigcount').textContent=fn?fn:'';
   // What each card that changed status looked like until now — read before the anchors move under it.
   const now=Date.now(), changed=[];
   if(prevStatus) for(const t of s.terminals){

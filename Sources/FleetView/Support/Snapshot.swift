@@ -47,6 +47,9 @@ enum Snapshot {
             state.dialog = .closeAll
             shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
                   to: "\(dir)/dialog-close-\(suffix).png")
+            state.dialog = nil
+            shoot(FleetTriggersPopover().environmentObject(state), size: NSSize(width: 500, height: 640),
+                  appearance: appearance, to: "\(dir)/fleet-triggers-\(suffix).png")
             // Mid-drag: FleetView-1 lifted over the web-store-1 card's neighbourhood, the dock up.
             if let dragged = state.terminals.first(where: { $0.name == "FleetView-1" }),
                let target = state.terminals.first(where: { $0.name == "web-store-1" }) {
@@ -195,7 +198,39 @@ enum Snapshot {
     /// Also what the README's screenshots are drawn from, so it is invented, worded in the language
     /// the UI is drawn in, and names nothing on this machine: run it with `-AppleLanguages "(en)"`
     /// or `"(zh-Hans)"` for each README.
+    /// Fleet triggers in each state a row can be in: running, failed, paused, once and done, from
+    /// a card on the board, from a removed one, and from no card.
+    @MainActor private static func fillFleetTriggers(_ s: AppState) {
+        let now = Date()
+        let card = s.terminals.first?.id.uuidString
+        func t(_ id: String, _ name: String, _ when: FleetTriggerWhen, _ run: String, source: String?,
+               due: Date? = nil, last: FleetTriggerRun? = nil, paused: Bool? = nil) -> FleetTrigger {
+            FleetTrigger(id: id, name: name, when: when, run: run, cwd: nil, timeout: nil, source: source,
+                         sourceName: "nightly-review", sourceTranscript: nil, createdAt: now, paused: paused,
+                         due: due, last: last, runs: last == nil ? 0 : 3)
+        }
+        s.fleetTriggers = [
+            FleetTriggerStatus(trigger: t("3f9a1c2e", "daily review", FleetTriggerWhen(kind: "cron", cron: "0 9 * * *"),
+                "project-manager subagent -p FleetView --rm 'Review yesterday’s commits and list anything risky'",
+                source: card, due: now.addingTimeInterval(9 * 3600),
+                last: FleetTriggerRun(at: now.addingTimeInterval(-15 * 3600), reason: "cron", exit: 0, seconds: 214,
+                                      tail: "done  8e43b236  ⚙ daily review · ran 3m\nreply:\nNo risky changes.")),
+                running: false),
+            FleetTriggerStatus(trigger: t("a07be511", "watch inbox", FleetTriggerWhen(kind: "watch", path: "/Users/me/inbox"),
+                "project-manager subagent --resume 34538a3e --rm 'New files in ~/inbox: sort them'",
+                source: UUID().uuidString,
+                last: FleetTriggerRun(at: now.addingTimeInterval(-60), reason: "watch")), running: true),
+            FleetTriggerStatus(trigger: t("c4410d9b", "deploy when green", FleetTriggerWhen(kind: "check", check: "gh run list -L1 --json conclusion | grep -q success", interval: 120),
+                "./scripts/package_app.sh --install", source: nil,
+                last: FleetTriggerRun(at: now.addingTimeInterval(-7200), reason: "check", exit: 1, seconds: 41, tail: "error: build failed")),
+                running: false),
+            FleetTriggerStatus(trigger: t("e8b2f0aa", "every 30m sync", FleetTriggerWhen(kind: "every", every: 1800),
+                "rsync -a ~/notes/ /Volumes/backup/notes/", source: card, paused: true), running: false),
+        ]
+    }
+
     @MainActor private static func fill(_ s: AppState) {
+        defer { fillFleetTriggers(s) }
         let now = Date()
         func w(_ en: String, _ zh: String) -> String { Lang.current == .zh ? zh : en }
         let fv = Project(name: "FleetView", path: "/Users/me/dev/FleetView", isGit: true)

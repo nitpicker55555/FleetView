@@ -678,6 +678,7 @@ struct TopBar: View {
     /// Which address the QR is currently of. The Mac can have two and the phone is only ever on
     /// one of them, so the code has to be able to follow.
     @State private var showJobs = false
+    @State private var showFleetTriggers = false
 
     private var working: Int { state.terminals.filter { $0.status == .working }.count }
     private var needs: Int { state.terminals.filter { $0.status == .needsYou }.count }
@@ -696,6 +697,7 @@ struct TopBar: View {
             jobsButton
             updateButton
             searchField
+            fleetTriggersButton
             markFilterButton
             recentStripButton
             webButton
@@ -885,6 +887,21 @@ struct TopBar: View {
         return barButton("network", text: state.peerFleet.scanned && others > 0 ? "\(others)" : nil,
                          help: L(.topPeersHelp)) {
             state.togglePeerStrip()
+        }
+    }
+
+    /// The triggers FleetView itself runs. Always here, unlike the strip toggles: it is how you find
+    /// out that something will act on its own at three in the morning, and that question matters
+    /// most when you did not set the trigger up yourself.
+    private var fleetTriggersButton: some View {
+        let n = state.fleetTriggers.count
+        let running = state.fleetTriggers.contains(where: \.running)
+        return barButton(running ? "bolt.fill" : "bolt.badge.clock", text: n > 0 ? "\(n)" : nil,
+                         on: showFleetTriggers || running, help: L(.fleetTrigHelp)) {
+            showFleetTriggers.toggle()
+        }
+        .popover(isPresented: $showFleetTriggers, arrowEdge: .bottom) {
+            FleetTriggersPopover().environmentObject(state)
         }
     }
 

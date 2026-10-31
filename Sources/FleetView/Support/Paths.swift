@@ -12,6 +12,15 @@ enum FV {
     /// The trigger lists agents last reported (`AppState.triggerReports`). A cache, kept out of
     /// state.json on purpose: losing it costs a badge until the agent's next turn, not the board.
     static var triggersFile: URL { supportDir.appendingPathComponent("triggers.json") }
+    /// Triggers FleetView itself runs (`FleetTriggerEngine`) — not the agents' reports above. Kept
+    /// out of state.json for the same reason as the archive: a bad row here costs a trigger, not
+    /// the board.
+    static var fleetTriggersFile: URL { supportDir.appendingPathComponent("fleet-triggers.json") }
+    /// One log per fleet trigger: every run's output, with a header and an exit line.
+    static var fleetTriggerLogs: URL {
+        supportDir.appendingPathComponent("logs", isDirectory: true)
+            .appendingPathComponent("fleet-triggers", isDirectory: true)
+    }
     static var portFile: URL { supportDir.appendingPathComponent("port") }
     static var hookScript: URL { supportDir.appendingPathComponent("hook.sh") }
     static var logFile: URL { supportDir.appendingPathComponent("fleetview.log") }
