@@ -214,6 +214,7 @@ final class WebServer {
         if path == "/browse" { handleBrowse(conn, params, scope); return }
         if path == "/read" { handleRead(conn, params, scope); return }
         if path == "/conversation" { handleConversation(conn, params, scope); return }
+        if path == "/share" { handleShare(conn, request, body, params, scope); return }  // network; off it
         if path == "/commits" { handleCommits(conn, params, scope); return }
         if path == "/writers" { handleWriters(conn, params, scope); return }
         if path == "/repo" { handleRepo(conn, params, scope); return }  // parsing; off it
@@ -303,6 +304,7 @@ final class WebServer {
     /// GET /conversation?id=&limit= — a terminal's transcript as chat, which renders with native
     /// scrolling: how you read history on a phone, where the terminal mirror cannot scroll a TUI.
     /// The main actor only says which transcript and screen; reading them happens here.
+    /// `&full=1` is the whole file, every message — what sharing the whole conversation sends.
     private func handleConversation(_ conn: NWConnection, _ query: [String: String],
                                     _ scope: WebAudit.Scope) {
         func answer(_ status: String, _ body: Data) {
@@ -319,7 +321,50 @@ final class WebServer {
             }
             let spec = MainActor.assumeIsolated { app.conversationSpec(id) }
             DispatchQueue.global(qos: .userInitiated).async {
-                answer("200 OK", spec.respond(limit: limit))
+                answer("200 OK", spec.respond(limit: limit, whole: query["full"] == "1"))
+            }
+        }
+    }
+
+    /// POST /share?title= — the body is a finished conversation page (the web chat builds it); it
+    /// goes to the share service in `~/.fleetview/share.json` and the public link comes back.
+    /// POST /share?del=<id> takes one down. Off the main actor: it is a network round trip.
+    private func handleShare(_ conn: NWConnection, _ head: HTTPRequestHead?, _ body: Data,
+                             _ query: [String: String], _ scope: WebAudit.Scope) {
+        @Sendable func answer(_ status: String, _ payload: [String: Any],
+                              facts: [String: AuditValue] = [:]) {
+            let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+            WebAudit.shared.finish(scope, status: status, bytes: data.count, query: query, facts: facts)
+            send(conn, status: status, type: "application/json", body: data, setCookie: scope.setCookie)
+        }
+        guard head?.method.uppercased() == "POST" else {
+            answer("405 Method Not Allowed", ["error": "POST only"]); return
+        }
+        if let id = query["del"], !id.isEmpty {
+            ShareService.withdraw(id: id) { result in
+                switch result {
+                case .success: answer("200 OK", ["ok": true], facts: ["share.id": .string(id)])
+                case .failure(let f): answer("502 Bad Gateway", ["error": f.message],
+                                             facts: ["share.id": .string(id)])
+                }
+            }
+            return
+        }
+        guard !body.isEmpty, String(data: body, encoding: .utf8) != nil else {
+            answer("400 Bad Request", ["error": "the body has to be the page, as UTF-8"]); return
+        }
+        let title = query["title"] ?? ""
+        // What went out, and where it can be read: the record of what this LAN made public.
+        let facts: [String: AuditValue] = ["share.title": .string(title), "file.bytes": .int(body.count),
+                                           "file.sha256": .string(AuditDigest.sha256(data: body))]
+        ShareService.publish(html: body, title: title) { result in
+            switch result {
+            case .success(let p):
+                answer("200 OK", ["id": p.id, "url": p.url],
+                       facts: facts.merging(["share.id": .string(p.id), "share.url": .string(p.url)]) { $1 })
+            case .failure(let f):
+                let status = f.isNotConfigured ? "503 Service Unavailable" : "502 Bad Gateway"
+                answer(status, ["error": f.message, "unconfigured": f.isNotConfigured], facts: facts)
             }
         }
     }
