@@ -2316,7 +2316,7 @@ final class AppState: ObservableObject {
     /// One at a time. A first read of a long session is a second or more of parsing, and at launch
     /// every terminal asks at once — on the shared concurrent queue those ran side by side and their
     /// peaks added up. After the first read each one is incremental and takes milliseconds.
-    private static let tokenQueue = DispatchQueue(label: "ai.eigent.fleetview.tokens", qos: .utility)
+    private static let tokenQueue = DispatchQueue(label: "fun.puzhen.fleetview.tokens", qos: .utility)
 
     /// Re-read a terminal's transcript off the main thread and update its new-token curve + total.
     /// Cheap: debounced to ~1s (force-through on turn end), and skips the parse when the file is unchanged.

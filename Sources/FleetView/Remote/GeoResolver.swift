@@ -28,7 +28,7 @@ final class GeoResolver: @unchecked Sendable {
     private var tailscaleFetchedAt: Date?
     private var refreshInFlight = false
     private var publicCache: [String: (fields: [String: AuditValue], at: Date)] = [:]
-    private let queue = DispatchQueue(label: "ai.eigent.fleetview.geo", qos: .utility)
+    private let queue = DispatchQueue(label: "fun.puzhen.fleetview.geo", qos: .utility)
 
     private var hostGeoCache: [String: AuditValue] = [:]
     private var hostGeoFetchedAt: Date?

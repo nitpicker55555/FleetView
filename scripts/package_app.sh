@@ -45,7 +45,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleName</key><string>FleetView</string>
     <key>CFBundleDisplayName</key><string>FleetView</string>
-    <key>CFBundleIdentifier</key><string>ai.eigent.fleetview</string>
+    <!-- Every TCC grant, the UserDefaults domain and the WebKit data are keyed on this id, and the
+         signature's designated requirement embeds it. Changing it makes macOS see a different app:
+         each permission has to be added again under the new id. -->
+    <key>CFBundleIdentifier</key><string>fun.puzhen.fleetview</string>
     <key>CFBundleExecutable</key><string>FleetView</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>

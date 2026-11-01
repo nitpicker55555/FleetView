@@ -153,7 +153,7 @@ public final class MemoryAuditSink: AuditSink, @unchecked Sendable {
 public final class FileAuditSink: AuditSink, @unchecked Sendable {
     private let directory: URL
     private let encoder: AuditEncoder
-    private let queue = DispatchQueue(label: "ai.eigent.fleetview.audit", qos: .utility)
+    private let queue = DispatchQueue(label: "fun.puzhen.fleetview.audit", qos: .utility)
     private let maxFileBytes: Int
 
     private var handle: FileHandle?

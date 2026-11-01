@@ -7,6 +7,7 @@
 | **状态** | 已解决（文件访问、屏幕录制）；辅助功能待处理 |
 | **对应代码版本** | `c8fa298` |
 | **相关改动** | `c1a6e81`（固定身份签名）、`04846f9`（ATS） |
+| **2026-11-01** | bundle id 改为 `fun.puzhen.fleetview`，本文命令已随之更新。改 id 和换签名一样等于换了一个 app：旧 id 下的授权全部作废，每一项都要在新 id 下重新添加 |
 
 > 症结一句话：**TCC 记录里存的是"授权时那个 app 的签名要求"。把 app 从 ad-hoc 换成固定证书之后，此前所有授权都对不上号——开关看着是开的，实际全部失效。**
 
@@ -22,7 +23,7 @@
 ad-hoc 签名：   designated => cdhash H"aa3d8a32…"
                               ↑ 就是这个二进制的哈希本身
 
-固定证书签名： designated => identifier "ai.eigent.fleetview"
+固定证书签名： designated => identifier "fun.puzhen.fleetview"
                               and certificate leaf = H"4904e521…"
                               ↑ 只跟 bundle id + 证书绑定
 ```
@@ -66,7 +67,7 @@ FleetView 起的终端是它的子进程。终端里的 agent 读 `~/Desktop`、
 
 ```bash
 sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
-  "select service, hex(csreq) from access where client='ai.eigent.fleetview';"
+  "select service, hex(csreq) from access where client='fun.puzhen.fleetview';"
 ```
 
 | 记录 | `auth_value` | csreq 里含 bundle id + 证书哈希 | 实际能用吗 |
@@ -198,11 +199,11 @@ codesign -d -r- /Applications/FleetView.app | tail -1
 # 2) TCC 里有哪些记录、什么时候写的（需要 FDA）
 sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
   "select service, auth_value, datetime(last_modified,'unixepoch','localtime')
-   from access where client='ai.eigent.fleetview';"
+   from access where client='fun.puzhen.fleetview';"
 
 # 3) 记录绑的是不是当前证书 —— 开关状态不能说明问题
 sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" \
-  "select service, hex(csreq) from access where client='ai.eigent.fleetview';" \
+  "select service, hex(csreq) from access where client='fun.puzhen.fleetview';" \
   | grep -i 4904e521      # 换成你自己证书的哈希
 ```
 

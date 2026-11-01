@@ -56,7 +56,7 @@ struct WebSnapshot: Codable {
 /// here are the ones whose work is file I/O rather than state, so they stay off it.
 final class WebServer {
     private var listener: NWListener?
-    private let queue = DispatchQueue(label: "ai.eigent.fleetview.web")
+    private let queue = DispatchQueue(label: "fun.puzhen.fleetview.web")
     private(set) var port: Int = 0
     weak var app: AppState?
 

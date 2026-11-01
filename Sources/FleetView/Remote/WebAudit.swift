@@ -36,7 +36,7 @@ final class WebAudit: @unchecked Sendable {
     /// log that says "sent 40 characters to 3F2A9C4E" is a log nobody reads. Refreshed by the state
     /// layer, which is the only place that knows the names.
     private var terminalNames: [String: String] = [:]
-    private let queue = DispatchQueue(label: "ai.eigent.fleetview.webaudit", qos: .utility)
+    private let queue = DispatchQueue(label: "fun.puzhen.fleetview.webaudit", qos: .utility)
 
     static let cookieName = "fv_ws"
 
