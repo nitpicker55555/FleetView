@@ -15,7 +15,7 @@ import Foundation
 /// Scoping to the thread covers both, because in every case the push and the mutation happen on the
 /// same (main) thread.
 public enum AuditContext {
-    private static let key = "ai.eigent.fleetview.audit.context"
+    private static let key = "fun.puzhen.fleetview.audit.context"
 
     private struct Frame {
         let actor: AuditActor

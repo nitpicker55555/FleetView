@@ -87,7 +87,7 @@ final class FleetTriggerEngine: @unchecked Sendable {
     var auditor: Auditor = .disabled
     var onChange: (@Sendable ([FleetTriggerStatus]) -> Void)?
 
-    private let queue = DispatchQueue(label: "ai.eigent.fleetview.fleet-triggers", qos: .utility)
+    private let queue = DispatchQueue(label: "fun.puzhen.fleetview.fleet-triggers", qos: .utility)
     private var items: [FleetTrigger] = []
     private var procs: [String: Process] = [:]
     private var timedOut: Set<String> = []

@@ -422,7 +422,7 @@ final class RemoteServer {
     /// must not hold up an Escape aimed at a different agent.
     private func writeQueue(for session: String) -> DispatchQueue {
         if let q = writeQueues[session] { return q }
-        let q = DispatchQueue(label: "ai.eigent.fleetview.tmux-write.\(session)")
+        let q = DispatchQueue(label: "fun.puzhen.fleetview.tmux-write.\(session)")
         writeQueues[session] = q
         return q
     }
