@@ -1357,8 +1357,8 @@ def cmd_subagent(a):
     task = " ".join(a.text).strip()
     if not task:
         sys.exit("empty task")
-    if a.rm:
-        a.wait = True          # removing the card before its reply is in would throw the reply away
+    if a.rm or a.close:
+        a.wait = True          # ending the card before its reply is in would throw the reply away
     if a.resume:
         return _subagent_resume(a, task)
 
@@ -1413,7 +1413,7 @@ def cmd_subagent(a):
              "project-manager key %s enter" % (c("1", full), proj["name"], kind, full[:8]), 1)
     if a.wait:
         say("subagent %s in %s (%s) — task delivered, waiting for its reply" % (c("1", full), proj["name"], kind))
-        sys.exit(_finish_subagent(a, tid, before, remove=a.rm))
+        sys.exit(_finish_subagent(a, tid, before, end=_end_of(a)))
     done("subagent %s in %s (%s) — task delivered" % (c("1", full), proj["name"], kind))
 
 
@@ -1421,21 +1421,64 @@ def _term_now(tid):
     return next((t for t in state()["terminals"] if t["id"].lower() == tid.lower()), None)
 
 
-def _finish_subagent(a, tid, before, remove):
-    """Wait for the turn the task started, print the reply, and — with --rm — remove the card.
+def _end_of(a):
+    return "remove" if a.rm else "close" if a.close else None
 
-    The card goes only when the turn ended on its own. A timeout, or an agent stopped on a question,
-    leaves it on the board: removing it would kill a session that still has something to say, and
-    the whole point of a job that runs unattended is that someone can look at what it got stuck on.
+
+_FINISHED = ("completed", "complete", "done", "failed", "error", "killed", "stopped", "cancelled", "canceled")
+
+def _pending_work(tid):
+    """Background work the agent left running when its turn ended — a subagent, a shell, a monitor —
+    as its Stop hook reported it to FleetView (`/triggers`). The agent is woken when that work
+    reports back, so a turn that ended this way is a pause, not the end of the job."""
+    try:
+        r = json.loads(_get("/triggers?" + urllib.parse.urlencode({"id": tid}), timeout=10))
+    except (urllib.error.URLError, ValueError):
+        return []
+    return [i for i in r.get("items", [])
+            if i.get("kind") == "background" and (i.get("status") or "").lower() not in _FINISHED]
+
+
+def _finish_subagent(a, tid, before, end):
+    """Wait for the job the task started to be over, print the reply, then end the card if asked:
+    `remove` (--rm) takes it off the board, `close` (--close) stops its session and leaves it there.
+
+    "Over" is a turn that ended with nothing left running. A Claude that hands work to a background
+    subagent ends its turn while that runs and is woken when it reports — measured: the 11-01 daily
+    summary was removed after 3 minutes, mid-job, at "now reading the day's 2,485 transcript lines".
+    So an idle card with background work outstanding means wait for the next turn, as long as it takes.
+
+    The card is ended only when the job ended on its own. A timeout, or an agent stopped on a
+    question, leaves it as it is: ending it would kill a session that still has something to say,
+    and the point of a job that runs unattended is that someone can look at what it got stuck on.
     """
+    deadline = time.time() + a.timeout if a.timeout else None
     w = argparse.Namespace(timeout=a.timeout or 0, full=True, quiet=False, any=False)
-    rc = _wait_turns([tid], w, before={tid: before} if before else None)
-    if remove:
+    while True:
+        rc = _wait_turns([tid], w, before={tid: before} if before else None)
+        if rc != 0:
+            break
+        work = _pending_work(tid)
+        if not work:
+            break
+        print(c("90", "the turn ended with %d background task%s still running (%s) — waiting for the agent "
+                "to be woken by %s" % (len(work), "" if len(work) == 1 else "s",
+                                       "; ".join((i.get("text") or i.get("taskType") or "?")[:50] for i in work),
+                                       "it" if len(work) == 1 else "them")), file=sys.stderr, flush=True)
+        before = _term_now(tid)
+        left = (deadline - time.time()) if deadline else 6 * 3600
+        if left <= 0:
+            rc = 124
+            break
+        # The next turn starts when the work reports back, which takes as long as the work does.
+        w = argparse.Namespace(timeout=left if deadline else 0, full=True, quiet=False, any=False, start=left)
+    if end:
         if rc == 0:
-            api_json("/action?" + urllib.parse.urlencode({"id": tid, "do": "remove"}))
-            print(c("90", "removed card %s" % tid[:8].lower()), file=sys.stderr)
+            api_json("/action?" + urllib.parse.urlencode({"id": tid, "do": end}))
+            print(c("90", "%s card %s" % ("removed" if end == "remove" else "closed", tid[:8].lower())),
+                  file=sys.stderr)
         else:
-            print(c("90", "left card %s on the board (the turn did not end cleanly, exit %d)"
+            print(c("90", "left card %s as it is (the job did not end cleanly, exit %d)"
                     % (tid[:8].lower(), rc)), file=sys.stderr)
     return rc
 
@@ -1484,7 +1527,7 @@ def _subagent_resume(a, task):
         print(tid.lower())
         return
     # A card that was already open was someone's before this job came along: it stays.
-    sys.exit(_finish_subagent(a, tid, before, remove=a.rm and mine))
+    sys.exit(_finish_subagent(a, tid, before, end=_end_of(a) if mine else None))
 
 
 def cmd_commits(a):
@@ -1713,6 +1756,11 @@ def cmd_rm(a):
     t = resolve(state(), a.sel)
     api_json("/action?" + urllib.parse.urlencode({"id": t["id"], "do": "remove"}))
     print("removed %s" % t["name"])
+
+def cmd_close(a):
+    t = resolve(state(), a.sel)
+    api_json("/action?" + urllib.parse.urlencode({"id": t["id"], "do": "close"}))
+    print("closed %s — its card stays; clicking it resumes the conversation" % t["name"])
 
 RESTORED = {"already_open": "already open:", "reopened": "reopened", "restored": "restored",
             "created": "opened a new card:"}
@@ -3362,15 +3410,21 @@ def main():
                    help="give the task to this conversation (session id, or 8+ characters of it) instead of "
                         "a new agent — restored into its card like `restore`")
     s.add_argument("--wait", action="store_true", help="wait for the reply and print it")
-    s.add_argument("--rm", action="store_true",
-                   help="remove the card once the reply is in (implies --wait); a card that ends on a question, "
-                        "times out, or was already open beforehand is left on the board")
+    end = s.add_mutually_exclusive_group()
+    end.add_argument("--rm", action="store_true",
+                     help="remove the card once the job is over (implies --wait); a card that ends on a question, "
+                          "times out, or was already open beforehand is left as it is")
+    end.add_argument("--close", action="store_true",
+                     help="like --rm, but close it instead: the session stops, the card stays on the board and a "
+                          "click resumes its conversation")
     s.add_argument("-t", "--timeout", type=float, default=0,
                    help="with --wait: give up after SEC (exit 124, card left on the board)")
     s.set_defaults(fn=cmd_subagent)
     s = sub.add_parser("rename", help="relabel a terminal")
     s.add_argument("sel"); s.add_argument("text", nargs="+"); s.set_defaults(fn=cmd_rename)
     s = sub.add_parser("rm", help="remove a terminal (kills its session)"); s.add_argument("sel"); s.set_defaults(fn=cmd_rm)
+    s = sub.add_parser("close", help="close a terminal: its session stops, its card stays (a click resumes it)")
+    s.add_argument("sel"); s.set_defaults(fn=cmd_close)
     s = sub.add_parser("restore", help="bring a conversation back by its session id: its card, "
                                        "and the agent resumed in it")
     s.add_argument("sid", help="the conversation's session id (Claude or Codex), or its first 8+ characters")

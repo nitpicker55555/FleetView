@@ -60,30 +60,46 @@ list shows the source's uuid, and "Restore card" brings that card back in its la
 
 ## The usual command: an agent does a job and goes away
 
-`project-manager subagent` takes three options that make it a one-line job:
+`project-manager subagent` has options that make it a one-line job:
 
-- `--rm` waits for the reply, prints it, and removes the card. The card stays on the board if the
-  turn ended on a question, timed out (`-t SEC`), or the card was already open beforehand.
-- `--wait` waits for the reply and prints it, and keeps the card.
+- `--close` waits until the job is over, prints the reply, and closes the card. The session stops,
+  but the card stays on the board, and a click on it resumes that conversation. Prefer this one,
+  because the user can see what each run did.
+- `--rm` does the same but removes the card. A removed card goes to the drawer, out of sight.
+- `--wait` waits and prints the reply, and keeps the card running.
 - `--resume SESSION` gives the task to an existing conversation instead of a new agent. FleetView
   restores it into its card first, and the task is only typed once that agent is up.
 
+"Over" means a turn ended with **no background work left running**. If the agent hands work to a
+background subagent or shell, its turn ends while that work runs, and it is woken when the work
+reports back. The wait carries on through that. The card is left as it is if the job ended on a
+question, timed out (`-t SEC`), or the card was already open beforehand.
+
+**Put job agents in the 自动任务 project** (`-p 自动任务`), not in the project whose files they work on.
+That project exists for exactly this: its CLAUDE.md tells an unattended agent how to behave, and its
+section of the board collects the closed cards of past runs.
+
 ```bash
-# Every weekday at 09:00: a fresh agent reviews yesterday's commits, then its card goes.
+# Every weekday at 09:00: a fresh agent reviews yesterday's commits, then its card is closed.
 project-manager trigger add morning-review --cron '0 9 * * 1-5' \
-  --run "project-manager subagent -p FleetView --rm -t 1800 'Review yesterday’s commits on main and list anything risky. Write the list to ~/reviews/\$(date +%F).md'"
+  --run "project-manager subagent -p 自动任务 --close -t 1800 'Review yesterday’s commits on main in ~/PycharmProjects/FleetView and list anything risky. Write the list to ~/reviews/\$(date +%F).md'"
 
 # Every night: carry on in a particular conversation, then close its card.
 project-manager trigger add nightly-continue --cron '30 23 * * *' \
-  --run "project-manager subagent --resume 2cb10637 --rm 'Continue where we left off: process today’s new entries.'"
+  --run "project-manager subagent --resume 2cb10637 --close 'Continue where we left off: process today’s new entries.'"
 
 # When a file lands in a folder.
 project-manager trigger add inbox --watch ~/inbox \
-  --run "project-manager subagent -p home_puzhen --rm 'New files in ~/inbox: sort them into ~/docs.'"
+  --run "project-manager subagent -p 自动任务 --close 'New files in ~/inbox: sort them into ~/docs.'"
 
 # Once, in 45 minutes.
-project-manager trigger add check-run --at '+45m' --run "project-manager subagent -p FleetView --rm 'Is the harbor run finished? Summarise it.'"
+project-manager trigger add check-run --at '+45m' --run "project-manager subagent -p 自动任务 --close 'Is the harbor run finished? Summarise it.'"
 ```
+
+A long instruction belongs in a file, with the prompt saying "read <file> and do what it says".
+Text typed into Claude's input box submits at each newline, so a multi-line prompt would arrive as
+several messages. `~/PycharmProjects/home_puzhen/tools/daily-summary/` (run.sh + prompt.md) is a
+worked example. It runs as the `每日总结` trigger.
 
 Any program works, not only agents: `--run './backup.sh'`, `--run 'curl -X POST …'`. Quote the
 command for the shell you type it in. Use single quotes inside double quotes, and escape `$` that

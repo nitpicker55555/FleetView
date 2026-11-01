@@ -1505,6 +1505,27 @@ final class AppState: ObservableObject {
     /// looking for and start being weight in state.json, which is rewritten on every hook event.
     static let archiveCap = 200
 
+    /// End a terminal's session and keep its card (`/action?do=close`, `project-manager close`,
+    /// `subagent --close`): what closing its window does, for a card that may have no window — a
+    /// job a trigger started, a headless run. The agent stops (`remote.stop` kills the session and
+    /// sees off what outlives the hangup); the card stays on the board, closed, and a click on it
+    /// resumes its conversation. Removing would put it in the drawer, out of sight.
+    func closeTerminal(_ id: UUID) {
+        guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
+        audit.emit("fleetview.terminal.closed", categories: ["process"],
+                   message: "closed \"\(terminals[idx].name)\"", target: auditTarget(terminal: id))
+        if let c = controllers.removeValue(forKey: id) {
+            c.onClose = nil             // closed here, once — not again by the window's own handler
+            c.closeWindow()
+        }
+        hiddenFrames[id] = nil
+        terminals[idx].windowHidden = nil
+        forgetReportedTriggers(id)
+        remote.stop(id)
+        if terminals[idx].status != .exited { enterStatus(.closed, at: idx) }
+        save()
+    }
+
     private func removeTerminalUnaudited(_ id: UUID) {
         // Archive before anything is torn down — `transcriptPath(for:)` needs the terminal to still
         // be in `terminals`, and after this line the session id is unrecoverable.
@@ -2784,6 +2805,7 @@ final class AppState: ObservableObject {
         case "done":         toggleSubtaskDone(id)
         case "duplicate":    duplicateTerminal(id)
         case "remove":       removeTerminal(id)
+        case "close":        closeTerminal(id)
         case "leaveCluster": removeFromCluster(id)
         case "rename":       if let n = name?.trimmingCharacters(in: .whitespacesAndNewlines), !n.isEmpty { renameTerminal(id, to: n) }
         case "hide":         hideTerminal(id)
