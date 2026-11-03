@@ -53,9 +53,9 @@ enum Snapshot {
             state.dialog = nil
             shoot(FleetTriggersPopover().environmentObject(state), size: NSSize(width: 500, height: 640),
                   appearance: appearance, to: "\(dir)/fleet-triggers-\(suffix).png")
-            // Mid-drag: FleetView-1 lifted over the web-store-1 card's neighbourhood, the dock up.
-            if let dragged = state.terminals.first(where: { $0.name == "FleetView-1" }),
-               let target = state.terminals.first(where: { $0.name == "web-store-1" }) {
+            // Mid-drag: deploy lifted over the grid-skeleton card's neighbourhood, the dock up.
+            if let dragged = state.terminals.first(where: { $0.name == "deploy" }),
+               let target = state.terminals.first(where: { $0.name == "grid-skeleton" }) {
                 state.dialog = nil
                 state.draggingTerminalId = dragged.id
                 state.dragLocation = CGPoint(x: 900, y: 560)
@@ -140,7 +140,7 @@ enum Snapshot {
                 // The same conversations as removed cards of the first project, opened the way its
                 // archive button opens them, with the newest card selected.
                 if let home = state.projects.first {
-                    let names = ["FleetView-4", "search panel", "deploy 212", "perf pass", "web fold"]
+                    let names = ["tray-layout", "search panel", "deploy 212", "perf pass", "web fold"]
                     state.terminalArchive = zip(found, names).enumerated().map { i, pair in
                         TerminalArchive(id: UUID(), projectId: home.id, projectPath: home.path,
                                         name: pair.1, cwd: home.path, sessionId: nil,
@@ -215,20 +215,18 @@ enum Snapshot {
         s.fleetTriggers = [
             FleetTriggerStatus(trigger: t("3f9a1c2e", "daily review", FleetTriggerWhen(kind: "cron", cron: "0 9 * * *"),
                 "project-manager subagent -p FleetView --rm 'Review yesterday’s commits and list anything risky'",
-                source: card, due: now.addingTimeInterval(9 * 3600),
+                source: card, due: Calendar.current.nextDate(after: now, matching: DateComponents(hour: 9, minute: 0), matchingPolicy: .nextTime),
                 last: FleetTriggerRun(at: now.addingTimeInterval(-15 * 3600), reason: "cron", exit: 0, seconds: 214,
                                       tail: "done  8e43b236  ⚙ daily review · ran 3m\nreply:\nNo risky changes.")),
                 running: false),
-            FleetTriggerStatus(trigger: t("a07be511", "watch inbox", FleetTriggerWhen(kind: "watch", path: "/Users/me/inbox"),
+            FleetTriggerStatus(trigger: t("a07be511", "watch inbox", FleetTriggerWhen(kind: "watch", path: FV.home.appendingPathComponent("inbox").path),
                 "project-manager subagent --resume 34538a3e --rm 'New files in ~/inbox: sort them'",
                 source: UUID().uuidString,
                 last: FleetTriggerRun(at: now.addingTimeInterval(-60), reason: "watch")), running: true),
             FleetTriggerStatus(trigger: t("c4410d9b", "deploy when green", FleetTriggerWhen(kind: "check", check: "gh run list -L1 --json conclusion | grep -q success", interval: 120),
-                "./scripts/package_app.sh --install", source: nil,
-                last: FleetTriggerRun(at: now.addingTimeInterval(-7200), reason: "check", exit: 1, seconds: 41, tail: "error: build failed")),
+                "./scripts/package_app.sh --install", source: card,
+                last: FleetTriggerRun(at: now.addingTimeInterval(-7200), reason: "check", exit: 0, seconds: 41, tail: "installed FleetView.app")),
                 running: false),
-            FleetTriggerStatus(trigger: t("e8b2f0aa", "every 30m sync", FleetTriggerWhen(kind: "every", every: 1800),
-                "rsync -a ~/notes/ /Volumes/backup/notes/", source: card, paused: true), running: false),
         ]
     }
 
@@ -254,7 +252,7 @@ enum Snapshot {
             if let running { x.runningSince = now.addingTimeInterval(-running) }
             return x
         }
-        var fv1 = t(fv, "FleetView-1", .idle, .claude, ago: 1500, prompt: w("Deploy and push", "部署并 push"),
+        var fv1 = t(fv, "deploy", .idle, .claude, ago: 1500, prompt: w("Deploy and push", "部署并 push"),
                     tokens: 412_000)
         fv1.subtaskDone = true
         let cluster = Cluster(name: "backfill")
@@ -269,10 +267,10 @@ enum Snapshot {
         s.clusters = [cluster]
         s.wokenProjects = [data.id]       // so the group's outline is in the tall shot
         s.terminals = [
-            t(fv, "FleetView-3", .needsYou, .codex, ago: 60,
+            t(fv, "release-build", .needsYou, .codex, ago: 60,
               prompt: w("Allow swift build? It needs to write to .build/", "允许运行 swift build？需要写入 .build/ 目录"),
               tokens: 230_000),
-            t(fv, "FleetView-2", .working, .claude, ago: 5,
+            t(fv, "color-audit", .working, .claude, ago: 5,
               prompt: w("Rework the colours and labels so a card's state reads from its shape and colour alone",
                         "重新设计配色和标签，让卡片的状态只看形状和颜色就能分辨"),
               tokens: 64_000, running: 132),
@@ -286,7 +284,7 @@ enum Snapshot {
               prompt: w("Run the checkout e2e suite and group the failures by module in report.md",
                         "跑完结账流程的端到端测试，把失败用例按模块归类，写到 report.md"),
               tokens: 1_200_000, running: 847),
-            t(shop, "web-store-1", .working, .claude, ago: 1,
+            t(shop, "grid-skeleton", .working, .claude, ago: 1,
               prompt: w("Add a loading skeleton to the product grid", "给商品网格加一个加载骨架屏"),
               tokens: 3_100_000, running: 2),
             t(shop, "dev-server", .shell, .unknown, ago: 3600, prompt: "npm run dev"),
@@ -300,22 +298,22 @@ enum Snapshot {
             t(tmp, "load-test", .closed, .unknown, ago: 18_000,
               prompt: "for i in $(seq 50); do curl -s localhost:8123/health; done"),
         ]
-        // One run that has just started (web-store-1) and one that has just finished (FleetView-1),
+        // One run that has just started (grid-skeleton) and one that has just finished (deploy),
         // so both fresh colours are in every shot.
         freshen = { [weak s] in
             guard let s else { return }
-            if let i = s.terminals.firstIndex(where: { $0.name == "web-store-1" }) {
+            if let i = s.terminals.firstIndex(where: { $0.name == "grid-skeleton" }) {
                 s.terminals[i].runningSince = Date().addingTimeInterval(-2)
             }
-            if let fv1 = s.terminals.first(where: { $0.name == "FleetView-1" }) {
+            if let fv1 = s.terminals.first(where: { $0.name == "deploy" }) {
                 s.runEndedAt[fv1.id] = Date().addingTimeInterval(-2)
             }
             // Commits two cards have made, so the git chip is in every shot.
-            for (name, n) in [("FleetView-1", 7), ("FleetView-2", 2)] {
+            for (name, n) in [("deploy", 7), ("color-audit", 2)] {
                 if let t = s.terminals.first(where: { $0.name == name }) { s.cardCommitCounts[t.id] = n }
             }
             // …one with uncommitted work besides, and one with only that.
-            for (name, n) in [("FleetView-2", 3), ("web-store-1", 4)] {
+            for (name, n) in [("color-audit", 3), ("grid-skeleton", 4)] {
                 if let t = s.terminals.first(where: { $0.name == name }) { s.cardUncommittedCounts[t.id] = n }
             }
         }
