@@ -330,7 +330,10 @@ struct TerminalCardView: View {
                 Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
                 if n > 0 { Text("\(n)").font(.fvLabelSmall).monospacedDigit() }
                 if u > 0 {
-                    Circle().fill(Theme.warn).frame(width: 5, height: 5).padding(.leading, n > 0 ? 2 : 0)
+                    // On a card that has taken a colour the dot takes its ink, as the rest of the
+                    // chip does: the warn orange on the running card's deep purple (light theme) or
+                    // on the needs-you card's own orange could hardly be seen.
+                    Circle().fill(container?.fg ?? Theme.warn).frame(width: 5, height: 5).padding(.leading, n > 0 ? 2 : 0)
                     Text("\(u)").font(.fvLabelSmall).monospacedDigit()
                 }
             }
