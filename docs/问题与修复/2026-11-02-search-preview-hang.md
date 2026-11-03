@@ -3,10 +3,10 @@
 | 字段 | 内容 |
 |---|---|
 | 发现日期 | 2026-11-02 |
-| 状态 | 已修复（未部署） |
+| 状态 | 已修复（build 280 部署） |
 | 影响 | 在 ⌘K 搜索里点结果、在会话预览里移动鼠标时 app 卡住，一次 23 秒，只能强制退出（当天两次：16:44、20:40）。终端不受影响，tmux 会话都还在 |
 | 对应代码版本 | `63d3751`（build 274） |
-| 修复 | `Sources/FleetView/Search/SearchModel.swift`（`Preview.texts`/`shown`、`render`、`clip`、`showMore`、`snippets`）、`Sources/FleetView/UI/SearchPanel.swift`（`StepRow`）；分支 `feat/search-cards` |
+| 修复 | `Sources/FleetView/Search/SearchModel.swift`（`Preview.texts`/`shown`、`render`、`clip`、`showMore`、`snippets`）、`Sources/FleetView/UI/SearchPanel.swift`（`StepRow`）；commit `5f76c56` |
 
 ## 现象
 
