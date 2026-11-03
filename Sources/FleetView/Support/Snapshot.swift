@@ -134,6 +134,50 @@ enum Snapshot {
                     shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
                           to: "\(dir)/search-history-open-\(suffix).png")
                 }
+                // The card level: a project's two busiest conversations handed to two cards on the
+                // board and searched again, the busier card opened — then that card asked for by name.
+                let busiest = (m.projectGroups.first { $0.sessions.count > 1 }?.sessions ?? [])
+                    .sorted { $0.hits.count > $1.hits.count }
+                if busiest.count > 1, busiest[0].hits.count > 1, state.terminals.count > 1 {
+                    let saved = state.terminals.map(\.transcriptPath)
+                    state.terminals[0].transcriptPath = busiest[0].id
+                    state.terminals[1].transcriptPath = busiest[1].id
+                    func settle(_ done: () -> Bool) {
+                        let deadline = Date().addingTimeInterval(10)
+                        while !done(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+                        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+                    }
+                    m.reset()                         // the cards are read once per opening
+                    state.searchOpen = true
+                    m.mode = .history
+                    m.query = q
+                    settle { m.groups.contains { $0.holder != nil } }
+                    if let p = m.projectGroups.first(where: { !$0.cards.isEmpty }), let c = p.cards.first {
+                        // Folded first, as it arrives, with the card selected...
+                        m.expandedProjects.insert(p.id)
+                        m.expandedCards = []
+                        m.selectedKey = "c:\(c.id)"
+                        settle { true }
+                        shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
+                              to: "\(dir)/search-history-cards-folded-\(suffix).png")
+                        // ...then opened, on its newest message.
+                        m.expandedCards = [c.id]
+                        if let hit = c.sessions.flatMap(\.hits).max(by: { $0.ts < $1.ts }) {
+                            m.selectedKey = "h:\(hit.id)"
+                            m.showPreview(hit)
+                            settle { m.preview?.id == hit.id }
+                        }
+                        shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
+                              to: "\(dir)/search-history-cards-\(suffix).png")
+                    }
+                    m.query = state.terminals[0].name
+                    settle { m.groups.contains { $0.byCardName } }
+                    shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
+                          to: "\(dir)/search-history-byname-\(suffix).png")
+                    for (i, p) in saved.enumerated() { state.terminals[i].transcriptPath = p }
+                    m.query = q
+                    settle { !m.projectGroups.isEmpty }
+                }
                 let found = m.groups
                 state.searchOpen = false
                 m.reset()

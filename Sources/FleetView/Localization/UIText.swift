@@ -345,6 +345,20 @@ enum UIText {
     case searchProjectSummary(Int, Int)
     case searchProjectClosedHint
     case searchProjectOpenHint
+    case searchRolePrompt
+    case searchRoleReply(String)
+    case searchByCardName
+    case searchByCardNameHelp
+    case searchNoCard
+    case searchNoCardHelp
+    case searchCardRemoved
+    case searchCardClosedHint
+    case searchCardOpenHint
+    case searchShowEarlier(Int)
+    case searchShowLater(Int)
+    case searchByProjectName
+    case searchByProjectNameHelp
+    case searchProjectCards(Int, Int)
     case cardTriggers
     case trigChipHelp(Int, Int)
     case trigTitle
