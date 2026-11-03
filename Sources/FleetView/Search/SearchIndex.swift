@@ -735,6 +735,41 @@ enum SearchIndex {
         }
     }
 
+    /// Every folder a conversation was recorded in — the projects as search groups them.
+    static func projects() -> [String] {
+        queue.sync {
+            guard let db = open() else { return [] }
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT DISTINCT project FROM file WHERE project != ''",
+                                     -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            var out: [String] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let t = sqlite3_column_text(stmt, 0) { out.append(String(cString: t)) }
+            }
+            return out
+        }
+    }
+
+    /// The transcripts recorded in these folders.
+    static func files(inProjects projects: [String]) -> [String] {
+        guard !projects.isEmpty else { return [] }
+        return queue.sync {
+            guard let db = open() else { return [] }
+            var stmt: OpaquePointer?
+            let marks = projects.map { _ in "?" }.joined(separator: ",")
+            guard sqlite3_prepare_v2(db, "SELECT path FROM file WHERE project IN (\(marks))",
+                                     -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            for (i, p) in projects.enumerated() { bind(stmt, Int32(i + 1), p) }
+            var out: [String] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let t = sqlite3_column_text(stmt, 0) { out.append(String(cString: t)) }
+            }
+            return out
+        }
+    }
+
     /// Every message of one transcript, in file order.
     ///
     /// The windowed `context` is what paints first — it is two small queries and arrives instantly.

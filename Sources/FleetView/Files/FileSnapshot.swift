@@ -106,6 +106,33 @@ enum FileSnapshot {
                 case let a where a.hasPrefix("repo="): model.setHistoryRepo(String(a.dropFirst("repo=".count)))
                 case "cardCommit": if let c = model.cardCommits.first { model.openCommit(c.commit.sha, in: c.repoFolder) }
                 case "cardUncommitted": if let u = model.cardUncommitted.first { model.openUncommitted(u) }
+                // Snapshot only, for pictures of a card's work without real transcripts behind it:
+                // `demoAuthors=<sha>=<card>,…` names the card on each listed commit, and
+                // `demoCard=<card>|<sha>,…|<file>,…|<new file>,…` lists that card's commits and
+                // uncommitted files the way the ledger would.
+                case let a where a.hasPrefix("demoAuthors="):
+                    var cards: [String: CommitAuthor] = [:]
+                    for pair in a.dropFirst("demoAuthors=".count).split(separator: ",") {
+                        let kv = pair.split(separator: "=", maxSplits: 1).map(String.init)
+                        guard kv.count == 2, let c = model.commits.first(where: { $0.sha.hasPrefix(kv[0]) }) else { continue }
+                        let who = cards[kv[1]] ?? CommitAuthor(id: UUID(), name: kv[1], projectId: project.id,
+                                                               removed: false, cwd: project.path)
+                        cards[kv[1]] = who
+                        model.commitAuthors[c.sha] = who
+                    }
+                case let a where a.hasPrefix("demoCard="):
+                    let parts = a.dropFirst("demoCard=".count).split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                    let list = { (i: Int) in parts.count > i ? parts[i].split(separator: ",").map(String.init) : [] }
+                    let card = model.commitAuthors.values.first { $0.name == parts[0] }
+                        ?? CommitAuthor(id: UUID(), name: parts[0], projectId: project.id, removed: false, cwd: project.path)
+                    model.historyCard = card
+                    model.sidebarHidden = false
+                    model.sideMode = .history
+                    model.cardCommits = model.commits.filter { c in list(1).contains { c.sha.hasPrefix($0) } }
+                        .map { CardCommit(commit: $0, repoFolder: "") }
+                    let files = list(2) + list(3)
+                    model.cardUncommitted = files.isEmpty ? [] : [CardUncommitted(repoFolder: "", files: files, untracked: list(3))]
+                    model.cardCommitsLoading = false
                 case "hideSidebar": model.sidebarHidden = true
                 case "useDisk": model.useDiskVersion(id)
                 case "save": model.saveTabs(model.unsavedTabs) { ok in print("files snapshot: saveTabs ok=\(ok)") }

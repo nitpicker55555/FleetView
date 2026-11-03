@@ -3253,6 +3253,33 @@ extension AppState {
             return done("restored", t.id)
         }
         let folder = (codex ? CodexSession.rolloutCwd(path) : Self.claudeConversationCwd(path)) ?? ""
+        // A conversation its card moved on from — a `/clear`, a reopen that could not resume — is
+        // pointed at by neither the board nor the drawer, which keep a card's last one only; the
+        // audit log has it bound (`transcript_bound`). It comes back as that card, under its name.
+        // Without this it was named after the message search landed on ("⌕ 好。做法是：先停掉 su"):
+        // on 2026-11-02, 407 of the 762 bound conversations still on disk would have come back so.
+        // The card keeps its id too unless it is on the board, holding the conversation it moved on
+        // to; then this one opens beside it as the next `name (n)`, as near as a unique name gets.
+        if let card = CommitLedger.binding(path: AgentHome.canonical(path)) {
+            let live = terminals.first { $0.id == card.terminal }
+            let row = terminalArchive.filter { $0.id == card.terminal }.max { $0.removedAt < $1.removedAt }
+            let home = live.flatMap { project($0.projectId)?.path } ?? row?.projectPath ?? row?.cwd ?? card.cwd ?? folder
+            let cwd = [live?.cwd, row?.cwd, card.cwd].compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) }
+            if !home.isEmpty, let pid = boardProject(containing: home),
+               let t = newTerminal(projectId: pid, name: live?.name ?? row?.name ?? card.name,
+                                   id: live == nil ? card.terminal : nil, cwd: cwd) {
+                // hook.sh's pointer for a reused id still names the conversation the card moved on
+                // to, and it is what `transcriptPath` believes first — until the resumed agent's
+                // first hook, the card would show that one.
+                if t.id == card.terminal { rewriteSessionPointer(t.id, transcript: path, cwd: folder.isEmpty ? home : folder) }
+                // Which CLI is the conversation's, not the card's: a card can have run both. Its
+                // sub-pool setting carries over only where it ran the same one.
+                let kind: AgentKind = codex ? .codex : .claude
+                let held = [live?.agentKind, row?.agentKind].compactMap { $0 }.first { $0 != .unknown }
+                bring(t.id, kind: kind, subPool: held == kind ? (live?.subPool ?? row?.subPool) : nil, lastPrompt: nil)
+                return done("restored", t.id)
+            }
+        }
         guard !folder.isEmpty, let pid = boardProject(containing: folder) else {
             return ("422 Unprocessable Entity", ["error": "could not tell which folder \(sid) ran in"])
         }

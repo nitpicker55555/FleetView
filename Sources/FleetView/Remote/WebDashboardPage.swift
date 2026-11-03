@@ -1784,9 +1784,12 @@ function showCached(c){
    in the box when you opened another — and Send would have given it to that one. And a
    conversation reopened from this device's cache was scrolled to its end while the overlay was
    still hidden, which a browser may ignore: it then opened wherever the cached list began, which
-   is 150 messages back, the middle of the conversation. Now each card reopens where you left it:
-   at the latest message if that is where you were, else at the message you were reading. */
-const POS_KEY='fv_pos', DRAFT_KEY='fv_draft', PER_CARD_MAX=60;
+   is 150 messages back, the middle of the conversation. Now a card opens at its latest message,
+   every time — that is what you open one to see (2026-11-03). It used to reopen at the message you
+   had been reading when you left, which put you in the middle of a conversation that had moved on.
+   The place still kept per card is the unsent text. */
+const DRAFT_KEY='fv_draft', PER_CARD_MAX=60;
+try{ localStorage.removeItem('fv_pos'); }catch(e){}       // where each card was read, no longer used
 function cardMap(key){ try{ return JSON.parse(localStorage.getItem(key)||'{}')||{}; }catch(e){ return {}; } }
 function cardPut(key,id,val){
   if(!id)return;
@@ -1824,11 +1827,6 @@ function settleAt(el,at){
     if(settle&&settle.since===since&&chatTouched<since&&curId) goTo(el,at);
   },ms);
 }
-function savePos(){
-  const el=document.getElementById('chat');
-  if(!curId||pendingPos||!el.querySelector('.msg')) return;   // nothing of its own on screen yet
-  cardPut(POS_KEY,curId,readingAt(el));
-}
 function saveDraft(){
   if(!curId)return;
   const v=document.getElementById('inputtext').value;
@@ -1841,8 +1839,8 @@ function loadDraft(id){
 }
 ['wheel','touchstart','keydown','mousedown'].forEach(ev=>
   document.getElementById('chat').addEventListener(ev,()=>{ chatTouched=performance.now(); },{passive:true}));
-window.addEventListener('pagehide',()=>{ savePos(); saveDraft(); });
-document.addEventListener('visibilitychange',()=>{ if(document.hidden){ savePos(); saveDraft(); } });
+window.addEventListener('pagehide',()=>{ saveDraft(); });
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) saveDraft(); });
 
 /* Where the board was when you opened a terminal, so closing one puts you back there instead of at
    the top of the list — on a phone, three projects up.
@@ -1859,29 +1857,36 @@ function lockBoard(){
 }
 /* The offset alone is not enough to be right: the board can rebuild while you are away — a terminal
    removed, a cluster formed, a card grown a second line — and then the number points at something
-   else. So the card you came out of has the last word. It is not "restore a scroll position", it is
+   else. So the card you came in from has the last word. It is not "restore a scroll position", it is
    "keep looking at that terminal"; the offset is just the cheapest way to hold still when nothing
-   moved, and scrolling is only forced when the card would otherwise be off screen. */
-function unlockBoard(id){
+   moved, and scrolling is only forced when the card would otherwise be off screen.
+   A card in 进行中 is drawn twice, there and in its project, and "the card you came in from" is the
+   copy you tapped. It used to be the project's copy whichever you tapped, so leaving a card opened
+   from 进行中 scrolled the board away to its project. When that copy has gone while you were away —
+   the run ended and 进行中 let it go — the offset is all there is, and the board stays put. */
+let boardFrom=null;                        // {id, now}: the card tapped, and whether in 进行中
+function unlockBoard(){
   document.body.classList.remove('locked');
   document.body.style.top='';
   window.scrollTo(0,boardY);
   showBoardHead();                         // coming back is not reading on; the menu should be there
-  // The last one: a running terminal is drawn twice now (once in the strip at the top, once in its
-  // project), and "the card you came out of" means the one in the board, not the summary copy.
-  const all=id?document.querySelectorAll('.card[data-id="'+id+'"]'):[];
-  const card=all.length?all[all.length-1]:null;
+  const from=boardFrom; boardFrom=null;
+  if(!from) return;
+  const card=[...document.querySelectorAll('.card[data-id="'+from.id+'"]')]
+    .find(c=>!c.closest('section.proj')===from.now);
   if(!card) return;
   const r=card.getBoundingClientRect();
   if(r.top<8||r.bottom>window.innerHeight-8) card.scrollIntoView({block:'center'});
 }
-function openTerm(id,name){
-  if(curId&&curId!==id){ savePos(); saveDraft(); }          // leaving one card for another
+/* `from`: the card element tapped to get here, when it was one (see unlockBoard). */
+function openTerm(id,name,from){
+  if(from&&!document.body.classList.contains('locked')) boardFrom={id,now:!from.closest('section.proj')};
+  if(curId&&curId!==id) saveDraft();                       // leaving one card for another
   endPick(); closeShare();
   curId=id;curUrl='';termLoaded=false;chatFails=0;termGone=false;
   // Shown before anything is drawn into it: a pane that is not laid out cannot be scrolled.
   document.getElementById('term').classList.add('show');
-  pendingPos=cardMap(POS_KEY)[id]||{bottom:true}; settle=null; liveSeen=false;
+  pendingPos={bottom:true}; settle=null; liveSeen=false;
   const cached=cacheGet(id);
   if(cached&&cached.messages&&cached.messages.length) showCached(cached); else showSkeleton();
   loadDraft(id);
@@ -1967,11 +1972,11 @@ swipeBack('term','chat','pre.code,.mbody,#presets,#keys,#inputbar,#drawer,#tabs'
    long-press to copy, a code preview scrolls sideways, and a PDF is an iframe that pans itself. */
 swipeBack('fb','fbbody','#fbpath,#fbcrumbs,pre,iframe,textarea,.fbtools,table',()=>fbClose());
 function closeTerm(){
-  savePos(); saveDraft();
+  saveDraft();
   closeDrawer(); showTermHead();
   document.getElementById('stickyq').classList.remove('on');
   document.getElementById('term').classList.remove('show');
-  unlockBoard(curId);                      // back to the card you came from, not to the top
+  unlockBoard();                           // back to the card you came in from, not to the top
   syncViewport();                          // drop the keyboard-era height/offset
   document.getElementById('termframe').src='about:blank';
   document.getElementById('termerr').classList.remove('on');
@@ -2107,19 +2112,9 @@ async function loadChat(){
     if(curInfo.shell) await renderShell();
     else {
       renderChat(j.messages||[],j.note); cachePut(want,j);
-      // The first live list is the last word on where to open. If what you were reading is not in
-      // it — it has scrolled out of the last 150 since — the latest is the next best place: the
-      // cached copy may have found it, but holding on to a message that is about to vanish would
-      // leave you at whatever the list now starts with.
-      if(!liveSeen&&(j.messages||[]).length){
-        liveSeen=true;
-        const el=document.getElementById('chat'), at=pendingPos||(settle&&settle.at);
-        const untouched=!settle||chatTouched<settle.since;
-        if(at&&!at.bottom&&untouched&&!el.querySelector('.msg[data-k="'+at.k+'"]')){
-          goTo(el,{bottom:true}); settleAt(el,{bottom:true});
-        }
-        pendingPos=null;
-      }
+      // The first live list is the last word on where to open: the latest message, which
+      // renderChat has just gone to.
+      if(!liveSeen&&(j.messages||[]).length){ liveSeen=true; pendingPos=null; }
     }
     renderInfo(curInfo);
     renderPerm(curInfo);
@@ -2322,10 +2317,8 @@ function syncSendBtn(){
   btn.dataset.stop=stop?'1':'';
 }
 function jumpLatest(){ const el=document.getElementById('chat'); el.scrollTop=el.scrollHeight; }
-let posSaveT=0;
 document.getElementById('chat').addEventListener('scroll',()=>{
   const el=document.getElementById('chat');
-  clearTimeout(posSaveT); posSaveT=setTimeout(savePos,300);
   document.getElementById('jump').classList.toggle('on', el.scrollHeight-el.scrollTop-el.clientHeight>300);
   updateStickyPrompt();
 });
@@ -3573,7 +3566,7 @@ async function fbOpenPath(p){
 function fbClose(){
   if(!fbLeaveOk()) return;
   document.getElementById('fb').classList.remove('show');
-  unlockBoard('');
+  unlockBoard();
   fbDir=fbRoot=fbFile=''; fbDoc=null;
   fbSyncHash();
 }
@@ -4243,7 +4236,7 @@ function onUp(e){
   // happen, not a slow tap. Opening the terminal there surprised people who had only paused.
   if(heldStill) return;
   if(!wasActive){ // a tap, not a drag
-    if(drag.canopen)openTerm(drag.id,drag.name);else toast(tr('toast.openOnMac'));
+    if(drag.canopen)openTerm(drag.id,drag.name,drag.card);else toast(tr('toast.openOnMac'));
     return;
   }
   if(drop){

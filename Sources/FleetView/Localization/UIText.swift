@@ -345,6 +345,20 @@ enum UIText {
     case searchProjectSummary(Int, Int)
     case searchProjectClosedHint
     case searchProjectOpenHint
+    case searchRolePrompt
+    case searchRoleReply(String)
+    case searchByCardName
+    case searchByCardNameHelp
+    case searchNoCard
+    case searchNoCardHelp
+    case searchCardRemoved
+    case searchCardClosedHint
+    case searchCardOpenHint
+    case searchShowEarlier(Int)
+    case searchShowLater(Int)
+    case searchByProjectName
+    case searchByProjectNameHelp
+    case searchProjectCards(Int, Int)
     case cardTriggers
     case trigChipHelp(Int, Int)
     case trigTitle
@@ -537,6 +551,20 @@ enum UIText {
     case fleetTrigRemove
     case fleetTrigConfirmRemove
     case fleetTrigOutput
+    case fleetTrigCopyID
+    case fleetTrigDaily(String)
+    case fleetTrigWeekly(String, String)
+    case fleetTrigMonthly(String, String)
+    case fleetTrigEveryMinutes(Int)
+    case fleetTrigEveryHours(Int)
+    case fleetTrigOnChange(String)
+    case fleetTrigOnCheck
+    case fleetTrigCopied
+    case fleetTrigSkipped
+    case fleetTrigTimedOut
+    case fleetTrigNotStarted
+    case fleetTrigOK(String)
+    case fleetTrigExit(Int32)
     case menuShareSettings
     case shareSettingsTitle
     case shareSettingsBody

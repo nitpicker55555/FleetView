@@ -65,6 +65,25 @@ final class SearchModel: ObservableObject {
         /// The removed card this transcript last lived in — archive mode only. There every row is
         /// the same project, and what tells them apart is the card: its name and its last prompt.
         var card: TerminalArchive? = nil
+        /// The card this conversation ran in, on the board or long gone (see
+        /// `AppState.cardsByTranscript`). nil when no card ever held it — a `claude` started in a
+        /// plain terminal.
+        var holder: CommitAuthor? = nil
+        /// Listed because its card's *name* matched, not anything said in it: `hits` is then only
+        /// the conversation's last message, standing in for the whole of it.
+        var byCardName = false
+        /// The same, for its project's name (see `namedProjectConversations`).
+        var byProjectName = false
+    }
+
+    /// The level between a project and its messages: one card's share of them. Only drawn where it
+    /// tells something apart (see `ProjectGroup.cards`).
+    struct CardGroup: Identifiable {
+        let id: String                  // "<project path>|<card id>", "|" alone for no card
+        let holder: CommitAuthor?
+        var sessions: [Group]
+        var count: Int
+        var newest: String
     }
 
     /// The level above a session. Answers "how many projects matched, and which one do I want" —
@@ -77,6 +96,14 @@ final class SearchModel: ObservableObject {
         var count: Int                  // hits below, across everything
         /// The newest matching message, which is what projects and their hits are ordered by.
         var newest: String = ""
+        /// Its conversations by the card that held them, newest first — only when the hits come
+        /// from more than one card and some card has several. Then a flat list is the same card's
+        /// messages strewn between the others', and which card it was is what you aim at next.
+        /// Empty otherwise, and the project's hits are listed flat, each naming its card.
+        var cards: [CardGroup] = []
+        /// Its name matched: its whole history is listed, and always by card — the cards are what
+        /// was asked for.
+        var byName = false
     }
 
     @Published var query = "" { didSet { scheduleSearch() } }
@@ -102,6 +129,21 @@ final class SearchModel: ObservableObject {
         else { expandedProjects.insert(p.id) }
     }
 
+    /// The cards opened in the list. Closed to begin with, like projects: the card is the choice.
+    @Published var expandedCards: Set<String> = []
+
+    func isExpanded(_ c: CardGroup) -> Bool { expandedCards.contains(c.id) }
+
+    func toggle(_ c: CardGroup) {
+        if expandedCards.contains(c.id) { expandedCards.remove(c.id) }
+        else { expandedCards.insert(c.id) }
+    }
+
+    /// Each listed message as the list draws it, windowed onto its first match — worked out with the
+    /// results rather than in the row. A pasted log runs to 250 KB, and flattening one to show 240
+    /// characters on every redraw of every visible row is part of what made browsing stall.
+    private(set) var snippets: [Int64: String] = [:]
+
     @Published private(set) var projectGroups: [ProjectGroup] = []
     @Published private(set) var groups: [Group] = []
     @Published private(set) var total = 0
@@ -122,6 +164,10 @@ final class SearchModel: ObservableObject {
 
     private var pending: DispatchWorkItem?
     private let limit = 300
+    /// Which card held each conversation, taken once per opening of the panel: it reads every card's
+    /// hook pointer from disk, which is not something to do again on every keystroke, and the cards
+    /// do not change while you search.
+    private var book: AppState.CardBook?
 
     // MARK: - Index
 
@@ -180,23 +226,156 @@ final class SearchModel: ObservableObject {
         }
         failure = nil
         let scope = self.scope, source = self.source, limit = self.limit
+        if book == nil { book = app?.cardBook() }
+        let book = self.book
+        // Inside one conversation every hit is the same card, so its name picks out nothing.
+        let byName = mode == .history
+        let board = (app?.projects ?? []).map { (path: $0.path, name: $0.name) }
         let started = Date()
         // Off the main actor: SQLite is fast here, but the panel must not hitch while typing.
         Task.detached(priority: .userInitiated) {
             let hits = SearchIndex.search(q, scope: scope, limit: limit, source: source, paths: paths)
-            let sessions = Self.group(hits)
+            let cards = book.map { AppState.cardsByTranscript($0) } ?? [:]
+            let named = byName ? Self.namedConversations(q, cards: cards, besides: Set(hits.map(\.path)),
+                                                         source: source) : []
+            let inProjects = byName ? Self.namedProjectConversations(q, board: board,
+                                                                     besides: Set((hits + named).map(\.path)),
+                                                                     source: source) : []
+            let byId = Dictionary(cards.map { (Self.conversationId($0.key), $0.value) },
+                                  uniquingKeysWith: { a, _ in a })
+            let sessions = (Self.group(hits)
+                            + Self.group(named).map { g -> Group in
+                                var g = g
+                                g.byCardName = true
+                                return g
+                            }
+                            + Self.group(inProjects).map { g -> Group in
+                                var g = g
+                                g.byProjectName = true
+                                return g
+                            })
+                .map { g -> Group in
+                    var g = g
+                    g.holder = Self.holder(of: g.id, in: cards, byId: byId)
+                    return g
+                }
+            let terms = SearchIndex.terms(q)
+            let snippets = Dictionary((hits + named + inProjects).map { ($0.id, Self.snippet($0.body, terms: terms)) },
+                                      uniquingKeysWith: { a, _ in a })
             let ms = Date().timeIntervalSince(started) * 1000
             await MainActor.run { [weak self] in
                 guard let self, self.query.trimmingCharacters(in: .whitespacesAndNewlines) == q
                 else { return }                      // a newer keystroke already won
+                self.snippets = snippets
                 self.groups = sessions
                 self.projectGroups = self.byProject(sessions)
-                self.total = hits.count
+                self.total = hits.count + named.count + inProjects.count
                 self.truncated = hits.count >= limit
                 self.elapsed = ms
                 self.autoFocusSingleProject()
             }
         }
+    }
+
+    /// The conversations of every card whose name has all of the query's terms in it, as their last
+    /// messages — less the ones already found by what was said in them. Card names are unique on the
+    /// board now, so a name is a way to ask for one card's history; the board itself (`fleet`) only
+    /// knows the cards still on it, and only the conversation each is in now.
+    nonisolated private static func namedConversations(_ q: String, cards: [String: CommitAuthor],
+                                                       besides found: Set<String>,
+                                                       source: SearchIndex.Source?) -> [SearchIndex.Hit] {
+        let terms = SearchIndex.terms(q).map { $0.lowercased() }
+        // One letter is in most names, and would list the whole history as "matched by name".
+        guard terms.joined().count >= 2 else { return [] }
+        let paths = cards.filter { path, card in
+            !found.contains(path) && terms.allSatisfy { card.name.lowercased().contains($0) }
+        }.keys
+        return paths.compactMap { SearchIndex.lastHit(path: $0) }
+            .filter { source == nil || $0.src == source }
+    }
+
+    /// Every conversation recorded in a project whose name has all of the query's terms in it, as
+    /// their last messages — the way to a project's whole history, listed under the cards that held
+    /// it. Not a subagent's or a Codex worker's own transcript (each is part of a conversation that is
+    /// listed), and not one whose file is gone, which there would be nothing to resume from.
+    nonisolated private static func namedProjectConversations(_ q: String, board: [(path: String, name: String)],
+                                                              besides found: Set<String>,
+                                                              source: SearchIndex.Source?) -> [SearchIndex.Hit] {
+        let terms = SearchIndex.terms(q).map { $0.lowercased() }
+        guard terms.joined().count >= 2 else { return [] }
+        func matches(_ name: String) -> Bool {
+            let name = name.lowercased()
+            return terms.allSatisfy { name.contains($0) }
+        }
+        // By the folder's own name, or by what the board calls the project in that folder.
+        let boardNamed = Set(board.filter { matches($0.name) }.map(\.path))
+        let projects = SearchIndex.projects().filter {
+            boardNamed.contains($0) || matches(($0 as NSString).lastPathComponent)
+        }
+        let fm = FileManager.default
+        return SearchIndex.files(inProjects: projects)
+            .filter { path in
+                !found.contains(path) && !path.contains("/subagents/") && fm.fileExists(atPath: path)
+                    && !CodexTree.isWorkerRollout(path)
+            }
+            .compactMap { SearchIndex.lastHit(path: $0) }
+            .filter { source == nil || $0.src == source }
+    }
+
+    /// The card a transcript belongs to. A Claude subagent's transcript is filed under its
+    /// conversation (`<sid>/subagents/agent-*.jsonl`) and belongs to whichever card that is. Failing
+    /// the path, the conversation id: a reverted Codex thread goes on in a new file under the same
+    /// id, and the card was bound to whichever of them it saw.
+    nonisolated private static func holder(of path: String, in cards: [String: CommitAuthor],
+                                           byId: [String: CommitAuthor]) -> CommitAuthor? {
+        if let c = cards[path] { return c }
+        let dir = (path as NSString).deletingLastPathComponent
+        if (dir as NSString).lastPathComponent == "subagents",
+           let c = cards[(dir as NSString).deletingLastPathComponent + ".jsonl"] { return c }
+        let id = conversationId(path)
+        return id.isEmpty ? nil : byId[id]
+    }
+
+    nonisolated private static func conversationId(_ path: String) -> String {
+        AgentHome.isCodex(path) ? CodexTree.sessionId(fromRollout: path)
+                                : ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+    }
+
+    /// One line, collapsed and windowed onto the first match — a matched prompt is often a wall of
+    /// pasted text, and taking the first 240 characters of one regularly showed no match at all.
+    ///
+    /// Cut down to a few thousand characters around the match before anything else: flattening a
+    /// 250 KB log line by line to show 240 characters of it is the work this exists to avoid.
+    nonisolated static func snippet(_ body: String, terms: [String]) -> String {
+        var text = Substring(body)
+        if body.utf16.count > 4000 {
+            let at = firstMatch(in: body, terms: terms) ?? body.startIndex
+            let from = body.index(at, offsetBy: -1000, limitedBy: body.startIndex) ?? body.startIndex
+            let to = body.index(from, offsetBy: 3000, limitedBy: body.endIndex) ?? body.endIndex
+            text = body[from..<to]
+        }
+        let flat = text.split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "  ")
+        let cutBefore = text.startIndex > body.startIndex, cutAfter = text.endIndex < body.endIndex
+        let width = 240
+        guard flat.count > width else {
+            return (cutBefore ? "…" : "") + flat + (cutAfter ? "…" : "")
+        }
+        guard let hit = firstMatch(in: flat, terms: terms) else { return String(flat.prefix(width)) + "…" }
+        let lead = 60
+        var start = flat.index(hit, offsetBy: -lead, limitedBy: flat.startIndex) ?? flat.startIndex
+        if flat.distance(from: start, to: flat.endIndex) < width {
+            start = flat.index(flat.endIndex, offsetBy: -width)
+        }
+        let end = flat.index(start, offsetBy: width, limitedBy: flat.endIndex) ?? flat.endIndex
+        return (start > flat.startIndex || cutBefore ? "…" : "") + flat[start..<end]
+            + (end < flat.endIndex || cutAfter ? "…" : "")
+    }
+
+    nonisolated static func firstMatch(in text: String, terms: [String]) -> String.Index? {
+        terms.compactMap { text.range(of: $0, options: .caseInsensitive)?.lowerBound }.min()
     }
 
     /// Removed terminals, as search results.
@@ -351,6 +530,7 @@ final class SearchModel: ObservableObject {
     private func autoFocusSingleProject() {
         if projectGroups.count == 1 { expandedProjects = [projectGroups[0].id] }
         else { expandedProjects.formIntersection(projectGroups.map(\.id)) }
+        expandedCards.formIntersection(projectGroups.flatMap(\.cards).map(\.id))
     }
 
     /// Bucket by transcript, preserving BM25 order: the first time a file appears decides where
@@ -402,9 +582,36 @@ final class SearchModel: ObservableObject {
             guard var g = acc[key] else { return nil }
             g.sessions.sort { ($0.hits.first?.ts ?? "") > ($1.hits.first?.ts ?? "") }
             g.newest = g.sessions.first?.hits.first?.ts ?? ""
+            g.byName = g.sessions.contains { $0.byProjectName }
+            g.cards = byCard(g)
             return g
         }
         .sorted { $0.newest > $1.newest }
+    }
+
+    /// A project's conversations under the cards that held them (see `ProjectGroup.cards`), newest
+    /// card first; the ones no card held go last, together. Archive mode never gets here with more
+    /// than one row per card, and its rows are the cards already.
+    private func byCard(_ p: ProjectGroup) -> [CardGroup] {
+        guard folds else { return [] }
+        var order: [String] = []
+        var acc: [String: CardGroup] = [:]
+        for s in p.sessions {                         // already newest first
+            let key = s.holder?.id.uuidString ?? ""
+            if var c = acc[key] {
+                c.sessions.append(s)
+                c.count += s.hits.count
+                acc[key] = c
+            } else {
+                order.append(key)
+                acc[key] = CardGroup(id: p.id + "|" + key, holder: s.holder, sessions: [s],
+                                     count: s.hits.count, newest: s.hits.first?.ts ?? "")
+            }
+        }
+        let cards = order.filter { !$0.isEmpty }.compactMap { acc[$0] } + (acc[""].map { [$0] } ?? [])
+        if p.byName { return cards }
+        guard cards.count > 1, cards.contains(where: { $0.count > 1 }) else { return [] }
+        return cards
     }
 
     // MARK: - Preview
@@ -414,7 +621,19 @@ final class SearchModel: ObservableObject {
         let id: Int64
         let hit: SearchIndex.Hit
         let context: [SearchIndex.Hit]
+        /// Each message as it is drawn — cut to length, Markdown read, terms marked — worked out
+        /// once, off the main thread. Done in the row, it was done again on every redraw, and the
+        /// pointer moving over a message is a redraw: with a 250 KB paste in view, browsing hung
+        /// the app for 23 seconds until it was force-quit (the hang reports of 2026-11-02).
+        let texts: [Int64: AttributedString]
+        /// The part of `context` on screen. A conversation runs to thousands of messages, and a lazy
+        /// stack asked to scroll to the middle of thousands of rows of differing height lays out
+        /// what lies before it to find out where that is. More is a click at either end.
+        var shown: Range<Int>
     }
+
+    /// How many messages either side of the hit a preview shows at first, and adds per click.
+    nonisolated static let previewStep = 120
 
     @Published var preview: Preview?
 
@@ -425,6 +644,7 @@ final class SearchModel: ObservableObject {
     /// the mode, the preview and a project-scoped "已移除" list, so the next ⌘K opened on whatever
     /// you had last looked at instead of on a field ready for a new question.
     func reset() {
+        book = nil
         preview = nil
         selectedKey = nil
         failure = nil
@@ -446,19 +666,80 @@ final class SearchModel: ObservableObject {
     /// landing on a result you have already clicked past.
     func showPreview(_ hit: SearchIndex.Hit) {
         let current = preview
+        let query = self.query
         Task.detached(priority: .userInitiated) {
             let context = SearchIndex.context(around: hit)
+            let first = Self.render(context, hit: hit, query: query)
             await MainActor.run { [weak self] in
                 guard let self, current?.id == self.preview?.id else { return }
-                self.preview = Preview(id: hit.id, hit: hit, context: context)
+                self.preview = Preview(id: hit.id, hit: hit, context: context, texts: first,
+                                       shown: 0..<context.count)
             }
             let whole = SearchIndex.conversation(of: hit)
-            guard whole.count > context.count else { return }   // already the whole thing
+            // Already the whole thing — or the hit is older than the part of a long one that is
+            // kept, and the window around it is all there is to show.
+            guard whole.count > context.count, let at = whole.firstIndex(where: { $0.id == hit.id })
+            else { return }
+            let step = Self.previewStep
+            let shown = max(0, at - step)..<min(whole.count, at + step + 1)
+            var texts = first
+            texts.merge(Self.render(whole[shown].filter { first[$0.id] == nil }, hit: hit, query: query)) { a, _ in a }
+            let ready = texts
             await MainActor.run { [weak self] in
                 guard let self, self.preview?.id == hit.id else { return }
-                self.preview = Preview(id: hit.id, hit: hit, context: whole)
+                self.preview = Preview(id: hit.id, hit: hit, context: whole, texts: ready, shown: shown)
             }
         }
+    }
+
+    /// Show `previewStep` more messages before (`earlier`) or after the ones on screen. Rendered off
+    /// the main thread like the first ones, then added.
+    func showMore(earlier: Bool) {
+        guard let p = preview else { return }
+        let step = Self.previewStep
+        let more = earlier ? max(0, p.shown.lowerBound - step)..<p.shown.lowerBound
+                           : p.shown.upperBound..<min(p.context.count, p.shown.upperBound + step)
+        guard !more.isEmpty else { return }
+        let msgs = Array(p.context[more]), hit = p.hit, query = self.query
+        Task.detached(priority: .userInitiated) {
+            let texts = Self.render(msgs, hit: hit, query: query)
+            await MainActor.run { [weak self] in
+                guard let self, let now = self.preview, now.id == p.id else { return }
+                self.preview = Preview(id: now.id, hit: now.hit, context: now.context,
+                                       texts: now.texts.merging(texts) { a, _ in a },
+                                       shown: min(now.shown.lowerBound, more.lowerBound)
+                                           ..< max(now.shown.upperBound, more.upperBound))
+            }
+        }
+    }
+
+    /// The longest a message is drawn: past a dozen lines it is cut off on screen anyway, and the hit
+    /// itself, drawn whole, still has to stay something the text system lays out in a moment.
+    nonisolated private static let messageCap = 1_500, hitCap = 8_000
+
+    nonisolated private static func render(_ msgs: [SearchIndex.Hit], hit: SearchIndex.Hit,
+                                           query: String) -> [Int64: AttributedString] {
+        let terms = SearchIndex.terms(query)
+        var out: [Int64: AttributedString] = [:]
+        for m in msgs {
+            let isHit = m.id == hit.id
+            let body = clip(m.body, around: isHit ? terms : [], cap: isHit ? hitCap : messageCap)
+            out[m.id] = markdownText(body, query: query,
+                                     base: m.role == .user ? Theme.onPrimaryContainer : Theme.onSurface)
+        }
+        return out
+    }
+
+    /// At most `cap` characters of a message, from the start or — when it has a match — from a
+    /// little before the first one, so a hit deep in a long paste still shows what matched.
+    nonisolated private static func clip(_ body: String, around terms: [String], cap: Int) -> String {
+        guard body.utf16.count > cap else { return body }
+        var from = body.startIndex
+        if let at = firstMatch(in: body, terms: terms) {
+            from = body.index(at, offsetBy: -cap / 4, limitedBy: body.startIndex) ?? body.startIndex
+        }
+        let to = body.index(from, offsetBy: cap, limitedBy: body.endIndex) ?? body.endIndex
+        return (from > body.startIndex ? "…" : "") + body[from..<to] + (to < body.endIndex ? " …" : "")
     }
 
     func closePreview() { preview = nil }

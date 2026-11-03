@@ -748,6 +748,22 @@ enum CommitLedger {
         }
     }
 
+    /// The card the audit log last bound one conversation to, by its canonical path.
+    static func binding(path: String) -> Binding? {
+        readQueue.sync {
+            guard let db = reader() else { return nil }
+            var s: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT terminal, name, project, cwd FROM binding WHERE path = ?",
+                                     -1, &s, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(s) }
+            bind(s, 1, path)
+            guard sqlite3_step(s) == SQLITE_ROW, let id = UUID(uuidString: text(s, 0)) else { return nil }
+            let cwd = text(s, 3)
+            return Binding(terminal: id, name: text(s, 1), project: UUID(uuidString: text(s, 2)),
+                           cwd: cwd.isEmpty ? nil : cwd, path: path)
+        }
+    }
+
     private static func madeRows(_ db: OpaquePointer, _ filter: String, _ bindings: (OpaquePointer?) -> Void) -> [Made] {
         var out: [Made] = []
         var s: OpaquePointer?

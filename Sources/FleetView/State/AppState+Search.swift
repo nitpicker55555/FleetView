@@ -74,10 +74,24 @@ extension AppState {
     /// name unchanged — though while the card it came from is still on the board or in the drawer,
     /// `newTerminal` puts the time after it, because names are unique (see `TerminalNames`). nil
     /// when no card ever held it, and the hit's own text is all there is.
+    ///
+    /// Failing both, the card the audit log bound the conversation to: a card keeps only its last
+    /// conversation, and one it moved on from came back as "⌕ …" though the log knew whose it was.
     func inheritedName(for hit: SearchIndex.Hit, forked: Bool) -> String? {
         let (live, archived) = holders(of: hit)
-        guard let name = live?.name ?? archived?.name, !name.isEmpty else { return nil }
+        guard let name = live?.name ?? archived?.name ?? boundName(of: hit), !name.isEmpty else { return nil }
         return forked ? name + " ⑂" : name
+    }
+
+    /// The name of the card the audit log last bound `hit`'s conversation to — as it is called now,
+    /// if it is still on the board or in the drawer. A subagent's transcript is its conversation's.
+    private func boundName(of hit: SearchIndex.Hit) -> String? {
+        var path = AgentHome.canonical(hit.path)
+        let dir = (path as NSString).deletingLastPathComponent
+        if (dir as NSString).lastPathComponent == "subagents" { path = (dir as NSString).deletingLastPathComponent + ".jsonl" }
+        guard let card = CommitLedger.binding(path: path) else { return nil }
+        return terminals.first { $0.id == card.terminal }?.name
+            ?? terminalArchive.first { $0.id == card.terminal }?.name ?? card.name
     }
 
     /// What the card that last held this conversation ran, `sp-claude` or `claude`, when one did —
