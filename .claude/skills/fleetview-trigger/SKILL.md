@@ -79,6 +79,11 @@ question, timed out (`-t SEC`), or the card was already open beforehand.
 That project exists for exactly this: its CLAUDE.md tells an unattended agent how to behave, and its
 section of the board collects the closed cards of past runs.
 
+The job does not depend on that project being open. If `-p` names a project that is not on the board,
+`subagent` opens the folder of exactly that name in `~/PycharmProjects` for the job. Once the job is
+over and its card is closed, it takes the project off the board again. It leaves the project open if
+a card in it is still running, or if the job did not end cleanly.
+
 ```bash
 # Every weekday at 09:00: a fresh agent reviews yesterday's commits, then its card is closed.
 project-manager trigger add morning-review --cron '0 9 * * 1-5' \

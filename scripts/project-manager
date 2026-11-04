@@ -1332,13 +1332,22 @@ def cmd_subagent(a):
     an agent asking for one rarely means "somewhere else".
     """
     st = state()
+    opened = None              # the project this job put on the board, to take off again afterwards
     if a.resume:
         proj = None
     elif a.project:
         ps = match_projects(st, a.project)
-        if len(ps) != 1:
+        if not ps:
+            # Not on the board. A job that runs unattended must not hinge on whether someone left its
+            # project open — a trigger failed at 00:30 because 自动任务 had been closed by hand the
+            # day before. So open the folder (only an exact name or path: a fuzzy guess would put an
+            # unrelated folder on the board), and close it again once the job is over.
+            proj = _open_for_job(a.project)
+            opened = proj["id"]
+        elif len(ps) != 1:
             sys.exit("specify one project (matched %d)" % len(ps))
-        proj = ps[0]
+        else:
+            proj = ps[0]
     else:
         mine = my_card()
         if mine is None:
@@ -1413,8 +1422,44 @@ def cmd_subagent(a):
              "project-manager key %s enter" % (c("1", full), proj["name"], kind, full[:8]), 1)
     if a.wait:
         say("subagent %s in %s (%s) — task delivered, waiting for its reply" % (c("1", full), proj["name"], kind))
-        sys.exit(_finish_subagent(a, tid, before, end=_end_of(a)))
+        sys.exit(_finish_subagent(a, tid, before, end=_end_of(a), opened=opened))
     done("subagent %s in %s (%s) — task delivered" % (c("1", full), proj["name"], kind))
+
+
+def _open_for_job(sel):
+    """Put the folder `sel` (a name directly inside ~/PycharmProjects, or its path) on the board."""
+    try:
+        ws = json.loads(_get("/workspace"))
+    except (urllib.error.URLError, ValueError) as e:
+        sys.exit("project %r is not on the board and the folder list is unavailable (%s)" % (sel, e))
+    want = os.path.expanduser(sel).rstrip("/")
+    hits = [f for f in ws.get("folders") or [] if f["name"] == sel or f["path"] == want]
+    if len(hits) != 1:
+        sys.exit("no project %r on the board, and no folder of exactly that name in %s to open"
+                 % (sel, _tilde(ws.get("root") or "~/PycharmProjects")))
+    r = api_json("/project/open?" + urllib.parse.urlencode({"path": hits[0]["path"]}, quote_via=urllib.parse.quote))
+    if not r.get("id"):
+        sys.exit("could not open %s as a project" % hits[0]["name"])
+    print(c("90", "project %s was not on the board — opened it for this job; it is closed again afterwards"
+            % hits[0]["name"]), file=sys.stderr)
+    return {"id": r["id"], "name": hits[0]["name"]}
+
+
+def _close_opened(pid):
+    """Take a project this job opened off the board again, unless anything in it is still running —
+    an unfinished job left for someone to look at, or a card someone opened there meanwhile."""
+    try:
+        r = json.loads(_get("/project/close?" + urllib.parse.urlencode({"id": pid})))
+        if r.get("ok"):
+            print(c("90", "closed the project again, as it was before the job"), file=sys.stderr)
+    except urllib.error.HTTPError as e:
+        try:
+            why = json.loads(e.read().decode("utf-8", "replace")).get("error", "HTTP %d" % e.code)
+        except ValueError:
+            why = "HTTP %d (this FleetView predates /project/close)" % e.code
+        print(c("90", "left the project open: " + why), file=sys.stderr)
+    except urllib.error.URLError as e:
+        print(c("90", "left the project open: cannot reach FleetView (%s)" % e), file=sys.stderr)
 
 
 def _term_now(tid):
@@ -1439,7 +1484,7 @@ def _pending_work(tid):
             if i.get("kind") == "background" and (i.get("status") or "").lower() not in _FINISHED]
 
 
-def _finish_subagent(a, tid, before, end):
+def _finish_subagent(a, tid, before, end, opened=None):
     """Wait for the job the task started to be over, print the reply, then end the card if asked:
     `remove` (--rm) takes it off the board, `close` (--close) stops its session and leaves it there.
 
@@ -1477,6 +1522,8 @@ def _finish_subagent(a, tid, before, end):
             api_json("/action?" + urllib.parse.urlencode({"id": tid, "do": end}))
             print(c("90", "%s card %s" % ("removed" if end == "remove" else "closed", tid[:8].lower())),
                   file=sys.stderr)
+            if opened:
+                _close_opened(opened)
         else:
             print(c("90", "left card %s as it is (the job did not end cleanly, exit %d)"
                     % (tid[:8].lower(), rc)), file=sys.stderr)
@@ -3399,7 +3446,9 @@ def main():
     s.set_defaults(fn=cmd_new)
     s = sub.add_parser("subagent", help="open a new agent terminal and give it a task")
     s.add_argument("text", nargs="+", help="the task to hand it")
-    s.add_argument("-p", "--project", help="project to open it in (default: your own)")
+    s.add_argument("-p", "--project", help="project to open it in (default: your own). Not on the board? An exact "
+                                           "folder name in ~/PycharmProjects is opened for the job, and closed again "
+                                           "after it with --close/--rm")
     s.add_argument("-n", "--name", help="label the card (default: the task)")
     s.add_argument("--codex", action="store_true", help="use codex instead of claude")
     s.add_argument("--no-wait", action="store_true",

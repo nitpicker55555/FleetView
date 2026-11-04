@@ -2493,6 +2493,21 @@ final class AppState: ObservableObject {
             let id = projects.first(where: { $0.path == path })?.id.uuidString ?? ""
             let body = try? JSONEncoder().encode(["id": id])
             return ("200 OK", "application/json", body ?? Data("{}".utf8))
+        case "/project/close":
+            // Take a project off the board again — what `subagent` does after a job it opened the
+            // project for, so a job leaves the board as it found it. Refused while anything in it is
+            // still running: that is someone's work, and removing the project would kill it.
+            guard let s = query["id"], let pid = UUID(uuidString: s), let proj = project(pid) else {
+                return ("404 Not Found", "application/json", Data(#"{"error":"no such project"}"#.utf8))
+            }
+            let live = terminals.filter { $0.projectId == pid && $0.status != .closed && $0.status != .exited }
+            if !live.isEmpty {
+                let body = try? JSONSerialization.data(withJSONObject: [
+                    "error": "\(proj.name) has \(live.count) card(s) still running: " + live.map(\.name).joined(separator: ", ")])
+                return ("409 Conflict", "application/json", body ?? Data("{}".utf8))
+            }
+            removeProject(pid)                     // its closed cards go to the drawer, as on the board
+            return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         case "/action":
             guard let s = query["id"], let id = UUID(uuidString: s), let act = query["do"] else {
                 return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
