@@ -19,6 +19,11 @@ extension AppState {
         /// The board's project id when it is already open there, so the page can go to it.
         let projectId: String?
         let modified: Double
+        /// When the folder was last used as a project here (`projectUsage`); absent for one that
+        /// never has been.
+        let lastUsed: Double?
+        /// Removed cards with a conversation behind them — the count on the project's 🗃 button.
+        let history: Int
     }
 
     private struct WorkspaceListing: Encodable {
@@ -26,7 +31,13 @@ extension AppState {
         let folders: [WorkspaceFolder]
     }
 
-    /// GET /workspace — every folder directly inside the root, most recently changed first.
+    /// GET /workspace — every folder directly inside the root: the ones used as projects first,
+    /// most recently used first, then the rest by when they last changed.
+    ///
+    /// Sorted by modification time alone, the list put whichever folder last had a file added at
+    /// its top level first — a checkout git touched, a folder someone dropped a download into —
+    /// and the project you were in yesterday could be anywhere. Use is the order the Mac's
+    /// recent-projects menu has; folder time only orders what has never been used.
     func workspaceListing() -> Data {
         let fm = FileManager.default
         let root = Self.workspaceRoot
@@ -35,6 +46,7 @@ extension AppState {
                                                 options: [.skipsHiddenFiles])) ?? []
         let open = Dictionary(projects.map { ($0.path, $0.id.uuidString) },
                               uniquingKeysWith: { first, _ in first })
+        let usage = projectUsage()
         var folders: [WorkspaceFolder] = []
         for url in urls {
             let values = try? url.resourceValues(forKeys: Set(keys))
@@ -47,9 +59,18 @@ extension AppState {
                 name: url.lastPathComponent, path: url.path,
                 git: fm.fileExists(atPath: url.appendingPathComponent(".git").path),
                 projectId: open[url.path],
-                modified: values?.contentModificationDate?.timeIntervalSince1970 ?? 0))
+                modified: values?.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                lastUsed: usage[url.path]?.lastUsed?.timeIntervalSince1970,
+                history: usage[url.path]?.history ?? 0))
         }
-        folders.sort { $0.modified > $1.modified }
+        folders.sort { a, b in
+            switch (a.lastUsed, b.lastUsed) {
+            case let (x?, y?) where x != y: return x > y
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default: return a.modified > b.modified
+            }
+        }
         let body = WorkspaceListing(root: root.path, folders: folders)
         return (try? JSONEncoder().encode(body)) ?? Data(#"{"folders":[]}"#.utf8)
     }

@@ -53,6 +53,11 @@ enum Snapshot {
             state.dialog = nil
             shoot(FleetTriggersPopover().environmentObject(state), size: NSSize(width: 500, height: 640),
                   appearance: appearance, to: "\(dir)/fleet-triggers-\(suffix).png")
+            let keptArchive = state.terminalArchive
+            fillRecentProjects(state)
+            shoot(RecentProjectsPopover(close: {}).environmentObject(state), size: NSSize(width: 420, height: 640),
+                  appearance: appearance, to: "\(dir)/recent-projects-\(suffix).png")
+            state.terminalArchive = keptArchive
             // Mid-drag: deploy lifted over the grid-skeleton card's neighbourhood, the dock up.
             if let dragged = state.terminals.first(where: { $0.name == "deploy" }),
                let target = state.terminals.first(where: { $0.name == "grid-skeleton" }) {
@@ -272,6 +277,36 @@ enum Snapshot {
                 last: FleetTriggerRun(at: now.addingTimeInterval(-7200), reason: "check", exit: 0, seconds: 41, tail: "installed FleetView.app")),
                 running: false),
         ]
+    }
+
+    /// Projects that have left the board, for the recent-projects menu: real folders in the scratch
+    /// home, since the menu only lists one that still exists, and removed cards to count.
+    @MainActor private static func fillRecentProjects(_ s: AppState) {
+        let now = Date()
+        let root = FV.home.appendingPathComponent("PycharmProjects")
+        var archive: [TerminalArchive] = []
+        s.recentProjects = []
+        for (name, ago, cards) in [("invoice-ocr", 5_400.0, 6), ("treeflow", 86_400.0 * 2, 14),
+                                   ("blog", 86_400.0 * 9, 0), ("ale-visual-port", 86_400.0 * 31, 41)] {
+            let dir = root.appendingPathComponent(name)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            s.recentProjects.append(RecentProject(path: dir.path, name: name, lastUsed: now.addingTimeInterval(-ago)))
+            for i in 0..<cards {
+                archive.append(TerminalArchive(id: UUID(), projectId: UUID(), projectPath: dir.path,
+                                               name: "\(name)-\(i + 1)", cwd: dir.path, agentKind: .claude,
+                                               transcriptPath: "/tmp/\(name)-\(i).jsonl",
+                                               removedAt: now.addingTimeInterval(-ago - Double(i) * 600)))
+            }
+        }
+        if let fv = s.projects.first {
+            for i in 0..<3 {
+                archive.append(TerminalArchive(id: UUID(), projectId: fv.id, projectPath: fv.path,
+                                               name: "old-\(i)", cwd: fv.path, agentKind: .codex,
+                                               transcriptPath: "/tmp/fv-\(i).jsonl",
+                                               removedAt: now.addingTimeInterval(-86_400)))
+            }
+        }
+        s.terminalArchive = archive
     }
 
     @MainActor private static func fill(_ s: AppState) {

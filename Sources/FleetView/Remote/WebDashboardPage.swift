@@ -863,6 +863,8 @@ enum WebDashboardPage {
   .prow button{flex:none;height:32px;font-size:12px;font-weight:500;border-radius:999px;padding:0 12px;cursor:pointer;
     border:0;background:var(--secondaryContainer);color:var(--onSecondaryContainer)}
   .prow button.go{background:var(--accent);color:var(--onAccent)}
+  .prow .pn .hist{color:var(--text)}
+  .psep{font-size:11px;line-height:16px;font-weight:500;color:var(--sub);padding:8px 4px 6px}
   .prow .onb{font-size:11px;line-height:16px;font-weight:500;color:var(--onPrimaryContainer);background:var(--primaryContainer);
     border-radius:8px;padding:0 6px;margin-left:6px;vertical-align:1px}
   @media (pointer:coarse){ #pquery{font-size:16px} .prow button{min-height:36px} }
@@ -1307,6 +1309,8 @@ const I18N={
     'toast.notOpen':'这个终端现在没有在 Mac 上打开',
     'proj.search':'搜索 ~/PycharmProjects','proj.noMatch':'没有匹配的文件夹','proj.none':'~/PycharmProjects 里没有文件夹',
     'proj.onBoard':'已在看板','proj.go':'前往','proj.open':'打开',
+    'proj.history':'{n} 张历史卡片','proj.historyTitle':'已从看板移除、还能恢复的卡片',
+    'proj.lastUsed':'最后使用','proj.modified':'文件夹修改','proj.others':'没在 FleetView 打开过',
     'toast.cantOpen':'打不开 {name}','toast.opened':'已打开 {name}',
     'tray.empty':'还没有收到文件',
     'tab.chat':'对话','tab.output':'输出','tab.term':'终端','term.popOut':'在新标签页打开终端','chat.jump':'跳到最新',
@@ -1433,6 +1437,8 @@ const I18N={
     'toast.notOpen':'This terminal isn’t open on the Mac right now',
     'proj.search':'Search ~/PycharmProjects','proj.noMatch':'No matching folders','proj.none':'No folders in ~/PycharmProjects',
     'proj.onBoard':'On board','proj.go':'Go to','proj.open':'Open',
+    'proj.history':{one:'{n} past card',other:'{n} past cards'},'proj.historyTitle':'Cards removed from the board that can still be restored',
+    'proj.lastUsed':'Last used','proj.modified':'Folder changed','proj.others':'Never opened in FleetView',
     'toast.cantOpen':'Couldn’t open {name}','toast.opened':'Opened {name}',
     'tray.empty':'No files received yet',
     'tab.chat':'Chat','tab.output':'Output','tab.term':'Terminal','term.popOut':'Open the terminal in a new tab','chat.jump':'Jump to latest',
@@ -3272,11 +3278,19 @@ function renderProjects(){
   const list=q?wsFolders.filter(f=>f.name.toLowerCase().includes(q)):wsFolders;
   const el=document.getElementById('projlist');
   if(!list.length){ el.innerHTML='<div class="tnone">'+tr(q?'proj.noMatch':'proj.none')+'</div>'; return; }
+  /* Used projects first, most recently used first — the server's order, the same as the Mac's
+     recent-projects menu; then the folders never opened here, by when they last changed. The time
+     shown is whichever of the two put the row where it is, and the line between the groups says
+     which one that is. */
+  const now=Date.now()/1000;
   el.innerHTML=list.map((f,i)=>{
-    const when=f.modified?ago(Math.round(Date.now()/1000-f.modified)):'';
-    const meta=[f.git?'git':'', when].filter(Boolean).join(' · ');
-    return '<div class="prow"><span class="pn"><b>'+esc(f.name)+(f.projectId?'<span class="onb">'+tr('proj.onBoard')+'</span>':'')+
-      '</b><span>'+esc(meta)+'</span></span>'+
+    const t=f.lastUsed||f.modified, when=t?ago(Math.round(now-t)):'';
+    const hist=f.history?'<span class="hist" title="'+att(tr('proj.historyTitle'))+'">'+esc(tr('proj.history',{n:f.history}))+'</span>':'';
+    const meta=[f.git?'git':'', when&&('<span title="'+att(tr(f.lastUsed?'proj.lastUsed':'proj.modified'))+'">'+esc(when)+'</span>')]
+      .filter(Boolean).concat(hist?[hist]:[]).join(' · ');
+    const sep=!f.lastUsed&&i>0&&list[i-1].lastUsed?'<div class="psep">'+esc(tr('proj.others'))+'</div>':'';
+    return sep+'<div class="prow"><span class="pn"><b>'+esc(f.name)+(f.projectId?'<span class="onb">'+tr('proj.onBoard')+'</span>':'')+
+      '</b><span>'+meta+'</span></span>'+
       '<button onclick="openProject('+i+',false)">'+tr(f.projectId?'proj.go':'proj.open')+'</button>'+
       '<button class="go" onclick="openProject('+i+',true)">'+tr('common.newTerm')+'</button></div>';
   }).join('');
