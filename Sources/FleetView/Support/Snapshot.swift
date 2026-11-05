@@ -33,6 +33,10 @@ enum Snapshot {
         let state = AppState()
         fill(state)
         let size = NSSize(width: 1512, height: 949)
+        if ProcessInfo.processInfo.environment["FV_SNAPSHOT_ANIM"] != nil {
+            recordSidebarFold(state, size: size, into: dir)
+            exit(0)
+        }
         for (suffix, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
             NSApp.appearance = NSAppearance(named: appearance)
             state.dialog = nil
@@ -243,6 +247,47 @@ enum Snapshot {
         host.cacheDisplay(in: host.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
         window.orderOut(nil)
+    }
+
+    /// `FV_SNAPSHOT_ANIM=1`: frames of the board while the sidebar folds, as anim-NN.png.
+    ///
+    /// How the cards' jump on a fold was found and its fix checked: the still shots cannot show
+    /// motion. The window is really drawn (ordered in, far off screen), since an animation does not
+    /// run in one that is never shown. Only a band through the sample board's FleetView section is
+    /// grabbed — where a fold moves a card from the second row up into the first — and the frames
+    /// are kept in memory until the end, because a whole-window grab and a PNG per frame each took
+    /// longer than the fold. Even so a frame takes ~0.1 s, which is about two frames of a 0.22 s
+    /// animation: lengthen the fold and `BoardGrid.reflow` in the source while looking.
+    @MainActor private static func recordSidebarFold(_ state: AppState, size: NSSize, into dir: String) {
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        let host = NSHostingView(rootView: DashboardView().environmentObject(state))
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        window.setFrameOrigin(NSPoint(x: -6000, y: -6000))
+        window.orderFrontRegardless()
+        freshen()
+        RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+        let region = NSRect(x: 0, y: 500, width: size.width, height: 330)
+        var frames: [(Double, NSBitmapImageRep)] = []
+        let t0 = Date()
+        func grab() {
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: region) else { return }
+            host.cacheDisplay(in: region, to: rep)
+            frames.append((Date().timeIntervalSince(t0) * 1000, rep))
+        }
+        grab()
+        state.toggleSidebar()
+        while Date().timeIntervalSince(t0) < 3.2 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            grab()
+        }
+        window.orderOut(nil)
+        for (i, (ms, rep)) in frames.enumerated() {
+            FileHandle.standardError.write(Data(String(format: "frame %02d at %.0f ms\n", i, ms).utf8))
+            try? rep.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: String(format: "%@/anim-%02d.png", dir, i)))
+        }
     }
 
     /// The terminal the session tree is drawn for when `FV_SNAPSHOT_TRANSCRIPT` names a transcript.
