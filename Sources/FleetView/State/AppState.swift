@@ -11,6 +11,9 @@ final class AppState: ObservableObject {
     /// Terminals that have been removed, newest first. The board forgets a card the moment it is
     /// removed; this is what remembers the name, uuid and session it had (see `TerminalArchive`).
     @Published var terminalArchive: [TerminalArchive] = []
+    /// Every folder that has been a project here and when it was last used, kept after it leaves
+    /// the board — what the toolbar's recent-projects menu lists (see `RecentProject`).
+    @Published var recentProjects: [RecentProject] = []
     /// The highest default number each project name has handed out (`<name>-<n>`). Stored rather
     /// than recounted, because what is on the board and in the drawer is not the whole history:
     /// the drawer keeps no shell-only card and only so many per project, and a count of either
@@ -665,6 +668,7 @@ final class AppState: ObservableObject {
         var terminalArchive: [TerminalArchive]?
         var showRecentStrip: Bool?
         var terminalNumbers: [String: Int]?
+        var recentProjects: [RecentProject]?
 
         /// Every field decoded on its own, and a field that will not decode is dropped rather than
         /// taken as a corrupt file.
@@ -696,6 +700,7 @@ final class AppState: ObservableObject {
             terminalArchive = get(.terminalArchive, [TerminalArchive].self)
             showRecentStrip = get(.showRecentStrip, Bool.self)
             terminalNumbers = get(.terminalNumbers, [String: Int].self)
+            recentProjects = get(.recentProjects, [RecentProject].self)
         }
 
         init(projects: [Project], terminals: [TerminalSession], clusters: [Cluster],
@@ -703,7 +708,8 @@ final class AppState: ObservableObject {
              tasksCollapsed: Bool?, notesCollapsed: Bool?, treePanelWidth: Double?,
              showOnlyMarked: Bool?, closeTerminalsOnQuit: Bool?, collapsedProjects: [UUID]?,
              terminalFontSize: Double?, terminalArchive: [TerminalArchive]?,
-             showRecentStrip: Bool?, terminalNumbers: [String: Int]?) {
+             showRecentStrip: Bool?, terminalNumbers: [String: Int]?,
+             recentProjects: [RecentProject]?) {
             self.projects = projects; self.terminals = terminals; self.clusters = clusters
             self.selectedProjectId = selectedProjectId; self.sidebarWidth = sidebarWidth
             self.notes = notes; self.tasksCollapsed = tasksCollapsed
@@ -712,6 +718,7 @@ final class AppState: ObservableObject {
             self.collapsedProjects = collapsedProjects; self.terminalFontSize = terminalFontSize
             self.terminalArchive = terminalArchive; self.showRecentStrip = showRecentStrip
             self.terminalNumbers = terminalNumbers
+            self.recentProjects = recentProjects
         }
 
         /// This with the soft fields blanked: what is left is what a crash must not lose. Soft is
@@ -792,6 +799,7 @@ final class AppState: ObservableObject {
         showRecentStrip = p.showRecentStrip ?? true
         closeTerminalsOnQuit = p.closeTerminalsOnQuit ?? false
         terminalNumbers = p.terminalNumbers ?? [:]
+        recentProjects = p.recentProjects ?? []
         // Clamped on the way in as well as on the way out: state.json is a file on disk that people
         // do edit, and a 400pt terminal is a window with one character in it.
         if let s = p.terminalFontSize {
@@ -872,7 +880,8 @@ final class AppState: ObservableObject {
                           // failed write can never be what drops it.
                           terminalArchive: savedArchive == terminalArchive ? nil : terminalArchive,
                           showRecentStrip: showRecentStrip,
-                          terminalNumbers: terminalNumbers.isEmpty ? nil : terminalNumbers)
+                          terminalNumbers: terminalNumbers.isEmpty ? nil : terminalNumbers,
+                          recentProjects: recentProjects.isEmpty ? nil : recentProjects)
         if p == savedState {
             softSaveWork?.cancel()
             softSaveWork = nil
@@ -937,6 +946,7 @@ final class AppState: ObservableObject {
             selectedProjectId = proj.id
             id = proj.id
         }
+        noteProjectOpened(path: path, name: project(id)?.name ?? url.lastPathComponent)
         // Take the board to it. A new project is appended, so it lands at the very bottom — past
         // however many sections are already open — and opening a folder that then appears nowhere
         // on screen reads as nothing having happened. Deferred by one turn so the section exists
@@ -998,6 +1008,7 @@ final class AppState: ObservableObject {
     }
 
     func removeProject(_ id: UUID) {
+        if let p = project(id) { noteProjectClosing(p) }   // before its cards, and their activity, go
         for t in terminals.filter({ $0.projectId == id }) { removeTerminal(t.id) }
         projects.removeAll { $0.id == id }
         if selectedProjectId == id { selectedProjectId = nil }
@@ -1362,6 +1373,9 @@ final class AppState: ObservableObject {
             triggerReports.removeAll()
             saveTriggerReports()
             closeTriggers()
+            // The board goes, the memory of what was on it stays: clearing it is exactly when the
+            // recent-projects menu is the way back.
+            for p in projects { noteProjectClosing(p) }
             terminals.removeAll()
             projects.removeAll()
             clusters.removeAll()
@@ -1564,7 +1578,8 @@ final class AppState: ObservableObject {
                                     sessionId: t.sessionId,
                                     transcriptPath: transcript,
                                     newTokens: t.newTokens, lastPrompt: t.lastPrompt,
-                                    removedAt: Date(), subPool: t.subPool)
+                                    removedAt: Date(), subPool: t.subPool,
+                                    lastActivity: t.lastActivity)
         terminalArchive.removeAll { $0.id == t.id }
         terminalArchive.insert(entry, at: 0)          // newest first, which is how it is read
         // Trimmed per project, so a busy project cannot push a quiet one's history out.

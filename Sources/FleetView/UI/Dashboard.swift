@@ -679,6 +679,7 @@ struct TopBar: View {
     /// one of them, so the code has to be able to follow.
     @State private var showJobs = false
     @State private var showFleetTriggers = false
+    @State private var showRecentProjects = false
 
     private var working: Int { state.terminals.filter { $0.status == .working }.count }
     private var needs: Int { state.terminals.filter { $0.status == .needsYou }.count }
@@ -697,6 +698,7 @@ struct TopBar: View {
             jobsButton
             updateButton
             searchField
+            recentProjectsButton
             fleetTriggersButton
             markFilterButton
             recentStripButton
@@ -902,6 +904,17 @@ struct TopBar: View {
         }
         .popover(isPresented: $showFleetTriggers, arrowEdge: .bottom) {
             FleetTriggersPopover().environmentObject(state)
+        }
+    }
+
+    /// Projects the board has had, most recently used first — the way back to one you closed.
+    /// Next to search: both are how you go and find something that is not on screen.
+    private var recentProjectsButton: some View {
+        barButton("folder", on: showRecentProjects, help: L(.recentProjHelp)) {
+            showRecentProjects.toggle()
+        }
+        .popover(isPresented: $showRecentProjects, arrowEdge: .bottom) {
+            RecentProjectsPopover { showRecentProjects = false }.environmentObject(state)
         }
     }
 

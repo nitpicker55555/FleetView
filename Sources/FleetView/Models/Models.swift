@@ -84,6 +84,11 @@ struct TerminalArchive: Identifiable, Codable, Hashable {
     var removedAt: Date
     /// `TerminalSession.subPool`, kept so a restore resumes with the CLI the card had.
     var subPool: Bool? = nil
+    /// When the card last did something real (`TerminalSession.lastActivity`). What the recent-
+    /// projects menu dates a project by, rather than `removedAt`: closing a project removes all its
+    /// cards in the same instant, and dated by that, every project closed in one tidy-up came out
+    /// tied with the order they were worked in lost. Optional: this struct is in archive.json.
+    var lastActivity: Date? = nil
 }
 
 struct TerminalSession: Identifiable, Codable, Hashable {

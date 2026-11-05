@@ -304,6 +304,15 @@ enum UIText {
     case topPowerHelp
     case topPeersHelp
     case topWebHelp
+    case recentProjHelp
+    case recentProjTitle
+    case recentProjFilter
+    case recentProjEmpty
+    case recentProjNoMatch
+    case recentProjOnBoard
+    case recentProjOpenFolder
+    case recentProjLastUsed(String)
+    case recentProjNever
     case emptyTitle
     case emptySubtitle
     case emptyButton
