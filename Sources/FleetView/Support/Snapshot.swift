@@ -38,6 +38,10 @@ enum Snapshot {
             state.dialog = nil
             shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
                   to: "\(dir)/board-\(suffix).png")
+            state.sidebarHidden = true
+            shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
+                  to: "\(dir)/board-nosidebar-\(suffix).png")
+            state.sidebarHidden = false
             // The whole board, scrolled or not: what sits below the first screen matters too.
             shoot(DashboardView().environmentObject(state), size: NSSize(width: size.width, height: 2000),
                   appearance: appearance, to: "\(dir)/board-tall-\(suffix).png")

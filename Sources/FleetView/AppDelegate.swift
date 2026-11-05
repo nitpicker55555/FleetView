@@ -117,6 +117,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let actual = NSMenuItem(title: L(.menuFontActual), action: #selector(terminalFontActual), keyEquivalent: "0")
         actual.target = self
         viewMenu.addItem(actual)
+        viewMenu.addItem(.separator())
+        // ⌃⌘S is what every Mac app with a sidebar uses for this. Its title follows the state
+        // (`validateMenuItem`), as Finder's does.
+        let sidebar = NSMenuItem(title: L(.menuHideSidebar), action: #selector(toggleBoardSidebar), keyEquivalent: "s")
+        sidebar.keyEquivalentModifierMask = [.control, .command]
+        sidebar.target = self
+        viewMenu.addItem(sidebar)
 
         NSApp.mainMenu = mainMenu
     }
@@ -167,6 +174,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSearch() {
         state.openSearch()
+    }
+
+    /// Not `toggleSidebar(_:)`: that is NSSplitViewController's action, and anything in the
+    /// responder chain answering to it would take this shortcut.
+    @objc private func toggleBoardSidebar() {
+        state.toggleSidebar()
+    }
+
+    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleBoardSidebar) {
+            item.title = state.sidebarHidden ? L(.menuShowSidebar) : L(.menuHideSidebar)
+        }
+        return true
     }
 
     /// Forced, so it ignores both the six-hour throttle and a version dismissed from the pill: the

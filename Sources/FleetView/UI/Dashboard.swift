@@ -42,7 +42,8 @@ struct DashboardView: View {
     private var columns: (sidebar: Double, sidebarMax: Double, tree: Double, treeMax: Double) {
         guard windowWidth > 0 else { return (state.sidebarWidth, 520, state.treePanelWidth, 720) }
         let sidebarMax = min(520, max(180, windowWidth - Self.boardMinWidth - 1))
-        let sidebar = min(state.sidebarWidth, sidebarMax)
+        // Folded, it takes nothing, and the tree may have the width it left.
+        let sidebar = state.sidebarHidden ? 0 : min(state.sidebarWidth, sidebarMax)
         let treeMax = min(720, max(380, windowWidth - sidebar - 2 - Self.boardMinBesideTree))
         return (sidebar, sidebarMax, min(state.treePanelWidth, treeMax), treeMax)
     }
@@ -52,8 +53,13 @@ struct DashboardView: View {
         HStack(spacing: 0) {
             let receded = dashboardReceded
             HStack(spacing: 0) {
-                Sidebar().frame(width: columns.sidebar)
-                SidebarDivider(width: columns.sidebar, maxWidth: columns.sidebarMax)
+                if !state.sidebarHidden {
+                    HStack(spacing: 0) {
+                        Sidebar().frame(width: columns.sidebar)
+                        SidebarDivider(width: columns.sidebar, maxWidth: columns.sidebarMax)
+                    }
+                    .transition(.move(edge: .leading))
+                }
                 VStack(spacing: 0) {
                     DynamicPanel()      // agent-authored dynamic UI — tops the content column, beside the sidebar
                     TopBar()
@@ -97,6 +103,7 @@ struct DashboardView: View {
         .onPreferenceChange(WindowWidthKey.self) { windowWidth = $0 }
         .animation(.easeOut(duration: 0.22), value: state.treePanelTerminalId != nil)
         .animation(.easeOut(duration: 0.22), value: state.triggersPanelTerminalId != nil)
+        .animation(.easeOut(duration: 0.22), value: state.sidebarHidden)
         .background(Theme.bg)
         .frame(minWidth: 960, minHeight: 580)
         .overlay { treeInspector }     // interactive: text selection + scrolling
@@ -686,6 +693,7 @@ struct TopBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            sidebarButton
             // Which fleet you are looking at comes first: everything to the right acts on it.
             if state.peerStripVisible {
                 PeerStrip(fleet: state.peerFleet)
@@ -904,6 +912,16 @@ struct TopBar: View {
         }
         .popover(isPresented: $showFleetTriggers, arrowEdge: .bottom) {
             FleetTriggersPopover().environmentObject(state)
+        }
+    }
+
+    /// Fold the sidebar away, or bring it back. Up here and not on the sidebar, for the reason the
+    /// recent strip's toggle is: a control inside the thing it hides goes with it, and then there
+    /// is no way back. Not drawn as "on" while the sidebar shows — that is the normal state, and a
+    /// pill lit all the time says nothing.
+    private var sidebarButton: some View {
+        barButton("sidebar.left", help: state.sidebarHidden ? L(.topShowSidebar) : L(.topHideSidebar)) {
+            state.toggleSidebar()
         }
     }
 

@@ -22,6 +22,9 @@ final class AppState: ObservableObject {
     @Published var clusters: [Cluster] = []
     @Published var selectedProjectId: UUID? = nil   // nil == All Projects
     @Published var sidebarWidth: Double = 236
+    /// The sidebar is folded away and the board has the whole window (`DashboardView`). Kept
+    /// across a relaunch: it is a way of using the window, not a passing look.
+    @Published var sidebarHidden: Bool = false
 
     // Sidebar sections
     @Published var notes: [Note] = []
@@ -669,6 +672,7 @@ final class AppState: ObservableObject {
         var showRecentStrip: Bool?
         var terminalNumbers: [String: Int]?
         var recentProjects: [RecentProject]?
+        var sidebarHidden: Bool?
 
         /// Every field decoded on its own, and a field that will not decode is dropped rather than
         /// taken as a corrupt file.
@@ -701,6 +705,7 @@ final class AppState: ObservableObject {
             showRecentStrip = get(.showRecentStrip, Bool.self)
             terminalNumbers = get(.terminalNumbers, [String: Int].self)
             recentProjects = get(.recentProjects, [RecentProject].self)
+            sidebarHidden = get(.sidebarHidden, Bool.self)
         }
 
         init(projects: [Project], terminals: [TerminalSession], clusters: [Cluster],
@@ -709,7 +714,7 @@ final class AppState: ObservableObject {
              showOnlyMarked: Bool?, closeTerminalsOnQuit: Bool?, collapsedProjects: [UUID]?,
              terminalFontSize: Double?, terminalArchive: [TerminalArchive]?,
              showRecentStrip: Bool?, terminalNumbers: [String: Int]?,
-             recentProjects: [RecentProject]?) {
+             recentProjects: [RecentProject]?, sidebarHidden: Bool?) {
             self.projects = projects; self.terminals = terminals; self.clusters = clusters
             self.selectedProjectId = selectedProjectId; self.sidebarWidth = sidebarWidth
             self.notes = notes; self.tasksCollapsed = tasksCollapsed
@@ -719,6 +724,7 @@ final class AppState: ObservableObject {
             self.terminalArchive = terminalArchive; self.showRecentStrip = showRecentStrip
             self.terminalNumbers = terminalNumbers
             self.recentProjects = recentProjects
+            self.sidebarHidden = sidebarHidden
         }
 
         /// This with the soft fields blanked: what is left is what a crash must not lose. Soft is
@@ -800,6 +806,7 @@ final class AppState: ObservableObject {
         closeTerminalsOnQuit = p.closeTerminalsOnQuit ?? false
         terminalNumbers = p.terminalNumbers ?? [:]
         recentProjects = p.recentProjects ?? []
+        sidebarHidden = p.sidebarHidden ?? false
         // Clamped on the way in as well as on the way out: state.json is a file on disk that people
         // do edit, and a 400pt terminal is a window with one character in it.
         if let s = p.terminalFontSize {
@@ -881,7 +888,8 @@ final class AppState: ObservableObject {
                           terminalArchive: savedArchive == terminalArchive ? nil : terminalArchive,
                           showRecentStrip: showRecentStrip,
                           terminalNumbers: terminalNumbers.isEmpty ? nil : terminalNumbers,
-                          recentProjects: recentProjects.isEmpty ? nil : recentProjects)
+                          recentProjects: recentProjects.isEmpty ? nil : recentProjects,
+                          sidebarHidden: sidebarHidden ? true : nil)
         if p == savedState {
             softSaveWork?.cancel()
             softSaveWork = nil
@@ -3318,5 +3326,13 @@ extension AppState {
         }
         bring(t.id, kind: nil, subPool: nil, lastPrompt: nil)
         return done("created", t.id)
+    }
+}
+
+extension AppState {
+    /// The top bar's button and View ▸ Hide Sidebar (⌃⌘S) both come here.
+    func toggleSidebar() {
+        sidebarHidden.toggle()
+        save()
     }
 }
