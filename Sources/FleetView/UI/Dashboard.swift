@@ -259,7 +259,7 @@ struct DashboardView: View {
                 if let t = state.terminals.first(where: { $0.id == dragId }) {
                     // The card itself, lifted and following the cursor — its place on the board is
                     // left as an empty dashed slot (see TerminalCardView), so it reads as picked up.
-                    let w = state.dragSourceCardFrames.first?.width ?? BoardGrid.stripCardWidth
+                    let w = state.dragSourceCardFrames.first?.width ?? BoardGrid.card
                     TerminalCardView(terminal: t, interactive: false)
                         .environmentObject(state)
                         .frame(width: w)
@@ -999,11 +999,13 @@ struct MainArea: View {
 /// The board's grid, the same everywhere a card is laid out, so a card is the same size wherever it
 /// appears.
 enum BoardGrid {
-    static let minCard: CGFloat = 280
-    static let maxCard: CGFloat = 380
+    /// Every card's width, whatever the room. The columns used to stretch to fill each row (280 to
+    /// 380), so the room changed the cards: in a 1512 window with a 348 sidebar a card was 364 wide
+    /// in three columns, and 283 in five once the sidebar was folded. A card is not something the
+    /// window should resize — the room decides how many fit in a row, and what is left over of a
+    /// row stays empty at its end.
+    static let card: CGFloat = 280
     static let spacing: CGFloat = 12
-    /// A lifted card's width before anything has measured the one it was lifted from.
-    static let stripCardWidth: CGFloat = 300
     /// Cards moving to a new number of columns — the sidebar fold's own curve and length.
     static let reflow = Animation.easeOut(duration: 0.22)
 
@@ -1014,20 +1016,13 @@ enum BoardGrid {
     /// columns above and below. The frame gives way instead, into the board's margin.
     static let wrapInset: CGFloat = 12
 
-    /// A card's width in the grid at this content width — what the adaptive columns work out,
-    /// for a row that is not a grid (the recent tray scrolls sideways).
-    static func cardWidth(in width: CGFloat, columns: Int? = nil) -> CGFloat {
-        let n = CGFloat(columns ?? columnCount(in: width))
-        return min(maxCard, (width - (n - 1) * spacing) / n)
-    }
-
     static func columnCount(in width: CGFloat) -> Int {
-        max(1, Int((width + spacing) / (minCard + spacing)))
+        max(1, Int((width + spacing) / (card + spacing)))
     }
 }
 
-/// The board's cards in rows of as many columns as fit, as `LazyVGrid` with adaptive columns laid
-/// them out — except that a change in the number of columns is animated.
+/// The board's cards in rows of as many as fit, left-aligned — and a change in how many fit is
+/// animated.
 ///
 /// Folding the sidebar made every card jump. Recorded frame by frame in the snapshot window: the
 /// board's scroll view lays its content out afresh at each intermediate width of the fold, with no
@@ -1035,13 +1030,11 @@ enum BoardGrid {
 /// fits, all leapt to their new rows in one frame. (The lazy grid did not even widen: it kept its
 /// old layout until the fold ended.) So the column count is state here, measured from the width and
 /// changed with an animation, and the cards travel to their new places — on a fold, opening the
-/// tree beside the board, or a window resize across a column boundary alike. The width of each
-/// card still follows the width live.
+/// tree beside the board, or a window resize across a column boundary alike.
 ///
 /// Not lazy, which costs nothing here: a project holds a handful of cards and the sections around
-/// the grids were never lazy either. Same geometry as before: `BoardGrid.cardWidth` columns,
-/// left-aligned, `spacing` apart both ways, each card centred vertically in its row as a grid cell
-/// is.
+/// the grids were never lazy either. Cards `BoardGrid.card` wide, `spacing` apart both ways, each
+/// centred vertically in its row as a grid cell is.
 struct BoardGridView<Content: View>: View {
     @ViewBuilder let content: Content
     @State private var columns: Int?
@@ -1060,14 +1053,16 @@ struct BoardFlow: Layout {
 
     private func rows(_ width: CGFloat, _ subviews: Subviews) -> (n: Int, cell: CGFloat, heights: [CGFloat]) {
         let n = columns ?? BoardGrid.columnCount(in: width)
-        let cell = BoardGrid.cardWidth(in: width, columns: n)
+        // Narrower only when not even one card fits: the board squeezed beside a wide tree, where
+        // it is under the wash anyway.
+        let cell = min(BoardGrid.card, width)
         let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: cell, height: nil)).height }
         let heights = stride(from: 0, to: sizes.count, by: n).map { sizes[$0..<min($0 + n, sizes.count)].max() ?? 0 }
         return (n, cell, heights)
     }
 
     private func width(_ proposal: ProposedViewSize) -> CGFloat {
-        guard let w = proposal.width, w.isFinite else { return BoardGrid.maxCard }
+        guard let w = proposal.width, w.isFinite else { return BoardGrid.card }
         return w
     }
 
@@ -1201,7 +1196,6 @@ struct RecentStrip: View {
     @EnvironmentObject var state: AppState
 
     private static let limit = 6
-    @State private var columns: Int?
 
     private var recent: [TerminalSession] {
         state.visible(state.terminals.filter {
@@ -1229,13 +1223,7 @@ struct RecentStrip: View {
                                 ProjectTag(terminal: t)
                                 TerminalCardView(terminal: t)
                             }
-                            // The scroll view's width is the board grid's (see `BoardGrid.wrapInset`),
-                            // in the grid's columns — animated across a change the way the grid's are
-                            // (BoardGridView), so the first row of these stays on the board's columns
-                            // while a sidebar fold moves them.
-                            .containerRelativeFrame(.horizontal) { length, _ in
-                                BoardGrid.cardWidth(in: length, columns: columns)
-                            }
+                            .frame(width: BoardGrid.card)
                         }
                     }
                     // A focus ring that a tight clip would cut.
@@ -1243,9 +1231,6 @@ struct RecentStrip: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onGeometryChange(for: Int.self) { BoardGrid.columnCount(in: $0.size.width) } action: { n in
-                if columns == nil { columns = n } else { withAnimation(BoardGrid.reflow) { columns = n } }
-            }
             .padding(BoardGrid.wrapInset)
             .background(Theme.surfaceContainerLow)
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sheet))
