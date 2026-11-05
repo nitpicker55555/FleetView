@@ -1001,10 +1001,11 @@ struct MainArea: View {
 enum BoardGrid {
     static let minCard: CGFloat = 280
     static let maxCard: CGFloat = 380
-    static let columns = [GridItem(.adaptive(minimum: minCard, maximum: maxCard), spacing: spacing)]
     static let spacing: CGFloat = 12
-    /// A card in a sideways strip before the strip has measured itself.
+    /// A lifted card's width before anything has measured the one it was lifted from.
     static let stripCardWidth: CGFloat = 300
+    /// Cards moving to a new number of columns — the sidebar fold's own curve and length.
+    static let reflow = Animation.easeOut(duration: 0.22)
 
     /// How far a frame drawn around cards — a group's outline, the recent tray — reaches past the
     /// grid on each side: exactly its own inner padding, so the cards inside sit on the board's
@@ -1015,9 +1016,81 @@ enum BoardGrid {
 
     /// A card's width in the grid at this content width — what the adaptive columns work out,
     /// for a row that is not a grid (the recent tray scrolls sideways).
-    static func cardWidth(in width: CGFloat) -> CGFloat {
-        let n = max(1, Int((width + spacing) / (minCard + spacing)))
-        return min(maxCard, (width - CGFloat(n - 1) * spacing) / CGFloat(n))
+    static func cardWidth(in width: CGFloat, columns: Int? = nil) -> CGFloat {
+        let n = CGFloat(columns ?? columnCount(in: width))
+        return min(maxCard, (width - (n - 1) * spacing) / n)
+    }
+
+    static func columnCount(in width: CGFloat) -> Int {
+        max(1, Int((width + spacing) / (minCard + spacing)))
+    }
+}
+
+/// The board's cards in rows of as many columns as fit, as `LazyVGrid` with adaptive columns laid
+/// them out — except that a change in the number of columns is animated.
+///
+/// Folding the sidebar made every card jump. Recorded frame by frame in the snapshot window: the
+/// board's scroll view lays its content out afresh at each intermediate width of the fold, with no
+/// animation of its own, so the cards widened smoothly and then, at the width where a fifth column
+/// fits, all leapt to their new rows in one frame. (The lazy grid did not even widen: it kept its
+/// old layout until the fold ended.) So the column count is state here, measured from the width and
+/// changed with an animation, and the cards travel to their new places — on a fold, opening the
+/// tree beside the board, or a window resize across a column boundary alike. The width of each
+/// card still follows the width live.
+///
+/// Not lazy, which costs nothing here: a project holds a handful of cards and the sections around
+/// the grids were never lazy either. Same geometry as before: `BoardGrid.cardWidth` columns,
+/// left-aligned, `spacing` apart both ways, each card centred vertically in its row as a grid cell
+/// is.
+struct BoardGridView<Content: View>: View {
+    @ViewBuilder let content: Content
+    @State private var columns: Int?
+
+    var body: some View {
+        BoardFlow(columns: columns) { content }
+            .onGeometryChange(for: Int.self) { BoardGrid.columnCount(in: $0.size.width) } action: { n in
+                if columns == nil { columns = n } else { withAnimation(BoardGrid.reflow) { columns = n } }
+            }
+    }
+}
+
+struct BoardFlow: Layout {
+    /// nil until measured: then whatever fits the proposed width.
+    var columns: Int?
+
+    private func rows(_ width: CGFloat, _ subviews: Subviews) -> (n: Int, cell: CGFloat, heights: [CGFloat]) {
+        let n = columns ?? BoardGrid.columnCount(in: width)
+        let cell = BoardGrid.cardWidth(in: width, columns: n)
+        let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: cell, height: nil)).height }
+        let heights = stride(from: 0, to: sizes.count, by: n).map { sizes[$0..<min($0 + n, sizes.count)].max() ?? 0 }
+        return (n, cell, heights)
+    }
+
+    private func width(_ proposal: ProposedViewSize) -> CGFloat {
+        guard let w = proposal.width, w.isFinite else { return BoardGrid.maxCard }
+        return w
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let w = width(proposal)
+        let (_, _, heights) = rows(w, subviews)
+        let h = heights.reduce(0, +) + CGFloat(max(0, heights.count - 1)) * BoardGrid.spacing
+        return CGSize(width: w, height: h)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let (n, cell, heights) = rows(bounds.width, subviews)
+        var y = bounds.minY
+        for (r, rowHeight) in heights.enumerated() {
+            for c in 0..<n {
+                let i = r * n + c
+                guard i < subviews.count else { break }
+                let x = bounds.minX + CGFloat(c) * (cell + BoardGrid.spacing)
+                subviews[i].place(at: CGPoint(x: x + cell / 2, y: y + rowHeight / 2), anchor: .center,
+                                  proposal: ProposedViewSize(width: cell, height: nil))
+            }
+            y += rowHeight + BoardGrid.spacing
+        }
     }
 }
 
@@ -1070,7 +1143,7 @@ struct RunningStrip: View {
         if !live.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 ZoneHeader(title: L(.zoneLive), count: live.count)
-                LazyVGrid(columns: BoardGrid.columns, alignment: .leading, spacing: BoardGrid.spacing) {
+                BoardGridView {
                     ForEach(live) { t in
                         VStack(alignment: .leading, spacing: 6) {
                             ProjectTag(terminal: t)
@@ -1126,10 +1199,9 @@ struct ProjectTag: View {
 /// board itself off screen.
 struct RecentStrip: View {
     @EnvironmentObject var state: AppState
-    /// The row's width inside the tray, which is the board grid's width (see `BoardGrid.wrapInset`).
-    @State private var rowWidth: CGFloat = 0
 
     private static let limit = 6
+    @State private var columns: Int?
 
     private var recent: [TerminalSession] {
         state.visible(state.terminals.filter {
@@ -1157,7 +1229,13 @@ struct RecentStrip: View {
                                 ProjectTag(terminal: t)
                                 TerminalCardView(terminal: t)
                             }
-                            .frame(width: rowWidth > 0 ? BoardGrid.cardWidth(in: rowWidth) : BoardGrid.stripCardWidth)
+                            // The scroll view's width is the board grid's (see `BoardGrid.wrapInset`),
+                            // in the grid's columns — animated across a change the way the grid's are
+                            // (BoardGridView), so the first row of these stays on the board's columns
+                            // while a sidebar fold moves them.
+                            .containerRelativeFrame(.horizontal) { length, _ in
+                                BoardGrid.cardWidth(in: length, columns: columns)
+                            }
                         }
                     }
                     // A focus ring that a tight clip would cut.
@@ -1165,8 +1243,9 @@ struct RecentStrip: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(GeometryReader { g in Color.clear.preference(key: TrayWidthKey.self, value: g.size.width) })
-            .onPreferenceChange(TrayWidthKey.self) { rowWidth = $0 }
+            .onGeometryChange(for: Int.self) { BoardGrid.columnCount(in: $0.size.width) } action: { n in
+                if columns == nil { columns = n } else { withAnimation(BoardGrid.reflow) { columns = n } }
+            }
             .padding(BoardGrid.wrapInset)
             .background(Theme.surfaceContainerLow)
             .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.sheet))
@@ -1261,8 +1340,7 @@ struct ProjectSection: View {
                 } else {
                     ForEach(clusters) { c in ClusterContainer(clusterId: c.id).id(c.id) }
                     if !standalone.isEmpty {
-                        LazyVGrid(columns: BoardGrid.columns,
-                                  alignment: .leading, spacing: BoardGrid.spacing) {
+                        BoardGridView {
                             ForEach(standalone) { t in TerminalCardView(terminal: t).id(t.id) }
                         }
                     }
@@ -1610,8 +1688,7 @@ struct ClusterContainer: View {
             }
             .frame(height: 28)
 
-            LazyVGrid(columns: BoardGrid.columns,
-                      alignment: .leading, spacing: BoardGrid.spacing) {
+            BoardGridView {
                 ForEach(members) { t in TerminalCardView(terminal: t) }
             }
         }
@@ -1671,17 +1748,12 @@ struct EmptyState: View {
 
 // MARK: - Session-tree drag plumbing
 
-/// The fleet board's frame in the "fleet" space — the standalone drop target for tree nodes.
-private struct TrayWidthKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
 struct WindowWidthKey: PreferenceKey {
     static var defaultValue: Double = 0
     static func reduce(value: inout Double, nextValue: () -> Double) { value = max(value, nextValue()) }
 }
 
+/// The fleet board's frame in the "fleet" space — the standalone drop target for tree nodes.
 struct BoardFrameKey: PreferenceKey {
     static var defaultValue: CGRect = .zero
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
