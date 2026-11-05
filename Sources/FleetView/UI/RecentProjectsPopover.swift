@@ -17,6 +17,19 @@ struct RecentProjectsPopover: View {
     @State private var rows: [RecentProjectRow] = []
     @FocusState private var filterFocused: Bool
 
+    /// Ten rows, then scroll. The list gets a definite height worked out from its rows: a popover
+    /// takes its content's ideal size, a ScrollView has none of its own, and with only a
+    /// `maxHeight` the first build opened as a one-row sliver with the rest scrolled out of sight.
+    static let rowHeight: CGFloat = 46
+    private static let rowGap: CGFloat = 2
+    private static let rowsShown = 10
+    private static let listPadding: CGFloat = 8
+
+    static func listHeight(rows: Int) -> CGFloat {
+        let n = CGFloat(min(rows, rowsShown))
+        return n * rowHeight + max(0, n - 1) * rowGap + 2 * listPadding
+    }
+
     private var shown: [RecentProjectRow] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return rows }
@@ -42,16 +55,16 @@ struct RecentProjectsPopover: View {
             } else {
                 TimelineView(.everyMinute) { ctx in
                     ScrollView {
-                        LazyVStack(spacing: 2) {
+                        LazyVStack(spacing: Self.rowGap) {
                             ForEach(list) { r in
                                 RecentProjectRowView(row: r, now: ctx.date,
                                                      open: { open(r) }, openHistory: { openHistory(r) })
                             }
                         }
-                        .padding(8)
+                        .padding(Self.listPadding)
                     }
                 }
-                .frame(maxHeight: 460)
+                .frame(height: Self.listHeight(rows: list.count))
             }
             Rectangle().fill(Theme.outlineVariant).frame(height: 1)
             Button {
@@ -161,7 +174,7 @@ private struct RecentProjectRowView: View {
                     L(.recentProjLastUsed($0.formatted(date: .abbreviated, time: .shortened)))
                 } ?? L(.recentProjNever))
         }
-        .padding(.horizontal, 10).frame(height: 46)
+        .padding(.horizontal, 10).frame(height: RecentProjectsPopover.rowHeight)
         .background(hover ? Theme.surfaceContainerHigh : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .contentShape(RoundedRectangle(cornerRadius: 10))
