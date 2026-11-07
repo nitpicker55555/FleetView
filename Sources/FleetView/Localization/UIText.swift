@@ -579,6 +579,13 @@ enum UIText {
     case fleetTrigOK(String)
     case fleetTrigExit(Int32)
     case menuShareSettings
+    case menuTheme
+    case themeTitle
+    case themeBody
+    case themeCustom
+    case themeReset
+    case themeDone
+    case themeSeedName(String)
     case shareSettingsTitle
     case shareSettingsBody
     case shareSettingsEndpoint

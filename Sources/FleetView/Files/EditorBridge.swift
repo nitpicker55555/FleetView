@@ -126,6 +126,8 @@ final class EditorBridge: NSObject, WKNavigationDelegate {
 
     func applyTheme() {
         let appearance = webView.effectiveAppearance
+        // Re-set, not just set once in init: a new seed (ThemeStore) changes the surface too.
+        webView.underPageBackgroundColor = NSColor(Theme.surface)
         call("setTheme", [Self.colors(for: appearance), fontSize])
     }
 
@@ -148,12 +150,14 @@ final class EditorBridge: NSObject, WKNavigationDelegate {
             return out
         }
         // Syntax colours: the dark ones are the web mockups'; the light ones the same roles taken from
-        // the light scheme, dark enough to read on white.
+        // the light scheme, dark enough to read on white. Keywords, functions and attributes are
+        // scheme roles (primary, on-primary-container, tertiary) and follow the seed; strings,
+        // numbers, types and properties are fixed hues so code stays readable whatever the seed is.
         let syntax: [String: String] = dark
-            ? ["hk": "#cfbdfe", "hs": "#e6c68f", "hc": "#8a8492", "hn": "#ffb86a", "ht": "#8ecfff",
-               "hf": "#e9ddff", "ha": "#efb8c8", "hp": "#b8d7ff"]
-            : ["hk": "#65558f", "hs": "#8a5a00", "hc": "#7a757f", "hn": "#a04b00", "ht": "#00658a",
-               "hf": "#4d3d75", "ha": "#7e5260", "hp": "#1d5c8a"]
+            ? ["hk": css(Theme.primary), "hs": "#e6c68f", "hc": "#8a8492", "hn": "#ffb86a", "ht": "#8ecfff",
+               "hf": css(Theme.onPrimaryContainer), "ha": css(Theme.tertiary), "hp": "#b8d7ff"]
+            : ["hk": css(Theme.primary), "hs": "#8a5a00", "hc": "#7a757f", "hn": "#a04b00", "ht": "#00658a",
+               "hf": css(Theme.onPrimaryContainer), "ha": css(Theme.tertiary), "hp": "#1d5c8a"]
         var c: [String: String] = [
             "bg": css(Theme.surface), "panel": css(Theme.surfaceContainerLow), "high": css(Theme.surfaceContainerHigh),
             "stroke": css(Theme.outlineVariant), "text": css(Theme.onSurface), "sub": css(Theme.onSurfaceVariant),

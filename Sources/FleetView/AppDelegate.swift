@@ -68,6 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let share = NSMenuItem(title: L(.menuShareSettings), action: #selector(openShareSettings), keyEquivalent: "")
         share.target = self
         appMenu.addItem(share)
+        let theme = NSMenuItem(title: L(.menuTheme), action: #selector(openTheme), keyEquivalent: "")
+        theme.target = self
+        appMenu.addItem(theme)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: L(.menuHide), action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
@@ -165,6 +168,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openShareSettings() {
         NSApp.activate(ignoringOtherApps: true)
         state.dialog = .shareSettings
+    }
+
+    @objc private func openTheme() {
+        NSApp.activate(ignoringOtherApps: true)
+        state.dialog = .theme
     }
 
     @objc private func revealSupport() {

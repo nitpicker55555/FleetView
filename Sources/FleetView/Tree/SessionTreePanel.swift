@@ -556,6 +556,9 @@ struct TreeRailView: View {
                 }
             }
         }
+        // The lanes are drawn after body returns, where reading a Theme colour is not tracked; keying
+        // the canvas on the seed is what redraws them in a new palette.
+        .id(ThemeStore.shared.seed)
     }
 
     private func laneColor(_ idx: Int) -> Color { Theme.laneColor(idx) }

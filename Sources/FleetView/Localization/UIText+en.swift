@@ -571,6 +571,21 @@ extension UIText {
         case .fleetTrigOK(let a): return "OK · \(a)"
         case .fleetTrigExit(let a): return "Exit \(a)"
         case .menuShareSettings: return "Share Settings…"
+        case .menuTheme: return "Colors…"
+        case .themeTitle: return "Colors"
+        case .themeBody: return "The whole palette is generated from one seed colour with Material 3's algorithm. Change the seed and the board, the status colours on cards, the file window and the web dashboard on your phone all change with it."
+        case .themeCustom: return "Custom"
+        case .themeReset: return "Reset"
+        case .themeDone: return "Done"
+        case .themeSeedName(let n):
+            switch n {
+            case "violet": return "Violet"
+            case "blue": return "Blue"
+            case "teal": return "Teal"
+            case "green": return "Green"
+            case "rose": return "Rose"
+            default: return n
+            }
         case .shareSettingsTitle: return "Sharing"
         case .shareSettingsBody: return "Sharing turns a conversation into one HTML page and sends it to the service below, which answers with a public link — from the web chat's share button and from dropping a card on Share. With nothing set here, sharing can only download the page."
         case .shareSettingsEndpoint: return "Service address"
