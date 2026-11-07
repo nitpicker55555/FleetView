@@ -2493,7 +2493,22 @@ final class AppState: ObservableObject {
                 options: [], range: WebDashboardPage.html.range(of: "</head>"))
             return ("200 OK", "text/html; charset=utf-8", Data(html.utf8))
         case "/theme.css":
+            // `?seed=` is one device's own choice (the dashboard's 配色 sheet); without it, the Mac's.
+            if let seed = query["seed"].flatMap(ThemeStore.parseHex) {
+                return ("200 OK", "text/css; charset=utf-8",
+                        Data(ThemeStore.dashboardCSS(MaterialScheme(seed: seed)).utf8))
+            }
             return ("200 OK", "text/css; charset=utf-8", Data(ThemeStore.shared.dashboardCSS().utf8))
+        case "/theme.json":
+            // The sheet's choices: the Mac's seed and the presets, each with its swatch.
+            var presets = MaterialScheme.presets.map { p -> [String: Any] in
+                var sw = ThemeStore.swatch(p.seed)
+                sw["name"] = p.name
+                return sw
+            }
+            presets.insert(ThemeStore.swatch(ThemeStore.shared.seed).merging(["name": "mac"]) { $1 }, at: 0)
+            let body = try? JSONSerialization.data(withJSONObject: ["presets": presets])
+            return ("200 OK", "application/json", body ?? Data("{}".utf8))
         case "/state":
             let data = (try? JSONEncoder().encode(webSnapshot())) ?? Data("{}".utf8)
             return ("200 OK", "application/json", data)

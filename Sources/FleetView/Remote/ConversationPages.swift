@@ -345,6 +345,36 @@ enum ConversationPages {
         }
     }
 
+    /// Image `n` of the line at position `at` (see ConvImage), decoded. The line is read whole and
+    /// parsed without `shrunk`: the base64 is the one string here that is wanted in full.
+    static func image(path: String, at: Int, n: Int) -> (data: Data, mime: String)? {
+        var file = path, offset = at
+        if at < 0 {                                   // inside a Codex history_base
+            guard let seg = segments(path).first(where: { at >= $0.shift && at < $0.shift + ($0.cut ?? .max) })
+            else { return nil }
+            file = seg.path; offset = at - seg.shift
+        }
+        guard let h = FileHandle(forReadingAtPath: file) else { return nil }
+        defer { try? h.close() }
+        guard (try? h.seek(toOffset: UInt64(offset))) != nil else { return nil }
+        var line = Data()
+        while line.count < (256 << 20) {
+            guard let chunk = try? h.read(upToCount: 4 << 20), !chunk.isEmpty else { break }
+            if let nl = chunk.firstIndex(of: 0x0A) {
+                line.append(chunk[chunk.startIndex..<nl]); break
+            }
+            line.append(chunk)
+        }
+        return autoreleasepool { () -> (data: Data, mime: String)? in
+            guard let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return nil }
+            let blocks = Conversation.imageBlocks(obj)
+            guard n >= 0, n < blocks.count, let b64 = blocks[n].data,
+                  let data = Data(base64Encoded: b64, options: .ignoreUnknownCharacters) else { return nil }
+            let mime = blocks[n].mime.flatMap { $0.hasPrefix("image/") ? $0 : nil } ?? "image/png"
+            return (data, mime)
+        }
+    }
+
     /// The `limit` messages before position `before`, oldest first.
     static func page(path: String, before: Double, limit: Int, cwd: String, ownPrompt: String) -> ConvResult {
         let segs = segments(path)

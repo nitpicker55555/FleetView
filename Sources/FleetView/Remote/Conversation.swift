@@ -8,6 +8,14 @@ struct ConvEdit: Codable {
     let new: String
 }
 
+/// An image in a transcript line: the line's position and which image of that line it is, counted
+/// the way `Conversation.imageBlocks` counts them.
+struct ConvImage: Codable {
+    let at: Double
+    let n: Int
+    let mime: String?
+}
+
 struct ConvMsg: Codable {
     let role: String        // "user" | "assistant" | "tool" | "system"
     let kind: String        // "text" | "thinking" | "tool"
@@ -29,6 +37,10 @@ struct ConvMsg: Codable {
     /// Positions only grow as the file does, so the page can keep a message that slid out of the
     /// polled window and ask for the ones before its oldest (`before=`) without overlap or a gap.
     var at: Double? = nil
+    /// Images the message carries — pasted into a prompt, or in a tool's result (a screenshot, an
+    /// image file read). Only where they are; the page fetches each from `/conversation/image`, so
+    /// the 3 s poll does not carry megabytes of base64.
+    var images: [ConvImage]? = nil
     var trigger: String? = nil    // kind == "compact": "auto" or "manual", when the transcript says
     var tokens: Int? = nil        // kind == "compact": how full the context was when it ran
 }
@@ -448,7 +460,7 @@ enum Conversation {
 
         for line in lines {
             let obj = line.obj
-            let first = msgs.count
+            let first = msgs.count, lastText = msgs.last?.text.count
             if obj["payload"] != nil || (obj["type"] as? String) == "compacted" {
                 parseCodex(obj, into: &msgs, toolIndex: &toolIndex)
             } else {
@@ -456,6 +468,8 @@ enum Conversation {
                 parseClaude(obj, into: &msgs, toolIndex: &toolIndex, cwd: cwd)
                 collectInfo(obj, into: &info)
             }
+            attachImages(obj, at: line.at, to: &msgs, first: first, merged: msgs.count == first
+                         && msgs.last?.text.count != lastText, toolIndex: toolIndex)
             // Every message a line produced gets the line's position, and a fraction for the second
             // and later one — a reply's text, thinking and tool calls can share one line.
             for i in first..<msgs.count { msgs[i].at = Double(line.at) + Double(i - first) / 1024 }
@@ -487,6 +501,68 @@ enum Conversation {
             return t.isEmpty ? nil : flatten(t)
         }
         return ConvResult(messages: mergeQueued(msgs, sessionId: sessionId, everSaid: everSaid), info: info)
+    }
+
+    /// A line's images, depth first: its own image blocks, and those inside its tool results.
+    /// `data` is the base64 — cut short in a line parsed for the chat (see `shrunk`), whole in one
+    /// parsed for `/conversation/image`, which is why the chat only takes their places from here.
+    static func imageBlocks(_ obj: [String: Any]) -> [(tool: String?, mime: String?, data: String?)] {
+        var out: [(tool: String?, mime: String?, data: String?)] = []
+        func scan(_ blocks: [[String: Any]], tool: String?) {
+            for b in blocks {
+                switch b["type"] as? String {
+                case "image":                         // Claude: {source: {media_type, data}}
+                    let src = b["source"] as? [String: Any]
+                    out.append((tool, src?["media_type"] as? String, src?["data"] as? String))
+                case "input_image":                   // Codex: {image_url: "data:<mime>;base64,<data>"}
+                    let url = (b["image_url"] as? String) ?? ""
+                    guard url.hasPrefix("data:"), let comma = url.firstIndex(of: ",") else { continue }
+                    let head = url[url.index(url.startIndex, offsetBy: 5)..<comma]
+                    out.append((tool, head.split(separator: ";").first.map(String.init),
+                                String(url[url.index(after: comma)...])))
+                case "tool_result":
+                    if let inner = b["content"] as? [[String: Any]] { scan(inner, tool: b["tool_use_id"] as? String) }
+                default:
+                    continue
+                }
+            }
+        }
+        if let m = obj["message"] as? [String: Any], let c = m["content"] as? [[String: Any]] {
+            scan(c, tool: nil)
+        } else if let p = obj["payload"] as? [String: Any], (p["type"] as? String) == "message",
+                  let c = p["content"] as? [[String: Any]] {
+            scan(c, tool: nil)
+        }
+        return out
+    }
+
+    /// A line's images onto the messages they belong to: one in a tool result onto that tool's call,
+    /// the rest onto the message the line made — or the one it added its text to, or, for a line of
+    /// images and no words, a message of their own.
+    private static func attachImages(_ obj: [String: Any], at: Int, to msgs: inout [ConvMsg], first: Int,
+                                     merged: Bool, toolIndex: [String: Int]) {
+        let blocks = imageBlocks(obj)
+        guard !blocks.isEmpty else { return }
+        var own: [ConvImage] = []
+        for (n, b) in blocks.enumerated() {
+            let ref = ConvImage(at: Double(at), n: n, mime: b.mime)
+            if let t = b.tool, let i = toolIndex[t] { msgs[i].images = (msgs[i].images ?? []) + [ref] }
+            else if b.tool == nil { own.append(ref) }
+        }
+        guard !own.isEmpty else { return }
+        if first < msgs.count {
+            msgs[first].images = (msgs[first].images ?? []) + own
+        } else if merged, let i = msgs.indices.last {
+            msgs[i].images = (msgs[i].images ?? []) + own
+        } else {
+            let role = ((obj["message"] as? [String: Any])?["role"] as? String)
+                ?? ((obj["payload"] as? [String: Any])?["role"] as? String) ?? "user"
+            var m = ConvMsg(role: role == "assistant" ? "assistant" : "user", kind: "text", text: "",
+                            tool: nil, cat: nil, detail: nil, output: nil, ok: nil,
+                            ts: obj["timestamp"] as? String, sub: (obj["isSidechain"] as? Bool) ?? false)
+            m.images = own
+            msgs.append(m)
+        }
     }
 
     /// Only the tool results in a line, put on the calls they answer (see `build`'s lookahead).

@@ -591,6 +591,15 @@ enum WebDashboardPage {
   .mbody b{font-weight:500;color:var(--text)}
   .msg.open .mbody{display:block}
   .msg.think .mtext{display:none}
+  .msg .imgs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .msg .imgs img{display:block;max-width:min(100%,320px);max-height:240px;min-width:48px;min-height:48px;border-radius:12px;
+    object-fit:contain;background:var(--card);cursor:zoom-in;border:1px solid var(--outlineVariant)}
+  .msg.tool .imgs img{max-height:150px;max-width:min(100%,240px)}
+  .msg.user .imgs{justify-content:flex-end}
+  #lightbox{display:none;position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.92);align-items:center;justify-content:center;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);cursor:zoom-out}
+  #lightbox.on{display:flex}
+  #lightbox img{max-width:100%;max-height:100%;object-fit:contain}
   .msg.think.open .mtext{display:block;margin-top:7px;font-size:12px}
   /* A compaction: a rule across the chat, the summary it left folded under it. */
   .msg.compact{margin:20px 0;cursor:pointer}
@@ -612,13 +621,14 @@ enum WebDashboardPage {
     font-size:11px;line-height:16px;color:var(--sub)}
   .msg.user .sst:empty{display:none}
   .msg.user .sst .spin{width:9px;height:9px;background:var(--sub)}
-  .msg.user .sst svg.ic{width:12px;height:12px}
+  .msg.user .sst svg.ic{width:14px;height:14px}
   .msg.user .sst.ok{color:var(--accent)}
   .msg.user .sst.warn{color:var(--amber)}
   .msg.user .sst.warn .spin{background:var(--amber)}
   .msg.user .sst.bad{color:var(--red)}
-  .msg.user .sst button{height:26px;padding:0 10px;border:0;border-radius:999px;background:var(--secondaryContainer);
-    color:var(--onSecondaryContainer);font:inherit;font-weight:500;cursor:pointer}
+  .msg.user .sst button{width:28px;height:28px;padding:0;border:0;border-radius:999px;background:var(--secondaryContainer);
+    color:var(--onSecondaryContainer);cursor:pointer;display:grid;place-items:center}
+  .msg.user .sst button svg.ic{width:14px;height:14px}
   .msg.user.sending .mtext{transition:opacity .2s}
   .msg.user.sending.retry .mtext{opacity:.7}
   .msg.user.sending.failed .mtext{opacity:.6;outline:1px solid var(--redEdge);outline-offset:-1px}
@@ -711,6 +721,7 @@ enum WebDashboardPage {
   #sinfo .sync{display:inline-flex;align-items:center;gap:4px}
   #sinfo .sync svg.ic{width:12px;height:12px}
   #sinfo .sync .spin{width:9px;height:9px;background:currentColor}
+  #sinfo .sync svg.ic,#sinfo .sync .spin{flex:none}
   #sinfo .sync.ok{opacity:.8}
   #sinfo .sync.warn{color:var(--amber)}
   #sinfo .sync.bad{color:var(--red)}
@@ -1097,23 +1108,34 @@ enum WebDashboardPage {
   #term.picking #pickbar{display:flex}
   #term.picking #inputbar,#term.picking #jump,#term.picking #perm{display:none}
   /* FleetView's own triggers: the same sheet, opened from the board header instead of a card. */
-  #ftrig,#arch{display:none;position:fixed;inset:0;z-index:60}
-  #ftrig.on,#arch.on{display:block}
-  #ftrig .tscrim,#arch .tscrim{position:absolute;inset:0;background:var(--scrim)}
-  #ftrig .tsheet,#arch .tsheet{position:absolute;top:0;right:0;bottom:0;width:min(440px,100vw);display:flex;flex-direction:column;
+  #ftrig,#arch,#seeds{display:none;position:fixed;inset:0;z-index:60}
+  #ftrig.on,#arch.on,#seeds.on{display:block}
+  #ftrig .tscrim,#arch .tscrim,#seeds .tscrim{position:absolute;inset:0;background:var(--scrim)}
+  #ftrig .tsheet,#arch .tsheet,#seeds .tsheet{position:absolute;top:0;right:0;bottom:0;width:min(440px,100vw);display:flex;flex-direction:column;
     background:var(--panel);box-shadow:0 0 24px rgba(0,0,0,.35)}
-  @media (max-width:640px){ #ftrig .tsheet,#arch .tsheet{top:auto;left:0;width:auto;max-height:86dvh;border-radius:16px 16px 0 0} }
-  #ftrig .thead,#arch .thead{display:flex;align-items:center;gap:10px;padding:12px 8px 10px 20px;border-bottom:1px solid var(--outlineVariant)}
-  #ftrig .thead b,#arch .thead b{font-size:16px;line-height:24px;font-weight:500}
-  #ftrig .thead .tname,#arch .thead .tname{flex:1;min-width:0;font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #ftrig .thead button,#arch .thead button{flex:none;width:40px;height:40px;border:0;background:none;color:var(--sub);cursor:pointer;
+  @media (max-width:640px){ #ftrig .tsheet,#arch .tsheet,#seeds .tsheet{top:auto;left:0;width:auto;max-height:86dvh;border-radius:16px 16px 0 0} }
+  #ftrig .thead,#arch .thead,#seeds .thead{display:flex;align-items:center;gap:10px;padding:12px 8px 10px 20px;border-bottom:1px solid var(--outlineVariant)}
+  #ftrig .thead b,#arch .thead b,#seeds .thead b{font-size:16px;line-height:24px;font-weight:500}
+  #ftrig .thead .tname,#arch .thead .tname,#seeds .thead .tname{flex:1;min-width:0;font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #ftrig .thead button,#arch .thead button,#seeds .thead button{flex:none;width:40px;height:40px;border:0;background:none;color:var(--sub);cursor:pointer;
     display:flex;align-items:center;justify-content:center;border-radius:999px}
-  #ftriglist,#archlist{overflow:auto;padding:12px 16px calc(24px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch}
-  #ftriglist .tnote,#archlist .tnote{font-size:12px;line-height:18px;color:var(--sub);margin:2px 0 12px}
+  #ftriglist,#archlist,#seedlist{overflow:auto;padding:12px 16px calc(24px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch}
+  #ftriglist .tnote,#archlist .tnote,#seedlist .tnote{font-size:12px;line-height:18px;color:var(--sub);margin:2px 0 12px}
   #ftrigcount:empty{display:none}
   .trow .tg.run{color:var(--onPrimaryContainer);background:var(--primaryContainer);border-color:transparent}
   .trow .tg.bad{color:var(--onErrorContainer);background:var(--errorContainer);border-color:transparent}
   .trow .fsrc{margin-top:8px;font-size:12px;line-height:18px;color:var(--sub)}
+  /* The colour sheet: a swatch per choice, the way the Mac's 配色 dialog draws them. */
+  #seedlist .sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:14px 8px;margin:4px 0 14px}
+  #seedlist .so{display:flex;flex-direction:column;align-items:center;gap:6px;border:0;background:none;padding:0;cursor:pointer;
+    color:var(--sub);font:inherit;font-size:12px;line-height:16px;position:relative}
+  #seedlist .so.on{color:var(--text);font-weight:500}
+  #seedlist .sw{width:44px;height:44px;border-radius:50%;overflow:hidden;display:grid;grid-template:1fr 1fr/1fr 1fr;
+    outline:2px solid transparent;outline-offset:3px}
+  #seedlist .so.on .sw{outline-color:var(--text)}
+  #seedlist .sw i:first-child{grid-column:1/3}
+  #seedlist .sw.any{background:conic-gradient(red,yellow,lime,cyan,blue,magenta,red)}
+  #seedlist input[type=color]{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;border:0;padding:0}
   #archlist .fsrc{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
   #archlist .ti .ag{width:16px;height:16px}
   .icb.hist{display:inline-flex;align-items:center;gap:3px;width:auto;padding:0 10px}
@@ -1189,6 +1211,7 @@ enum WebDashboardPage {
   <button id="markbtn" class="tb" onclick="toggleOnlyMarked()" data-i18n-title="head.markFilter"><i data-ic="bookmark"></i><span id="markcount"></span></button>
   <button id="ftrigbtn" class="tb" onclick="openFtrig()" data-i18n-title="ftrig.title" data-i18n-aria="ftrig.title"><i data-ic="zap"></i><span id="ftrigcount"></span></button>
   <button id="schemebtn" class="tb" onclick="cycleScheme()"></button>
+  <button id="seedbtn" class="tb" onclick="openSeeds()" data-i18n-title="seed.title" data-i18n-aria="seed.title"><i data-ic="palette"></i></button>
   <button id="projbtn" class="tb" onclick="toggleProjects()" data-i18n-title="head.projTitle" data-i18n-aria="head.projAria"><i data-ic="folder-open"></i></button>
   <button id="traybtn" class="tb" onclick="toggleTray()" data-i18n-title="head.trayTitle" data-i18n-aria="head.trayAria"><i data-ic="inbox"></i><span id="traybadge"></span></button>
   <button class="netsig" id="netsig" onclick="netToast()" data-i18n-aria="net.aria"></button>
@@ -1307,6 +1330,17 @@ enum WebDashboardPage {
     <div class="thead"><b data-i18n="ftrig.title"></b><span class="tname" data-i18n="ftrig.sub"></span>
       <button onclick="closeFtrig()" data-i18n-title="common.back" data-i18n-aria="common.back"><i data-ic="x"></i></button></div>
     <div id="ftriglist"></div>
+  </div>
+</div>
+
+<div id="lightbox" onclick="closeLightbox()"><img alt=""></div>
+
+<div id="seeds">
+  <div class="tscrim" onclick="closeSeeds()"></div>
+  <div class="tsheet" role="dialog" aria-modal="true">
+    <div class="thead"><b data-i18n="seed.title"></b><span class="tname" id="seedcur"></span>
+      <button onclick="closeSeeds()" data-i18n-title="common.back" data-i18n-aria="common.back"><i data-ic="x"></i></button></div>
+    <div id="seedlist"></div>
   </div>
 </div>
 
@@ -1435,6 +1469,9 @@ const I18N={
     'chat.compactTokens':'压缩前 {n} tokens','chat.compactSummary':'点按看压缩后留下的摘要',
     'chat.older':'加载更早的消息','chat.olderLoading':'正在加载更早的消息…','chat.olderFailed':'更早的消息没加载出来',
     'chat.start':'对话从这里开始',
+    'seed.title':'配色','seed.mac':'跟随 Mac','seed.custom':'自定义',
+    'seed.note':'只改这台设备上的网页。Mac 自己的配色在 FleetView → 配色… 里改。',
+    'seed.violet':'紫','seed.blue':'蓝','seed.teal':'青','seed.green':'绿','seed.rose':'玫红',
     'pw.open':'我的 prompt','pw.title':'我的 prompt','pw.count':'{n} 条','pw.loading':'加载中…','pw.empty':'还没有 prompt',
     'pw.hint':'滚动挑选，点按跳过去','pw.jumping':'正在跳过去…','pw.nth':'第 {n} 条',
     'sync.first':'拉取中…','sync.pulling':'拉取中…','sync.ok':'已是最新','sync.retrying':'连不上 Mac',
@@ -1577,6 +1614,9 @@ const I18N={
     'chat.compactTokens':'{n} tokens before','chat.compactSummary':'Tap to read the summary it left',
     'chat.older':'Load earlier messages','chat.olderLoading':'Loading earlier messages…','chat.olderFailed':'Couldn’t load earlier messages',
     'chat.start':'The conversation starts here',
+    'seed.title':'Colors','seed.mac':'Follow the Mac','seed.custom':'Custom',
+    'seed.note':'Changes this device’s page only. The Mac’s own colors are under FleetView → Colors….',
+    'seed.violet':'Violet','seed.blue':'Blue','seed.teal':'Teal','seed.green':'Green','seed.rose':'Rose',
     'pw.open':'My prompts','pw.title':'My prompts','pw.count':{one:'{n} prompt',other:'{n} prompts'},'pw.loading':'Loading…',
     'pw.empty':'No prompts yet','pw.hint':'Scroll to pick, tap to jump','pw.jumping':'Jumping…','pw.nth':'#{n}',
     'sync.first':'Updating…','sync.pulling':'Updating…','sync.ok':'Up to date','sync.retrying':'Mac unreachable',
@@ -1728,6 +1768,7 @@ const IC={
   'calendar-clock':'<path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5M16 2v4M8 2v4M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/>',
   'circle-stop':'<circle cx="12" cy="12" r="10"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
   check:'<path d="M20 6 9 17l-5-5"/>',
+  palette:'<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>',
   'list-ordered':'<path d="M10 12h11"/><path d="M10 18h11"/><path d="M10 6h11"/><path d="M4 10h2"/><path d="M4 6h1v4"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>',
   'check-check':'<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
   'cloud-off':'<path d="m2 2 20 20"/><path d="M5.782 5.782A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.307-.193"/><path d="M21.532 16.5A4.5 4.5 0 0 0 17.5 10h-1.79A7.008 7.008 0 0 0 10 5.07"/>',
@@ -2332,14 +2373,12 @@ function maybeOlder(){
    through all of it. The wheel lists every prompt of the conversation — the Mac sends them all
    (`prompts=1`), not only what is loaded — ten at a time; scrolling it picks one, and tapping jumps
    the chat there, fetching the pages in between first when it is further back than what is loaded.
-   Folded to a tab on the right edge; whether it is open is this device's to remember. */
-const PW_KEY='fv_pw';
+   Folded to a tab on the right edge, and put away again by a tap anywhere else. */
 let pwList=[], pwSel=-1, pwSrc='', pwBusy=false, pwRaf=0, pwAt=-1, pwPainted=new Set(), hitAt=null, hitUntil=0;
 function pwOpen(){ return document.getElementById('term').classList.contains('pw'); }
 function pwReset(){ pwList=[]; pwSel=-1; pwSrc=''; pwAt=-1; document.getElementById('pwheel').innerHTML=''; pwPaintDet(); }
 function togglePw(on){
   document.getElementById('term').classList.toggle('pw',on);
-  try{ localStorage.setItem(PW_KEY,on?'1':''); }catch(e){}
   if(on) pwLoad(true);
 }
 /* Everything the user said that is loaded, for a Mac that cannot list them (no `prompts=1`). */
@@ -2481,7 +2520,19 @@ async function pwJump(i){
   }
 }
 /* Reopened as it was left on this device. */
-try{ if(localStorage.getItem(PW_KEY)) document.getElementById('term').classList.add('pw'); }catch(e){}
+/* Light dismiss: a tap anywhere outside an open panel puts it away — and does only that, so the tap
+   cannot also land on whatever was under it (a card, a message, Send). The prompt wheel and the
+   board's two drop-downs; the sheets have a scrim of their own for it. A scroll is no tap: reading
+   on with the wheel open leaves it open. */
+document.addEventListener('click',e=>{
+  const t=e.target, inside=(...ids)=>ids.some(id=>{ const n=document.getElementById(id); return n&&n.contains(t); });
+  let closed=false;
+  if(pwOpen()&&!inside('pside','pwtab')){ togglePw(false); closed=true; }
+  if(document.getElementById('tray').classList.contains('on')&&!inside('tray','traybtn')){
+    document.getElementById('tray').classList.remove('on'); closed=true; }
+  if(document.getElementById('projs').classList.contains('on')&&!inside('projs','projbtn')){ closeProjects(); closed=true; }
+  if(closed){ e.preventDefault(); e.stopPropagation(); }
+},true);
 
 /* ---------- is what is on screen the latest? ----------
    The chat is a copy of a file on the Mac, fetched every 3 s, and nothing used to say whether that
@@ -2490,17 +2541,19 @@ try{ if(localStorage.getItem(PW_KEY)) document.getElementById('term').classList.
    the header's subtitle says which. A normal poll is quick, so it only reads as "fetching" when one
    has been out for more than 700 ms. */
 let syncAt=0, syncSent=0, syncSeq=0;
+/* A symbol only: a turning ring while fetching, a check when current, a crossed-out cloud (amber,
+   then red) when the Mac is not answering. The words are the title. */
 function paintSync(){
   const el=document.getElementById('syncchip'); if(!el) return;
-  let cls='sync', h, title='';
-  if(chatFails>=1){ cls+=chatFails>=2?' bad':' warn'; h=ic('cloud-off','s12')+tr('sync.retrying'); }
-  else if(!syncAt){ h='<span class="spin"></span>'+tr('sync.first'); }
-  else if(syncSent&&performance.now()-syncSent>700){ h='<span class="spin"></span>'+tr('sync.pulling'); }
-  else { cls+=' ok'; h=ic('check','s12')+tr('sync.ok'); }
-  if(syncAt) title=tr(chatFails>=1?'sync.atRetrying':'sync.at',{t:new Date(syncAt).toLocaleTimeString()});
+  let cls='sync', h, st, say;
+  if(chatFails>=1){ cls+=chatFails>=2?' bad':' warn'; h=ic('cloud-off','s12'); st='offline'; say=tr('sync.retrying'); }
+  else if(!syncAt){ h='<span class="spin"></span>'; st='pulling'; say=tr('sync.first'); }
+  else if(syncSent&&performance.now()-syncSent>700){ h='<span class="spin"></span>'; st='pulling'; say=tr('sync.pulling'); }
+  else { cls+=' ok'; h=ic('check','s12'); st='ok'; say=tr('sync.ok'); }
+  if(syncAt) say+=' · '+tr(chatFails>=1?'sync.atRetrying':'sync.at',{t:new Date(syncAt).toLocaleTimeString()});
   if(el.className!==cls) el.className=cls;
   if(el.dataset.h!==h){ el.dataset.h=h; el.innerHTML=h; }
-  el.title=title;
+  el.dataset.st=st; el.title=say; el.setAttribute('aria-label',say);
 }
 setInterval(()=>{ if(curId) paintSync(); },500);
 
@@ -2928,6 +2981,8 @@ function statHTML(d){
 
 // Tool/thinking cards expand on tap — one delegated listener, so re-rendering can't lose handlers.
 document.getElementById('chat').addEventListener('click',e=>{
+  const pic=e.target.closest?e.target.closest('img[data-full]'):null;
+  if(pic&&!picking){ e.preventDefault(); openLightbox(pic.src); return; }
   const sact=e.target.closest?e.target.closest('[data-sact]'):null;
   if(sact){ e.preventDefault(); sentAction(sact); return; }
   if(picking){                                            // picking what to share: a tap picks
@@ -3003,14 +3058,31 @@ function msgHTML(m){
       '<b>'+esc(m.tool||'')+'</b><span class="sum">'+esc(m.text)+'</span>'+(d?statHTML(d):'')+
       (m.pending?'<span class="when">'+since(m.ts)+'</span>':'')+
       (m.ok===false?'<span style="color:var(--red)" title="'+tr('chat.failed')+'">'+ic('x','s16')+'</span>':'')+'</div>'+
+      imgsHTML(m)+
       (det?'<div class="mbody">'+det+'</div>':'')+'</div>';
   }
   return '<div class="msg '+(m.role==='user'?'user':'asst')+(m.sub?' sub':'')+(m.queued?' queued':'')+'" data-k="'+msgKey(m)+'"'+atAttr(m)+'>'+
     '<span class="cp" data-copy="1">'+tr('chat.copy')+'</span>'+
     (m.sub?'<div class="tag">'+tr('chat.subagent')+'</div>':'')+
     (m.ts?'<span class="when">'+hhmm(m.ts)+'</span>':'')+
-    '<div class="mtext md">'+md(m.text)+'</div></div>';
+    (m.text||!(m.images&&m.images.length)?'<div class="mtext md">'+md(m.text)+'</div>':'')+imgsHTML(m)+'</div>';
 }
+/* Pictures in a message — pasted into a prompt, or a tool's screenshot — fetched one by one from the
+   Mac by their place in the transcript (see ConvImage); only the place travels with the poll. The
+   session is in the address because places are per file. Tapped, one opens full screen. */
+function imgsHTML(m){
+  if(!m.images||!m.images.length) return '';
+  return '<div class="imgs">'+m.images.map(im=>'<img loading="lazy" decoding="async" alt="" data-full="1" src="'+
+    att('/conversation/image?'+(convArch?'arch='+encodeURIComponent(convArch):'id='+encodeURIComponent(curId))+
+        '&at='+im.at+'&n='+im.n+'&s='+encodeURIComponent(convSrc||''))+'">').join('')+'</div>';
+}
+function openLightbox(src){
+  const lb=document.getElementById('lightbox');
+  lb.querySelector('img').src=src;
+  lb.classList.add('on');
+}
+function closeLightbox(){ document.getElementById('lightbox').classList.remove('on'); }
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeLightbox(); });
 /* The tail of the conversation says what the agent is doing right now — a chat that simply stops
    updating looks identical whether it is thinking, blocked, or finished. */
 function runBarHTML(){
@@ -3938,18 +4010,24 @@ function showSent(text,owner){
   return o;
 }
 function dropSent(o){ o.node.remove(); outbox=outbox.filter(x=>x!==o); }
+/* Symbols, not words, the way a messenger marks a message: a turning ring while it is on its way
+   (amber while retrying), one check when the Mac has typed it and seen it submitted, two when it
+   is in the conversation. A warning with ⏎ is "typed but not submitted", a cross with ↻ is "not
+   sent". What each means is the title — a tooltip on a desktop, read out by a screen reader. */
 function paintSent(o){
   const st=o.node.querySelector('.sst');
-  const look={retry:' warn',stuck:' warn',failed:' bad',sent:' ok'}[o.state]||'';
+  const look={retry:' warn',stuck:' warn',failed:' bad'}[o.state]||'';
   st.className='sst'+look;
+  st.dataset.st=o.state;
   o.node.classList.toggle('retry',o.state==='retry');
   o.node.classList.toggle('failed',o.state==='failed');
+  const say=tr({sending:'send.sending',sent:'send.delivered',stuck:'send.stuck',failed:'send.failed'}[o.state]||'send.retry',{n:o.tries});
+  st.title=say; st.setAttribute('aria-label',say);
   st.innerHTML=
-    o.state==='sending'?'<span class="spin"></span>'+tr('send.sending')
-   :o.state==='retry'?'<span class="spin"></span>'+tr('send.retry',{n:o.tries})
-   :o.state==='sent'?ic('check','s12')+tr('send.delivered')
-   :o.state==='stuck'?ic('triangle-alert','s12')+tr('send.stuck')+'<button data-sact="enter">'+tr('send.pressEnter')+'</button>'
-   :o.state==='failed'?ic('x','s12')+tr('send.failed')+'<button data-sact="again">'+tr('send.again')+'</button>'
+    o.state==='sending'||o.state==='retry'?'<span class="spin"></span>'
+   :o.state==='sent'?ic('check','s12')
+   :o.state==='stuck'?ic('triangle-alert','s12')+'<button data-sact="enter" title="'+tr('send.pressEnter')+'" aria-label="'+tr('send.pressEnter')+'">'+ic('corner-down-left','s12')+'</button>'
+   :o.state==='failed'?ic('x','s12')+'<button data-sact="again" title="'+tr('send.again')+'" aria-label="'+tr('send.again')+'">'+ic('rotate-cw','s12')+'</button>'
    :'';
 }
 async function deliver(o){
@@ -4022,7 +4100,7 @@ function reconcileSent(el,msgs){
   const nodes=el.querySelectorAll('.msg'), got=lastGot[curId];
   if(got!==undefined) msgs.forEach((m,i)=>{
     if(m.at!==got||!nodes[i]) return;
-    nodes[i].insertAdjacentHTML('beforeend','<div class="sst ok">'+ic('check-check','s12')+tr('send.got')+'</div>');
+    nodes[i].insertAdjacentHTML('beforeend','<div class="sst ok" data-st="got" title="'+tr('send.got')+'" aria-label="'+tr('send.got')+'">'+ic('check-check','s12')+'</div>');
   });
   const bar=el.querySelector('.runbar');
   for(const o of outbox) if(o.owner===curId) bar?el.insertBefore(o.node,bar):el.appendChild(o.node);
@@ -5313,20 +5391,90 @@ function cycleScheme(){
 /* Before the first /state lands, so a saved choice is on the page it paints rather than one poll
    later — and so the button carries the right glyph from the start. */
 applyScheme();
-/* The Mac's seed colour (FleetView → 配色…). The page arrives with that seed's variables in
-   <style id="seedcss">; when /state reports a different seed, the new ones are fetched and swapped
-   in, so the phone changes colour with the Mac instead of on the next reload. */
-let seedBusy=false;
+/* The seed colour. The page arrives with the Mac's (FleetView → 配色…) in <style id="seedcss">,
+   and follows it when /state reports a change — unless this device has picked its own in the
+   colour sheet, the way it can pick its own light or dark. Either way the Mac computes the
+   variables (`/theme.css?seed=`), so a seed looks the same here as there. The device's own choice
+   is kept with its CSS, so a reload paints it at once instead of flashing the Mac's first. */
+const SEED_KEY='fv_seed', SEEDCSS_KEY='fv_seedcss';
+let seedBusy=false, macSeed='', mySeed=(()=>{ try{ return localStorage.getItem(SEED_KEY)||''; }catch(e){ return ''; } })();
+/* The Mac puts it in the page; made here when it did not, so a choice always has somewhere to go. */
+function seedEl(){
+  let el=document.getElementById('seedcss');
+  if(!el){ el=document.createElement('style'); el.id='seedcss'; document.head.appendChild(el); }
+  return el;
+}
+(()=>{
+  const el=seedEl();
+  if(!el||!mySeed) return;
+  try{
+    const c=JSON.parse(localStorage.getItem(SEEDCSS_KEY)||'null');
+    if(c&&c.seed===mySeed&&c.css){ el.textContent=c.css; el.dataset.seed=mySeed; }
+  }catch(e){}
+})();
 async function applySeed(seed){
-  const el=document.getElementById('seedcss');
-  if(!seed||!el||el.dataset.seed===seed||seedBusy)return;
+  if(seed) macSeed=seed;
+  const el=seedEl();
+  if(seedBusy) return;
   seedBusy=true;
   try{
-    const r=await fetch('/theme.css',{cache:'no-store'});
-    if(r.ok){el.textContent=await r.text();el.dataset.seed=seed;}
+    // Again while the choice moved during the fetch: a colour picker reports every step of a drag.
+    for(let n=0;n<6;n++){
+      const want=mySeed||macSeed;
+      if(!want||el.dataset.seed===want) break;
+      const r=await fetch('/theme.css?seed='+encodeURIComponent(want),{cache:'no-store'});
+      if(!r.ok) break;
+      const css=await r.text();
+      el.textContent=css; el.dataset.seed=want;
+      if(want===mySeed){ try{ localStorage.setItem(SEEDCSS_KEY,JSON.stringify({seed:want,css})); }catch(e){} }
+    }
   }catch(e){}
   seedBusy=false;
 }
+/* ---------- the colour sheet ----------
+   Follow the Mac, one of the Mac's five presets, or any colour. */
+let seedInfo=null, seedTimer=0;
+async function openSeeds(){
+  document.getElementById('seeds').classList.add('on');
+  if(!seedInfo) document.getElementById('seedlist').innerHTML='<div class="tnote">'+tr('common.loading')+'</div>';
+  try{ seedInfo=await(await fetch('/theme.json',{cache:'no-store'})).json(); }catch(e){}
+  renderSeeds();
+}
+function closeSeeds(){ document.getElementById('seeds').classList.remove('on'); }
+function renderSeeds(){
+  const el=document.getElementById('seedlist');
+  const list=(seedInfo&&seedInfo.presets)||[];
+  const look=document.documentElement.classList.contains('light')?'light':'dark';
+  const sw=p=>{ const c=p[look]||[]; return '<span class="sw"><i style="background:'+c[0]+'"></i><i style="background:'+c[1]+'"></i><i style="background:'+c[2]+'"></i></span>'; };
+  const preset=list.find(p=>p.name!=='mac'&&p.seed===mySeed);
+  const opt=(on,inner,label,click)=>'<button class="so'+(on?' on':'')+'"'+(click?' onclick="'+click+'"':'')+'>'+inner+'<span>'+esc(label)+'</span></button>';
+  let h='<div class="sgrid">';
+  for(const p of list){
+    if(p.name==='mac') h+=opt(!mySeed,sw(p),tr('seed.mac'),"pickSeed('')");
+    else h+=opt(mySeed===p.seed,sw(p),tr('seed.'+p.name),"pickSeed('"+p.seed+"')");
+  }
+  const custom=mySeed&&!preset;
+  // The native picker, laid invisibly over the swatch: tapping the swatch is tapping the picker.
+  h+='<label class="so'+(custom?' on':'')+'">'+
+     (custom?'<span class="sw" style="background:'+esc(mySeed)+'"></span>':'<span class="sw any"></span>')+
+     '<input type="color" value="'+esc(mySeed||macSeed||'#6750a4')+'" oninput="pickSeedSoon(this.value)" onchange="pickSeed(this.value)">'+
+     '<span>'+tr('seed.custom')+'</span></label>';
+  h+='</div><div class="tnote">'+tr('seed.note')+'</div>';
+  el.innerHTML=h;
+  document.getElementById('seedcur').textContent=(mySeed||macSeed||'').toUpperCase();
+}
+function pickSeed(hex){
+  clearTimeout(seedTimer);
+  mySeed=(hex||'').toLowerCase();
+  try{ if(mySeed) localStorage.setItem(SEED_KEY,mySeed); else { localStorage.removeItem(SEED_KEY); localStorage.removeItem(SEEDCSS_KEY); } }catch(e){}
+  applySeed().then(()=>{ if(document.getElementById('seeds').classList.contains('on')) renderSeeds(); });
+}
+/* While a custom colour is being dragged: often enough to watch it change, not once per step. */
+function pickSeedSoon(hex){ clearTimeout(seedTimer); seedTimer=setTimeout(()=>{
+  mySeed=(hex||'').toLowerCase();
+  try{ localStorage.setItem(SEED_KEY,mySeed); }catch(e){}
+  applySeed();
+},120); }
 /* Connection state for the signal indicator; filled by ping() and tick() (see renderNet). */
 const net={rtts:[],fails:0,via:null,stateAt:0};
 async function tick(){

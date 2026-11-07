@@ -225,6 +225,7 @@ final class WebServer {
         if path == "/browse" { handleBrowse(conn, params, scope); return }
         if path == "/read" { handleRead(conn, params, scope); return }
         if path == "/conversation" { handleConversation(conn, params, scope); return }
+        if path == "/conversation/image" { handleConversationImage(conn, params, scope); return }
         if path == "/share" { handleShare(conn, request, body, params, scope); return }  // network; off it
         if path == "/fleet-triggers" || path.hasPrefix("/fleet-triggers/") {          // has a body
             handleFleetTriggers(conn, request, body, params, scope); return
@@ -349,6 +350,34 @@ final class WebServer {
             DispatchQueue.global(qos: .userInitiated).async {
                 answer("200 OK", spec.respond(limit: limit, whole: query["full"] == "1", before: before,
                                               prompts: query["prompts"] == "1"))
+            }
+        }
+    }
+
+    /// GET /conversation/image?id=|arch=&at=&n= — an image in a transcript (see ConvImage), decoded.
+    /// A line never changes once written, so the answer can be kept: the chat redraws every few
+    /// seconds, and each redraw would otherwise fetch every picture on screen again.
+    private func handleConversationImage(_ conn: NWConnection, _ query: [String: String],
+                                         _ scope: WebAudit.Scope) {
+        func fail(_ status: String) {
+            WebAudit.shared.finish(scope, status: status, bytes: 0, query: query)
+            send(conn, status: status, type: "text/plain", body: Data(), setCookie: scope.setCookie)
+        }
+        let archived = query["arch"].flatMap(UUID.init(uuidString:))
+        guard let id = archived ?? query["id"].flatMap(UUID.init(uuidString:)),
+              let at = query["at"].flatMap(Double.init).map({ Int($0) }),
+              let n = query["n"].flatMap(Int.init) else { fail("400 Bad Request"); return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else { fail("503 Service Unavailable"); return }
+            let path = MainActor.assumeIsolated {
+                (archived == nil ? app.conversationSpec(id) : app.archivedConversationSpec(id))?.path
+            }
+            guard let path else { fail("404 Not Found"); return }
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let img = ConversationPages.image(path: path, at: at, n: n) else { fail("404 Not Found"); return }
+                WebAudit.shared.finish(scope, status: "200 OK", bytes: img.data.count, query: query)
+                self.send(conn, status: "200 OK", type: img.mime, body: img.data, setCookie: scope.setCookie,
+                          cache: "private, max-age=604800, immutable")
             }
         }
     }
@@ -1134,19 +1163,19 @@ final class WebServer {
 
     private func send(_ conn: NWConnection, status: String = "200 OK", type: String, body: Data,
                       setCookie: String? = nil, disposition: String? = nil,
-                      headers: [(String, String)] = []) {
+                      headers: [(String, String)] = [], cache: String = "no-store") {
         Self.write(conn, status: status, type: type, body: body, setCookie: setCookie,
-                   disposition: disposition, headers: headers)
+                   disposition: disposition, headers: headers, cache: cache)
     }
 
     /// `send` without the instance, for replies composed off every queue this server owns.
     private static func write(_ conn: NWConnection, status: String, type: String, body: Data,
                               setCookie: String? = nil, disposition: String? = nil,
-                              headers: [(String, String)] = []) {
+                              headers: [(String, String)] = [], cache: String = "no-store") {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(type)\r\n"
         head += "Content-Length: \(body.count)\r\n"
-        head += "Cache-Control: no-store\r\n"
+        head += "Cache-Control: \(cache)\r\n"
         if let disposition { head += "Content-Disposition: \(disposition)\r\n" }
         if let setCookie { head += "Set-Cookie: \(setCookie)\r\n" }   // identifies this browser's visit
         for (name, value) in headers { head += "\(name): \(value)\r\n" }
