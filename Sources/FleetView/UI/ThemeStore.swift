@@ -79,10 +79,14 @@ final class ThemeStore {
     /// and `html.light` blocks — which keep #6750A4's values, so a page that never gets this still
     /// renders. Only the variables a seed moves are here; the white-on-dark washes and the error
     /// reds do not depend on it. The mapping mirrors the comments in WebDashboardPage's `:root`.
-    func dashboardCSS() -> String {
+    func dashboardCSS() -> String { Self.dashboardCSS(scheme) }
+
+    /// The same for any scheme — a web dashboard can take its own seed, on that device only
+    /// (`/theme.css?seed=`), the way it can take its own light or dark.
+    static func dashboardCSS(_ scheme: MaterialScheme) -> String {
         func block(_ dark: Bool) -> String {
             func v(_ r: MaterialScheme.Role) -> UInt32 { scheme.value(r, dark: dark) }
-            func h(_ r: MaterialScheme.Role) -> String { Self.hex(v(r)) }
+            func h(_ r: MaterialScheme.Role) -> String { hex(v(r)) }
             func a(_ r: MaterialScheme.Role, _ alpha: Double) -> String {
                 let x = v(r)
                 return "rgba(\(x >> 16 & 255),\(x >> 8 & 255),\(x & 255),\(alpha))"
@@ -125,5 +129,15 @@ final class ThemeStore {
             return vars.map { "--\($0.0):\($0.1)" }.joined(separator: ";")
         }
         return ":root{\(block(true))}\nhtml.light{\(block(false))}"
+    }
+
+    /// What the web's colour sheet draws for a seed, as the Mac's dialog does: the primary over the
+    /// secondary and tertiary containers, in each appearance.
+    static func swatch(_ seed: UInt32) -> [String: Any] {
+        let s = MaterialScheme(seed: seed)
+        func three(_ dark: Bool) -> [String] {
+            [.primary, .secondaryContainer, .tertiaryContainer].map { hex(s.value($0, dark: dark)) }
+        }
+        return ["seed": hex(seed), "dark": three(true), "light": three(false)]
     }
 }
