@@ -547,6 +547,36 @@ enum WebDashboardPage {
   .msg.open .mbody{display:block}
   .msg.think .mtext{display:none}
   .msg.think.open .mtext{display:block;margin-top:7px;font-size:12px}
+  /* A compaction: a rule across the chat, the summary it left folded under it. */
+  .msg.compact{margin:20px 0;cursor:pointer}
+  .msg.compact .cdiv{display:flex;align-items:center;gap:8px;font-size:12px;line-height:16px;color:var(--sub)}
+  .msg.compact .cdiv::before,.msg.compact .cdiv::after{content:"";flex:1;height:1px;background:var(--outlineVariant)}
+  .msg.compact .cdiv svg.ic{color:var(--sub)}
+  .msg.compact .mbody{font-family:inherit;font-size:13px;line-height:20px;max-height:420px}
+  /* The top of what is loaded: more above, being fetched, or the start of the conversation. */
+  #chattop{display:flex;justify-content:center;align-items:center;gap:8px;min-height:40px;margin:0 0 8px;
+    font-size:12px;line-height:16px;color:var(--sub)}
+  #chattop:empty{display:none}
+  #chattop button{height:32px;padding:0 14px;border:0;border-radius:999px;background:var(--secondaryContainer);
+    color:var(--onSecondaryContainer);font:inherit;font-weight:500;cursor:pointer}
+  #chattop .spin{background:var(--sub)}
+  #chattop .start{display:flex;align-items:center;gap:10px;width:100%;opacity:.8}
+  #chattop .start::before,#chattop .start::after{content:"";flex:1;height:1px;background:var(--outlineVariant)}
+  /* Where a message you sent has got to, under its bubble. */
+  .msg.user .sst{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:6px;margin-top:4px;
+    font-size:11px;line-height:16px;color:var(--sub)}
+  .msg.user .sst:empty{display:none}
+  .msg.user .sst .spin{width:9px;height:9px;background:var(--sub)}
+  .msg.user .sst svg.ic{width:12px;height:12px}
+  .msg.user .sst.ok{color:var(--accent)}
+  .msg.user .sst.warn{color:var(--amber)}
+  .msg.user .sst.warn .spin{background:var(--amber)}
+  .msg.user .sst.bad{color:var(--red)}
+  .msg.user .sst button{height:26px;padding:0 10px;border:0;border-radius:999px;background:var(--secondaryContainer);
+    color:var(--onSecondaryContainer);font:inherit;font-weight:500;cursor:pointer}
+  .msg.user.sending .mtext{transition:opacity .2s}
+  .msg.user.sending.retry .mtext{opacity:.7}
+  .msg.user.sending.failed .mtext{opacity:.6;outline:1px solid var(--redEdge);outline-offset:-1px}
   #chatnote{color:var(--sub);text-align:center;padding:30px 16px;font-size:12px}
   /* Opening a terminal used to leave the previous conversation on screen until the fetch came back,
      which read as the wrong session rather than as loading. A skeleton of the shape that is coming
@@ -632,6 +662,13 @@ enum WebDashboardPage {
   #sinfo .ctx.danger{color:var(--red)}
   #sinfo .live{display:inline-flex;align-items:center;gap:5px;font-weight:500}
   #sinfo .live svg.g{width:12px;height:12px}
+  /* Whether what is on screen is the latest: being fetched, fetched, or the Mac not answering. */
+  #sinfo .sync{display:inline-flex;align-items:center;gap:4px}
+  #sinfo .sync svg.ic{width:12px;height:12px}
+  #sinfo .sync .spin{width:9px;height:9px;background:currentColor}
+  #sinfo .sync.ok{opacity:.8}
+  #sinfo .sync.warn{color:var(--amber)}
+  #sinfo .sync.bad{color:var(--red)}
   /* what the agent is doing right now, pinned under the last message */
   .runbar{display:flex;align-items:center;gap:8px;padding:10px 14px;margin:2px 0 10px;
     background:var(--primaryContainer);color:var(--onPrimaryContainer);border-radius:12px;
@@ -1015,23 +1052,35 @@ enum WebDashboardPage {
   #term.picking #pickbar{display:flex}
   #term.picking #inputbar,#term.picking #jump,#term.picking #perm{display:none}
   /* FleetView's own triggers: the same sheet, opened from the board header instead of a card. */
-  #ftrig{display:none;position:fixed;inset:0;z-index:60}
-  #ftrig.on{display:block}
-  #ftrig .tscrim{position:absolute;inset:0;background:var(--scrim)}
-  #ftrig .tsheet{position:absolute;top:0;right:0;bottom:0;width:min(440px,100vw);display:flex;flex-direction:column;
+  #ftrig,#arch{display:none;position:fixed;inset:0;z-index:60}
+  #ftrig.on,#arch.on{display:block}
+  #ftrig .tscrim,#arch .tscrim{position:absolute;inset:0;background:var(--scrim)}
+  #ftrig .tsheet,#arch .tsheet{position:absolute;top:0;right:0;bottom:0;width:min(440px,100vw);display:flex;flex-direction:column;
     background:var(--panel);box-shadow:0 0 24px rgba(0,0,0,.35)}
-  @media (max-width:640px){ #ftrig .tsheet{top:auto;left:0;width:auto;max-height:86dvh;border-radius:16px 16px 0 0} }
-  #ftrig .thead{display:flex;align-items:center;gap:10px;padding:12px 8px 10px 20px;border-bottom:1px solid var(--outlineVariant)}
-  #ftrig .thead b{font-size:16px;line-height:24px;font-weight:500}
-  #ftrig .thead .tname{flex:1;min-width:0;font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #ftrig .thead button{flex:none;width:40px;height:40px;border:0;background:none;color:var(--sub);cursor:pointer;
+  @media (max-width:640px){ #ftrig .tsheet,#arch .tsheet{top:auto;left:0;width:auto;max-height:86dvh;border-radius:16px 16px 0 0} }
+  #ftrig .thead,#arch .thead{display:flex;align-items:center;gap:10px;padding:12px 8px 10px 20px;border-bottom:1px solid var(--outlineVariant)}
+  #ftrig .thead b,#arch .thead b{font-size:16px;line-height:24px;font-weight:500}
+  #ftrig .thead .tname,#arch .thead .tname{flex:1;min-width:0;font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #ftrig .thead button,#arch .thead button{flex:none;width:40px;height:40px;border:0;background:none;color:var(--sub);cursor:pointer;
     display:flex;align-items:center;justify-content:center;border-radius:999px}
-  #ftriglist{overflow:auto;padding:12px 16px calc(24px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch}
-  #ftriglist .tnote{font-size:12px;line-height:18px;color:var(--sub);margin:2px 0 12px}
+  #ftriglist,#archlist{overflow:auto;padding:12px 16px calc(24px + env(safe-area-inset-bottom));-webkit-overflow-scrolling:touch}
+  #ftriglist .tnote,#archlist .tnote{font-size:12px;line-height:18px;color:var(--sub);margin:2px 0 12px}
   #ftrigcount:empty{display:none}
   .trow .tg.run{color:var(--onPrimaryContainer);background:var(--primaryContainer);border-color:transparent}
   .trow .tg.bad{color:var(--onErrorContainer);background:var(--errorContainer);border-color:transparent}
   .trow .fsrc{margin-top:8px;font-size:12px;line-height:18px;color:var(--sub)}
+  #archlist .fsrc{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+  #archlist .ti .ag{width:16px;height:16px}
+  .icb.hist{display:inline-flex;align-items:center;gap:3px;width:auto;padding:0 10px}
+  .icb.hist .hn{font-size:12px;line-height:16px}
+  /* A removed card's conversation is read only: the composer gives way to a way back onto the board. */
+  #archbar{display:none}
+  #term.arch #inputbar > :not(#archbar),#term.arch #tabs,#term.arch #sharebtn,#term.arch #popbtn{display:none}
+  #term.arch #archbar{display:flex;align-items:center;gap:12px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+    font-size:13px;line-height:18px;color:var(--sub)}
+  #term.arch #archbar span{flex:1;min-width:0}
+  #term.arch #archbar button{flex:none;height:40px;padding:0 18px;border:0;border-radius:999px;background:var(--accent);
+    color:var(--onAccent);font:inherit;font-weight:500;cursor:pointer}
   .trow .fsrc b{font-weight:500;color:var(--text)}
   .trow .fsrc code{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--text);
     word-break:break-all;-webkit-user-select:all;user-select:all}
@@ -1124,7 +1173,7 @@ enum WebDashboardPage {
         <button id="tabTerm" onclick="setView('term')" data-i18n="tab.term"></button>
       </div>
       <button class="ib" id="sharebtn" onclick="openShare()" data-i18n-title="share.button" data-i18n-aria="share.button"><i data-ic="share"></i></button>
-      <button class="ib" onclick="popTerm()" data-i18n-title="term.popOut" data-i18n-aria="term.popOut"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>
+      <button class="ib" id="popbtn" onclick="popTerm()" data-i18n-title="term.popOut" data-i18n-aria="term.popOut"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></button>
     </div>
   </div>
   <div id="chat" class="on"><div id="chatnote" data-i18n="common.loading"></div></div>
@@ -1138,6 +1187,7 @@ enum WebDashboardPage {
     <button class="sbtn pri" id="pickgo" onclick="sharePicked()" data-i18n="share.pickGo"></button>
   </div>
   <div id="inputbar">
+    <div id="archbar"><span data-i18n="arch.readonly"></span><button onclick="archRestoreCur()" data-i18n="arch.restore"></button></div>
     <div id="grip"><span class="gbar"></span><span class="gtools">
       <button class="fsz" onclick="taFont(-1)" data-i18n-title="composer.smaller">A−</button>
       <button class="fsz" onclick="taFont(1)" data-i18n-title="composer.larger">A+</button>
@@ -1205,6 +1255,15 @@ enum WebDashboardPage {
     <div class="thead"><b data-i18n="ftrig.title"></b><span class="tname" data-i18n="ftrig.sub"></span>
       <button onclick="closeFtrig()" data-i18n-title="common.back" data-i18n-aria="common.back"><i data-ic="x"></i></button></div>
     <div id="ftriglist"></div>
+  </div>
+</div>
+
+<div id="arch">
+  <div class="tscrim" onclick="closeArch()"></div>
+  <div class="tsheet" role="dialog" aria-modal="true">
+    <div class="thead"><b data-i18n="arch.title"></b><span class="tname" id="archname"></span>
+      <button onclick="closeArch()" data-i18n-title="common.back" data-i18n-aria="common.back"><i data-ic="x"></i></button></div>
+    <div id="archlist"></div>
   </div>
 </div>
 
@@ -1320,6 +1379,19 @@ const I18N={
     'term.portDead':'终端端口没有回应',
     'term.portDeadHint':'对话走的是 FleetView 的 :{chat}；终端是另一个服务，在 :{port}。如果一直这样，说明这个端口在这里和 Mac 之间被挡住了。',
     'chat.retrying':'重试中…','chat.loadFailed':'读取会话失败：{err}','shell.empty':'屏幕上还没有内容。',
+    'chat.compact':'上下文已压缩','chat.compactAuto':'上下文已自动压缩','chat.compactManual':'上下文已手动压缩',
+    'chat.compactTokens':'压缩前 {n} tokens','chat.compactSummary':'点按看压缩后留下的摘要',
+    'chat.older':'加载更早的消息','chat.olderLoading':'正在加载更早的消息…','chat.olderFailed':'更早的消息没加载出来',
+    'chat.start':'对话从这里开始',
+    'sync.first':'拉取中…','sync.pulling':'拉取中…','sync.ok':'已是最新','sync.retrying':'连不上 Mac',
+    'sync.at':'上次同步 {t}','sync.atRetrying':'上次同步 {t}，正在重试',
+    'send.sending':'发送中…','send.retry':'网络断了，正在重试（第 {n} 次）','send.delivered':'已送达，等 agent 接收',
+    'send.got':'已收到','send.stuck':'已输入，但没有提交','send.pressEnter':'按回车',
+    'send.failed':'没发出去，文字已放回输入框','send.again':'重新发送',
+    'arch.title':'历史卡片','arch.note':'这个项目里移除过的卡片。可以只看对话，也可以恢复到看板上接着用。',
+    'arch.empty':'这个项目没有移除过的卡片。','arch.loadFailed':'没读取到，稍后再试。','arch.removed':'{t}移除',
+    'arch.view':'查看对话','arch.restore':'恢复到看板','arch.restored':'已恢复「{name}」',
+    'arch.readonly':'这张卡片已经移除，这里只能看。','arch.chip':'已移除','proj.history':'{n} 张历史卡片',
     'pm.bypass':'跳过权限','pm.acceptEdits':'自动接受编辑','pm.plan':'计划模式',
     'info.sharedTitle':'这段对话属于 {n} 个终端共用的同一个会话 — 想单独看这个终端，切到「终端」',
     'info.shared':'⇉ {n} 个终端共用','info.session':'会话 {id}',
@@ -1338,7 +1410,6 @@ const I18N={
     'notes.none':'还没有快捷命令 — 点 + 添加，或在 Mac 的笔记里添加','notes.addPrompt':'添加快捷命令（保存到 Mac 的笔记）',
     'more.btnTitle':'附件、编辑器、按键','more.btnAria':'更多','more.attachTitle':'上传到 Mac，路径会填进输入框',
     'more.attach':'附件','more.editor':'编辑器','more.commands':'命令','more.interruptTitle':'打断 agent','more.interrupt':'中断',
-    'toast.stuck':'没发出去：文字还停在 agent 的输入框里，点 ⏎ 再发一次',
     'upload.file':'文件','upload.netError':'网络错误','upload.cancelled':'已取消','toast.uploadFailed':'上传失败：{err}',
     'fb.reload':'从磁盘重新读取','fb.newTab':'在新标签页打开','fb.up':'上一级','fb.copyPathBtn':'路径','fb.copyPath':'复制路径',
     'fb.listFailed':'无法列出这个文件夹','fb.truncated':'只显示这个文件夹的前 {n} 项','fb.emptyDir':'这个文件夹是空的',
@@ -1448,6 +1519,20 @@ const I18N={
     'term.portDead':'The terminal’s port isn’t answering',
     'term.portDeadHint':'Chat goes through FleetView on :{chat}; the terminal is a separate service on :{port}. If this keeps happening, that port is blocked somewhere between here and the Mac.',
     'chat.retrying':'Retrying…','chat.loadFailed':'Couldn’t load the conversation: {err}','shell.empty':'Nothing on screen yet.',
+    'chat.compact':'Context compacted','chat.compactAuto':'Context compacted automatically','chat.compactManual':'Context compacted by hand',
+    'chat.compactTokens':'{n} tokens before','chat.compactSummary':'Tap to read the summary it left',
+    'chat.older':'Load earlier messages','chat.olderLoading':'Loading earlier messages…','chat.olderFailed':'Couldn’t load earlier messages',
+    'chat.start':'The conversation starts here',
+    'sync.first':'Updating…','sync.pulling':'Updating…','sync.ok':'Up to date','sync.retrying':'Mac unreachable',
+    'sync.at':'Last updated {t}','sync.atRetrying':'Last updated {t}, retrying',
+    'send.sending':'Sending…','send.retry':'Connection lost, retrying ({n})','send.delivered':'Delivered, waiting for the agent',
+    'send.got':'Received','send.stuck':'Typed, but not submitted','send.pressEnter':'Press Enter',
+    'send.failed':'Not sent, the text is back in the box','send.again':'Send again',
+    'arch.title':'Removed cards','arch.note':'Cards removed from this project. Read a conversation, or put the card back on the board to carry on.',
+    'arch.empty':'Nothing has been removed from this project.','arch.loadFailed':'Couldn’t load them. Try again in a moment.',
+    'arch.removed':'removed {t}','arch.view':'Read','arch.restore':'Back on the board','arch.restored':'{name} is back',
+    'arch.readonly':'This card was removed. You can read it here.','arch.chip':'Removed',
+    'proj.history':{one:'{n} removed card',other:'{n} removed cards'},
     'pm.bypass':'Skip permissions','pm.acceptEdits':'Auto-accept edits','pm.plan':'Plan mode',
     'info.sharedTitle':'This conversation is one session shared by {n} terminals — switch to Terminal to see this one on its own',
     'info.shared':'⇉ shared by {n}','info.session':'Session {id}',
@@ -1468,7 +1553,6 @@ const I18N={
     'notes.none':'No quick commands yet — tap + to add one, or add it to Notes on the Mac','notes.addPrompt':'Add a quick command (saved to Notes on the Mac)',
     'more.btnTitle':'Attachments, editor, keys','more.btnAria':'More','more.attachTitle':'Upload to the Mac; the path goes into the message box',
     'more.attach':'Attach','more.editor':'Editor','more.commands':'Commands','more.interruptTitle':'Interrupt the agent','more.interrupt':'Interrupt',
-    'toast.stuck':'Not sent: the text is still in the agent’s input box — tap ⏎ to send it again',
     'upload.file':'file','upload.netError':'Network error','upload.cancelled':'Cancelled','toast.uploadFailed':'Upload failed: {err}',
     'fb.reload':'Reload from disk','fb.newTab':'Open in a new tab','fb.up':'Up one level','fb.copyPathBtn':'Path','fb.copyPath':'Copy path',
     'fb.listFailed':'Couldn’t list this folder','fb.truncated':'Showing only the first {n} items in this folder','fb.emptyDir':'This folder is empty',
@@ -1588,6 +1672,10 @@ const IC={
   'calendar-clock':'<path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5M16 2v4M8 2v4M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/>',
   'circle-stop':'<circle cx="12" cy="12" r="10"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
   check:'<path d="M20 6 9 17l-5-5"/>',
+  'check-check':'<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
+  'cloud-off':'<path d="m2 2 20 20"/><path d="M5.782 5.782A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.307-.193"/><path d="M21.532 16.5A4.5 4.5 0 0 0 17.5 10h-1.79A7.008 7.008 0 0 0 10 5.07"/>',
+  'triangle-alert':'<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  'fold-vertical':'<path d="M12 22v-6"/><path d="M12 8V2"/><path d="M4 12H2"/><path d="M10 12H8"/><path d="M16 12h-2"/><path d="M22 12h-2"/><path d="m15 19-3-3-3 3"/><path d="m15 5-3 3-3-3"/>',
   circle:'<circle cx="12" cy="12" r="8"/>',
   copy:'<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   'copy-plus':'<path d="M15 12v6M12 15h6"/><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
@@ -1746,7 +1834,7 @@ function showSkeleton(){
   document.getElementById('sinfo').innerHTML='';
   document.getElementById('stickyq').classList.remove('on');
   document.getElementById('perm').classList.remove('on');
-  sentGhost=null; curInfo={}; flyNext=true;
+  curInfo={}; flyNext=true;
 }
 /* Conversations are re-read from disk on every open, which is a visible wait on a phone. Keep the
    last few on the device and put one straight on screen, then let the poll bring it up to date —
@@ -1778,11 +1866,12 @@ function cachePut(id,j){
 function showCached(c){
   const el=document.getElementById('chat');
   el.dataset.sig='';
-  sentGhost=null; stickBottom=false; flyNext=true;     // where it lands is pendingPos's to say
+  stickBottom=false; flyNext=true;     // where it lands is pendingPos's to say
   curInfo=Object.assign({},c.info,{status:'',pendingTool:'',pendingText:''});
   document.getElementById('stickyq').classList.remove('on');
   document.getElementById('perm').classList.remove('on');
-  renderChat(c.messages,c.note);
+  convMerge(c);
+  renderChat(convAll,c.note);
   renderInfo(curInfo);
 }
 /* ---------- each card keeps its own place and its own unsent text ----------
@@ -1885,15 +1974,18 @@ function unlockBoard(){
   if(r.top<8||r.bottom>window.innerHeight-8) card.scrollIntoView({block:'center'});
 }
 /* `from`: the card element tapped to get here, when it was one (see unlockBoard). */
-function openTerm(id,name,from){
+/* `arch`: a row of a project's removed cards — its conversation, read only (see openArch). */
+function openTerm(id,name,from,arch){
   if(from&&!document.body.classList.contains('locked')) boardFrom={id,now:!from.closest('section.proj')};
   if(curId&&curId!==id) saveDraft();                       // leaving one card for another
   endPick(); closeShare();
   curId=id;curUrl='';termLoaded=false;chatFails=0;termGone=false;
+  convArch=arch?arch.id:''; convReset(); syncAt=0; syncSent=0;
+  document.getElementById('term').classList.toggle('arch',!!convArch);
   // Shown before anything is drawn into it: a pane that is not laid out cannot be scrolled.
   document.getElementById('term').classList.add('show');
   pendingPos={bottom:true}; settle=null; liveSeen=false;
-  const cached=cacheGet(id);
+  const cached=cacheGet(convKey(id));
   if(cached&&cached.messages&&cached.messages.length) showCached(cached); else showSkeleton();
   loadDraft(id);
   document.getElementById('termname').textContent=name;
@@ -1903,7 +1995,7 @@ function openTerm(id,name,from){
   syncViewport();
   requestAnimationFrame(syncViewport);     // re-measure once the lock has taken effect
   renderPresets();          // latest Notes as quick-commands
-  beaconSelect(id,'chat');
+  if(!convArch) beaconSelect(id,'chat');
   setView('chat');          // reading history is the common remote case
   termSyncHash();
   // Next frame, so the panes have their real heights and the ceiling is measured against those.
@@ -1988,6 +2080,7 @@ function closeTerm(){
   document.getElementById('termerr').classList.remove('on');
   endPick(); closeShare();
   curId='';termLoaded=false;stopChatPoll();pendingPos=null;settle=null;
+  convArch=''; convReset(); document.getElementById('term').classList.remove('arch');
   beaconSelect('','');
   termSyncHash();
 }
@@ -2041,7 +2134,7 @@ function retryTerm(){
    listening, because tick() stops rendering while a terminal is open. */
 let termGone=false;
 function watchTermAlive(s){
-  if(!curId)return;
+  if(!curId||convArch)return;
   const t=(s.terminals||[]).find(x=>x.id===curId);
   if(t&&t.canOpen){
     /* Back. A reopened terminal comes back under the SAME tmux session name — it is derived from
@@ -2085,6 +2178,115 @@ async function popTerm(){await ensureTerm();if(curUrl)window.open(curUrl,'_blank
 const TOOLICON={terminal:'terminal',edit:'pencil',read:'file-text',search:'search',web:'globe',task:'bot',other:'dot'};
 function startChatPoll(){stopChatPoll();chatTimer=poll(loadChat,3000,false);}
 function stopChatPoll(){if(chatTimer){clearInterval(chatTimer);chatTimer=null;}}
+/* ---------- the conversation as a list that grows ----------
+   The poll answers the last 150 messages, each with `at`: the byte offset of its line in the
+   transcript, which never changes as the file grows. That is what lets this list keep a message
+   after it slides out of the poll's window, and ask for the ones before its oldest (`before=`) once
+   you scroll up to them, with nothing twice and nothing missing. Messages without positions come
+   from an older FleetView: then the window is all there is, as before. */
+const CONV_MAX=2000;
+let convAll=[], convSrc='', convMore=null, olderBusy=false, olderFailed=false, convArch='';
+function convReset(){ convAll=[]; convSrc=''; convMore=null; olderBusy=false; olderFailed=false; }
+/* A removed card is read through the drawer's id; it has no terminal for `id` to name. */
+function convURL(id){
+  return convArch?'/conversation?arch='+encodeURIComponent(convArch):'/conversation?id='+encodeURIComponent(id);
+}
+function convKey(id){ return convArch?'arch:'+id:id; }
+function convMerge(j){
+  const msgs=j.messages||[];
+  if(!msgs.length||!msgs.every(m=>typeof m.at==='number')){ convAll=msgs; convMore=null; return; }
+  const src=(j.info&&j.info.session)||'';
+  if(src!==convSrc){ convAll=[]; convSrc=src; olderFailed=false; }     // another conversation: start over
+  const from=msgs[0].at, prevLast=convAll.length?convAll[convAll.length-1].at:null;
+  // What slid out of the window stays as it was — except running: nothing that old still is.
+  const kept=convAll.filter(m=>m.at<from).map(m=>m.pending?Object.assign({},m,{pending:false}):m);
+  if(!kept.length) convMore=!!(j.info&&j.info.more);
+  convAll=kept.concat(msgs);
+  if(convAll.length>CONV_MAX){ convAll=convAll.slice(-CONV_MAX); convMore=true; }
+  // The window jumped clean past everything on screen: more than a window's worth was written
+  // since the last answer (a phone asleep, a line down, a cached copy from yesterday). What lies
+  // between is fetched the way an older page is, or the list would read on across a silent gap.
+  if(kept.length&&prevLast!==null&&prevLast<from) fillGap(prevLast,from);
+}
+let gapBusy=false;
+async function fillGap(after,from){
+  if(gapBusy) return;
+  gapBusy=true;
+  const want=curId;
+  try{
+    for(let n=0;n<20;n++){
+      const r=await fetch(convURL(want)+'&limit=150&before='+from,{cache:'no-store',timeout:30000});
+      if(!r.ok) break;
+      const j=await r.json();
+      if(want!==curId) return;
+      const all=j.messages||[], page=all.filter(m=>typeof m.at==='number'&&m.at>after&&m.at<from);
+      const i=convAll.findIndex(m=>m.at>=from);
+      if(!page.length||i<0) break;
+      convAll.splice(i,0,...page);
+      from=page[0].at;
+      // Back as far as what was already here, or as far as there is.
+      if(all.length>page.length||!(j.info&&j.info.more)) break;
+    }
+    if(want===curId) renderChat(convAll);
+  }catch(e){}
+  finally{ gapBusy=false; }
+}
+function topHTML(){
+  if(convMore===null||!convAll.length) return '';
+  if(olderBusy) return '<span class="spin"></span>'+tr('chat.olderLoading');
+  if(olderFailed) return tr('chat.olderFailed')+'<button onclick="loadOlder()">'+tr('common.retry')+'</button>';
+  if(convMore) return '<button onclick="loadOlder()">'+tr('chat.older')+'</button>';
+  return '<span class="start">'+tr('chat.start')+'</span>';
+}
+function paintTop(){ const t=document.getElementById('chattop'); if(t) t.innerHTML=topHTML(); }
+/* Scrolled up to the oldest message — or a list too short to scroll at all: fetch the page before it.
+   The reading position is held by renderChat, which keeps the message at the top of the view where
+   it was while the list grows above it. */
+async function loadOlder(){
+  if(olderBusy||!curId||!convMore||!convAll.length||typeof convAll[0].at!=='number') return;
+  const want=curId, before=convAll[0].at;
+  olderBusy=true; olderFailed=false; paintTop();
+  try{
+    const r=await fetch(convURL(want)+'&limit=100&before='+before,{cache:'no-store',timeout:30000});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    // Moved on, or a poll redrew the list from further back while this was out.
+    if(want!==curId||!convAll.length||convAll[0].at!==before) return;
+    const page=(j.messages||[]).filter(m=>typeof m.at==='number'&&m.at<before);
+    convAll=page.concat(convAll);
+    convMore=page.length>0&&!!(j.info&&j.info.more);
+    olderBusy=false;
+    renderChat(convAll);
+  }catch(e){ if(want===curId) olderFailed=true; }
+  finally{ olderBusy=false; if(want===curId) paintTop(); }
+}
+function maybeOlder(){
+  const el=document.getElementById('chat');
+  if(!convMore||olderBusy||olderFailed||!el.classList.contains('on')) return;
+  if(el.scrollTop<600||el.scrollHeight<=el.clientHeight+40) loadOlder();
+}
+
+/* ---------- is what is on screen the latest? ----------
+   The chat is a copy of a file on the Mac, fetched every 3 s, and nothing used to say whether that
+   copy was current: a cached conversation shown while the first fetch was out, a fetch taking ten
+   seconds on a bad line, and the Mac not answering at all all looked the same. The first item of
+   the header's subtitle says which. A normal poll is quick, so it only reads as "fetching" when one
+   has been out for more than 700 ms. */
+let syncAt=0, syncSent=0, syncSeq=0;
+function paintSync(){
+  const el=document.getElementById('syncchip'); if(!el) return;
+  let cls='sync', h, title='';
+  if(chatFails>=1){ cls+=chatFails>=2?' bad':' warn'; h=ic('cloud-off','s12')+tr('sync.retrying'); }
+  else if(!syncAt){ h='<span class="spin"></span>'+tr('sync.first'); }
+  else if(syncSent&&performance.now()-syncSent>700){ h='<span class="spin"></span>'+tr('sync.pulling'); }
+  else { cls+=' ok'; h=ic('check','s12')+tr('sync.ok'); }
+  if(syncAt) title=tr(chatFails>=1?'sync.atRetrying':'sync.at',{t:new Date(syncAt).toLocaleTimeString()});
+  if(el.className!==cls) el.className=cls;
+  if(el.dataset.h!==h){ el.dataset.h=h; el.innerHTML=h; }
+  el.title=title;
+}
+setInterval(()=>{ if(curId) paintSync(); },500);
+
 /* Consecutive failures, so a persistent one can be told apart from a slow one. It used to be
    neither: renderChat lives inside the try and the catch was empty, so the skeleton was only ever
    replaced on success — a request that kept failing left an animation shimmering forever, identical
@@ -2101,13 +2303,14 @@ function showChatError(msg){
 }
 async function loadChat(){
   if(!curId)return;
-  const want=curId;
+  const want=curId, seq=++syncSeq;
+  syncSent=performance.now();
   try{
-    const r=await fetch('/conversation?id='+encodeURIComponent(want)+'&limit=150',{cache:'no-store'});
+    const r=await fetch(convURL(want)+'&limit=150',{cache:'no-store'});
     if(!r.ok)throw new Error('HTTP '+r.status);
     const j=await r.json();
     if(want!==curId)return;           // you switched terminals while this was in flight
-    chatFails=0;
+    chatFails=0; syncAt=Date.now();
     curInfo=j.info||{};
     if(sentAt){                       // hold 'running' until the hook catches up, then let go
       if(performance.now()-sentAt>4000||curInfo.status!=='idle') sentAt=0;
@@ -2117,7 +2320,8 @@ async function loadChat(){
     // actually want to read remotely (and unlike the terminal mirror, this scrolls on touch).
     if(curInfo.shell) await renderShell();
     else {
-      renderChat(j.messages||[],j.note); cachePut(want,j);
+      convMerge(j);
+      renderChat(convAll,j.note); cachePut(convKey(want),j);
       // The first live list is the last word on where to open: the latest message, which
       // renderChat has just gone to.
       if(!liveSeen&&(j.messages||[]).length){ liveSeen=true; pendingPos=null; }
@@ -2130,6 +2334,8 @@ async function loadChat(){
     // One miss is a blip and not worth a message; two in a row (≈6s) is a state you should be told
     // about. Polling continues either way, so this clears itself the moment a request succeeds.
     if(++chatFails>=2) showChatError(tr('chat.loadFailed',{err:e.message||e}));
+  }finally{
+    if(seq===syncSeq){ syncSent=0; if(want===curId) paintSync(); }
   }
 }
 /* iOS/iPadOS scrolls the whole document to reveal a focused field and doesn't undo it when the
@@ -2267,8 +2473,9 @@ function renderInfo(i){
   const el=document.getElementById('sinfo');
   document.getElementById('tabChat').textContent=tr((i&&i.shell)?'tab.output':'tab.chat');   // shell has no chat
   syncShareBtn();                                                                   // nor anything to share
-  if(!i||(!i.model&&!i.contextTokens&&!i.status)){el.innerHTML='';return;}
-  let h='';
+  let h='<span class="sync" id="syncchip"></span>';
+  if(convArch) h+='<span class="chip">'+tr('arch.chip')+'</span>';
+  if(!i||(!i.model&&!i.contextTokens&&!i.status)){el.innerHTML=h;paintSync();return;}
   // Chat had no sign of whether the agent was actually working — the transcript just stopped growing.
   if(i.status){
     const ink=i.status==='working'?'var(--accent)':i.status==='needsYou'?'var(--amber)':'var(--sub)';
@@ -2296,6 +2503,7 @@ function renderInfo(i){
        tr('info.context',{pct:pct,tok:short(i.contextTokens)})+'</span>';
   }
   el.innerHTML=h;
+  paintSync();
 }
 /* the agent is blocked on a decision → real buttons instead of guessing a digit */
 function renderPerm(i){
@@ -2327,6 +2535,7 @@ document.getElementById('chat').addEventListener('scroll',()=>{
   const el=document.getElementById('chat');
   document.getElementById('jump').classList.toggle('on', el.scrollHeight-el.scrollTop-el.clientHeight>300);
   updateStickyPrompt();
+  maybeOlder();
 });
 /* Which question do the replies on screen belong to? The last prompt that has scrolled past the
    top — shown until you scroll back to it, then it goes back to being an ordinary message. */
@@ -2500,6 +2709,8 @@ function statHTML(d){
 
 // Tool/thinking cards expand on tap — one delegated listener, so re-rendering can't lose handlers.
 document.getElementById('chat').addEventListener('click',e=>{
+  const sact=e.target.closest?e.target.closest('[data-sact]'):null;
+  if(sact){ e.preventDefault(); sentAction(sact); return; }
   if(picking){                                            // picking what to share: a tap picks
     const n=e.target.closest?e.target.closest('.msg'):null;
     if(n&&!n.classList.contains('think')){ e.preventDefault(); togglePick(n); }
@@ -2510,7 +2721,7 @@ document.getElementById('chat').addEventListener('click',e=>{
     if(t)copyText(t.innerText||t.textContent||'');
     return;
   }
-  const card=e.target.closest?e.target.closest('.msg.tool,.msg.think'):null;
+  const card=e.target.closest?e.target.closest('.msg.tool,.msg.think,.msg.compact'):null;
   if(card)card.classList.toggle('open');
 });
 /* Purpose-built views for the tools that carry a decision or a plan — these are exactly the
@@ -2544,6 +2755,14 @@ function msgKey(m){
   return 'k'+(h>>>0).toString(36);
 }
 function msgHTML(m){
+  if(m.kind==='compact'){
+    const what=[tr(m.trigger==='auto'?'chat.compactAuto':m.trigger==='manual'?'chat.compactManual':'chat.compact')];
+    if(m.tokens) what.push(tr('chat.compactTokens',{n:short(m.tokens)}));
+    return '<div class="msg compact" data-k="'+msgKey(m)+'"'+(m.text?' title="'+tr('chat.compactSummary')+'"':'')+'>'+
+      '<div class="cdiv">'+ic('fold-vertical','s12')+'<span>'+esc(what.join(' · '))+'</span>'+
+      (m.text?ic('chevron-down','s12'):'')+'</div>'+
+      (m.text?'<div class="mbody"><div class="mtext md">'+md(m.text)+'</div></div>':'')+'</div>';
+  }
   if(m.kind==='thinking')
     return '<div class="msg think" data-k="'+msgKey(m)+'">'+
       '<div class="mhead">'+ic('lightbulb','s16')+'<span class="sum">'+tr('chat.thinking')+'</span></div><div class="mtext">'+esc(m.text)+'</div></div>';
@@ -2592,7 +2811,7 @@ function renderChat(msgs,note){
   const sig=msgs.length+':'+(last.text||'').length+':'+(last.output||'').length+
             ':'+(st.status||'')+':'+(st.pendingText||'');
   chatMsgs=msgs;
-  if(el.dataset.sig===sig)return;      // unchanged → don't rebuild at all
+  if(el.dataset.sig===sig){ paintTop(); return; }      // unchanged → don't rebuild at all
   const nearBottom=stickBottom||el.scrollHeight-el.scrollTop-el.clientHeight<120;
   // Read before the rebuild: the message you are on, to hold it still while the window slides.
   const reading=pendingPos||nearBottom?null:readingAt(el);
@@ -2602,12 +2821,12 @@ function renderChat(msgs,note){
   const open=new Set();
   Array.prototype.forEach.call(el.querySelectorAll('.msg.open'),n=>{ if(n.dataset.k) open.add(n.dataset.k); });
   el.dataset.sig=sig;
-  el.innerHTML=msgs.map(msgHTML).join('')+runBarHTML();
+  el.innerHTML='<div id="chattop">'+topHTML()+'</div>'+msgs.map(msgHTML).join('')+runBarHTML();
   if(open.size) Array.prototype.forEach.call(el.querySelectorAll('.msg'),n=>{
     if(n.dataset.k&&open.has(n.dataset.k)) n.classList.add('open');
   });
   tagPicks(el,msgs);
-  reconcileSent(el);
+  reconcileSent(el,msgs);
   if(flyNext){                       // only when the conversation is first put on screen
     flyNext=false;
     const all=el.querySelectorAll('.msg'), n=all.length, from=Math.max(0,n-8);
@@ -2620,6 +2839,7 @@ function renderChat(msgs,note){
   else if(reading) goTo(el,reading);
   stickBottom=false;
   updateStickyPrompt();
+  maybeOlder();
 }
 
 /* ---------- sharing a conversation ----------
@@ -2714,7 +2934,7 @@ function shareFail(msg,canDownload){
    reporting back, a reminder, a local command's echo. They are machinery, not something anyone said. */
 function shareFilter(msgs,whole){
   return msgs.filter(m=>{
-    if(m.kind==='thinking') return false;
+    if(m.kind==='thinking'||m.kind==='compact') return false;   // a compaction is machinery too
     if(!whole) return true;
     if(m.sub) return false;
     if(m.kind==='tool') return shareOpt.tools;
@@ -3162,28 +3382,17 @@ async function sendText(){
      button label can be a poll behind the terminal, and letting it decide here meant a typed
      message interrupted the turn instead of sending — so it took two taps. */
   if(!t){ key(document.getElementById('sendbtn').dataset.stop?'Escape':'Enter'); return; }
+  if(convArch) return;               // a removed card has no terminal to type into
   closeDrawer();
   const owner=curId;
+  // Sending the same words again replaces the copy that failed, rather than standing beside it.
+  for(const o of outbox) if(o.owner===owner&&o.state==='failed'&&o.flat===flatText(t)) dropSent(o);
   ta.value='';autoGrow(ta);saveDraft();pendingPos=null;
-  showSent(t);                       // don't wait a round trip to acknowledge the send
+  const o=showSent(t,owner);         // don't wait a round trip to acknowledge the send
   stickBottom=true; jumpLatest();    // follow your own message down, wherever you were reading
   markSent();                       // the hook is a beat behind; don't sit on 'idle' meanwhile
-  /* wait=1: the Mac answers once it has seen the prompt leave the agent's input box, pressing Enter
-     again if it had not — Codex takes text followed at once by Enter as a paste and turns that Enter
-     into a newline. "stuck" is the one case that needs you: the text is typed but never ran, which
-     on the board looks exactly like an agent ignoring you. An older Mac answers without "submit". */
-  const req=fetch('/type?id='+encodeURIComponent(curId)+'&enter=1&wait=1&text='+encodeURIComponent(t),{timeout:0});
   setTimeout(loadChat,400);
-  try{
-    const r=await (await req).json();
-    if(r&&r.submit==='stuck'){ sentAt=0; renderInfo(curInfo);
-      toast(tr('toast.stuck'),5000); }
-  }catch(e){
-    // Back to the card it was written for, which may no longer be the one on screen.
-    if(curId===owner){ ta.value=t; autoGrow(ta); saveDraft(); sentAt=0; renderInfo(curInfo);
-                       if(sentGhost){ sentGhost.node.remove(); sentGhost=null; } }
-    else cardPut(DRAFT_KEY,owner,{v:t});
-  }
+  deliver(o);
 }
 /* ---------- files an agent sent (the outbox) ----------
    The mirror of the attach button: `fleetview-send` drops a file in ~/.fleetview/outbox and it
@@ -3475,33 +3684,126 @@ document.getElementById('inputtext').addEventListener('paste',e=>{
   });
 })();
 
-/* The message needs a beat or two to reach the transcript, and a send that shows nothing reads as a
-   send that failed. Put the card on screen immediately and keep it until the real one turns up. */
-let sentGhost=null;
+/* ---------- what you sent, and where it has got to ----------
+   The message needs a beat or two to reach the transcript, and a send that shows nothing reads as a
+   send that failed. So the card goes on screen at once and says, under it, how far it has got:
+   发送中 while the request is out; 重试中 when the line dropped and it is being sent again; 已送达
+   once the Mac has typed it and seen it leave the agent's input box; then it gives way to the real
+   message from the transcript, marked 已收到. "stuck" — typed but never submitted — is the one case
+   that needs you, and says so with a button. A failed send puts its text back in the box.
+   A retry carries the same nonce as the first try, and the Mac answers a nonce it has already
+   seen with the first outcome instead of typing again: a send whose answer was lost on the way back
+   would otherwise arrive twice. */
+let outbox=[];                    // {id, owner, text, flat, after, state, tries, node}
+let lastGot={};                   // card → the position of the latest message of yours it received
+const SEND_RETRY=[1500,3000,6000,10000];
 const flatText=s=>s.replace(/\s+/g,' ').trim();
-function showSent(text){
+function showSent(text,owner){
+  const last=convAll.length?convAll[convAll.length-1]:null;
+  const o={id:Date.now().toString(36)+Math.random().toString(36).slice(2,8), owner, text,
+           flat:flatText(text), after:last&&typeof last.at==='number'?last.at:null,
+           state:'sending', tries:0, node:document.createElement('div')};
+  o.node.className='msg user sending';
+  o.node.dataset.oid=o.id;
+  o.node.innerHTML='<div class="mtext md">'+md(text)+'</div><div class="sst"></div>';
+  outbox.push(o);
+  paintSent(o);
   const el=document.getElementById('chat');
-  if(!el.classList.contains('on'))return;
-  const d=document.createElement('div');
-  d.className='msg user sending';
-  d.innerHTML='<div class="mtext md">'+md(text)+'</div>';
-  const bar=el.querySelector('.runbar');
-  bar?el.insertBefore(d,bar):el.appendChild(d);
-  sentGhost={text:flatText(text),node:d};
-}
-/* Called after every rebuild: hand the animation over to the real card once it exists, and keep the
-   stand-in on screen until then. */
-function reconcileSent(el){
-  if(!sentGhost)return;
-  const users=el.querySelectorAll('.msg.user .mtext');
-  const last=users.length?users[users.length-1]:null;
-  if(last&&flatText(last.innerText||last.textContent||'')===sentGhost.text){
-    last.parentNode.classList.add('sending');
-    sentGhost=null;
-    return;
+  if(el.classList.contains('on')&&owner===curId){
+    const bar=el.querySelector('.runbar');
+    bar?el.insertBefore(o.node,bar):el.appendChild(o.node);
   }
+  return o;
+}
+function dropSent(o){ o.node.remove(); outbox=outbox.filter(x=>x!==o); }
+function paintSent(o){
+  const st=o.node.querySelector('.sst');
+  const look={retry:' warn',stuck:' warn',failed:' bad',sent:' ok'}[o.state]||'';
+  st.className='sst'+look;
+  o.node.classList.toggle('retry',o.state==='retry');
+  o.node.classList.toggle('failed',o.state==='failed');
+  st.innerHTML=
+    o.state==='sending'?'<span class="spin"></span>'+tr('send.sending')
+   :o.state==='retry'?'<span class="spin"></span>'+tr('send.retry',{n:o.tries})
+   :o.state==='sent'?ic('check','s12')+tr('send.delivered')
+   :o.state==='stuck'?ic('triangle-alert','s12')+tr('send.stuck')+'<button data-sact="enter">'+tr('send.pressEnter')+'</button>'
+   :o.state==='failed'?ic('x','s12')+tr('send.failed')+'<button data-sact="again">'+tr('send.again')+'</button>'
+   :'';
+}
+async function deliver(o){
+  for(;;){
+    o.tries++;
+    try{
+      /* wait=1: the Mac answers once it has seen the prompt leave the agent's input box, pressing
+         Enter again if it had not — Codex takes text followed at once by Enter as a paste and turns
+         that Enter into a newline. A deadline, now that a lost answer is retried rather than waited
+         on forever: the Mac's own check takes a few seconds at most. */
+      const r=await fetch('/type?id='+encodeURIComponent(o.owner)+'&enter=1&wait=1&nonce='+o.id+
+                          '&text='+encodeURIComponent(o.text),{timeout:30000});
+      if(r.status>=500) throw new Error('HTTP '+r.status);
+      const j=await r.json().catch(()=>({}));
+      if(!outbox.includes(o)) return;
+      if(!r.ok){ failSent(o); return; }                 // refused: sending it again will not help
+      // An older Mac answers without `submit`: it was handed over, which is as far as it can say.
+      o.state=j.submit==='stuck'?'stuck':'sent';
+      if(o.state==='stuck'&&curId===o.owner){ sentAt=0; renderInfo(curInfo); }
+      paintSent(o);
+      return;
+    }catch(e){
+      if(!outbox.includes(o)) return;
+      if(o.tries>SEND_RETRY.length){ failSent(o); return; }
+      o.state='retry'; paintSent(o);
+      await new Promise(res=>setTimeout(res,SEND_RETRY[o.tries-1]));
+      if(!outbox.includes(o)||o.state!=='retry') return;
+    }
+  }
+}
+/* Back to the card it was written for — into its box when that is empty, so nothing typed is lost;
+   the card on screen keeps saying it failed until it is sent again. */
+function failSent(o){
+  o.state='failed'; paintSent(o);
+  if(curId===o.owner){
+    sentAt=0; renderInfo(curInfo);
+    const ta=document.getElementById('inputtext');
+    if(!ta.value.trim()){ ta.value=o.text; autoGrow(ta); saveDraft(); syncSendBtn(); }
+  }else if(!(cardMap(DRAFT_KEY)[o.owner]||{}).v) cardPut(DRAFT_KEY,o.owner,{v:o.text});
+}
+function sentAction(b){
+  const n=b.closest('.msg'), o=outbox.find(x=>x.id===(n&&n.dataset.oid));
+  if(!o) return;
+  if(b.dataset.sact==='enter'){
+    fetch('/key?id='+encodeURIComponent(o.owner)+'&k=Enter',{cache:'no-store'});
+    o.state='sent'; paintSent(o); markSent(); setTimeout(loadChat,600);
+  }else if(b.dataset.sact==='again'){
+    const ta=document.getElementById('inputtext');
+    if(curId===o.owner&&flatText(ta.value)===o.flat){ ta.value=''; autoGrow(ta); saveDraft(); syncSendBtn(); }
+    o.state='sending'; o.tries=0; paintSent(o); markSent(); deliver(o);
+  }
+}
+/* After every rebuild: a send that has reached the transcript gives way to the real message, which
+   is marked received; the rest go back under the conversation. Matched only against messages newer
+   than the conversation was when it was sent, so saying "继续" twice cannot be answered by the first. */
+function reconcileSent(el,msgs){
+  const users=[];
+  msgs.forEach((m,i)=>{ if(m.role==='user'&&m.kind==='text') users.push(i); });
+  const taken=new Set();
+  for(const o of outbox.filter(x=>x.owner===curId)){
+    const i=users.find(i=>!taken.has(i)&&(o.after===null||(msgs[i].at||0)>o.after)&&
+                          flatText(msgs[i].text||'')===o.flat);
+    // An older Mac sends no positions: then only its last prompt can be the one just sent.
+    const ok=i!==undefined&&(o.after!==null||i===users[users.length-1]);
+    if(!ok) continue;
+    taken.add(i);
+    if(typeof msgs[i].at==='number') lastGot[o.owner]=msgs[i].at;
+    dropSent(o);
+  }
+  const nodes=el.querySelectorAll('.msg'), got=lastGot[curId];
+  if(got!==undefined) msgs.forEach((m,i)=>{
+    if(m.at!==got||!nodes[i]) return;
+    nodes[i].insertAdjacentHTML('beforeend','<div class="sst ok">'+ic('check-check','s12')+tr('send.got')+'</div>');
+  });
   const bar=el.querySelector('.runbar');
-  bar?el.insertBefore(sentGhost.node,bar):el.appendChild(sentGhost.node);
+  for(const o of outbox) if(o.owner===curId) bar?el.insertBefore(o.node,bar):el.appendChild(o.node);
 }
 /* Show 'running' the moment a prompt goes out, and hold it briefly: the status comes from a hook
    that fires a little after the keystrokes land, so an immediate poll still reports idle. */
@@ -3990,6 +4292,52 @@ async function ftrigAct(act,i,extra){
   loadFtrig();
 }
 /* Restoring lands you in the card: that is what you came back for. */
+/* ---------- a project's removed cards ----------
+   What the Mac keeps in each project's 🗃 drawer: cards removed from the board whose conversation
+   can come back. Each can be read here as it was left, or put back on the board, where it resumes
+   its conversation in a terminal of its own — exactly what dragging it out of the drawer does. */
+let archItems=[], archPid='';
+async function openArch(pid){
+  archPid=pid;
+  const p=((state&&state.projects)||[]).find(x=>x.id===pid)||{};
+  document.getElementById('archname').textContent=p.name||'';
+  document.getElementById('archlist').innerHTML='<div class="tnote">'+tr('common.loading')+'</div>';
+  document.getElementById('arch').classList.add('on');
+  try{
+    const r=await fetch('/archive?projectId='+encodeURIComponent(pid),{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    archItems=await r.json();
+  }catch(e){ archItems=null; }
+  if(archPid===pid) renderArch();
+}
+function closeArch(){ document.getElementById('arch').classList.remove('on'); }
+function renderArch(){
+  const el=document.getElementById('archlist');
+  if(!Array.isArray(archItems)){ el.innerHTML='<div class="tnote">'+tr('arch.loadFailed')+'</div>'; return; }
+  if(!archItems.length){ el.innerHTML='<div class="tnote">'+tr('arch.empty')+'</div>'; return; }
+  el.innerHTML='<div class="tnote">'+tr('arch.note')+'</div>'+archItems.map((r,i)=>
+    `<div class="trow"><span class="ti">${agentMark(r.agent)||ic('square-terminal','s16')}</span><div class="tm">`+
+    `<div class="tt"><b>${esc(r.name)}</b><span class="tg">${esc(tr('arch.removed',{t:ago(r.removed)}))}</span></div>`+
+    (r.prompt?`<div class="fsrc">${esc(r.prompt)}</div>`:'')+
+    `<div class="facts"><button onclick="archView(${i})">${esc(tr('arch.view'))}</button>`+
+    `<button onclick="archRestore('${r.id}')">${esc(tr('arch.restore'))}</button></div></div></div>`).join('');
+}
+function archView(i){
+  const r=archItems&&archItems[i]; if(!r) return;
+  closeArch(); openTerm(r.id,r.name,null,r);
+}
+async function archRestore(id){
+  const r=(archItems||[]).find(x=>x.id===id)||{};
+  try{
+    const res=await fetch('/archive/restore?id='+encodeURIComponent(id),{cache:'no-store',timeout:30000});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.id){ toast(j.error||('HTTP '+res.status),3000); return; }
+    closeArch(); if(termOpen()) closeTerm();
+    await refreshState(); openTerm(j.id,j.name||r.name||'');
+    toast(tr('arch.restored',{name:j.name||r.name||''}),2500);
+  }catch(e){ toast(e.message||String(e),3000); }
+}
+function archRestoreCur(){ if(convArch) archRestore(convArch); }
 async function ftrigRestore(i){
   const t=ftrigItems[i]; if(!t) return;
   try{
@@ -4577,6 +4925,8 @@ function projSection(s,p,all,terms,fold,dorm){
     `<span class="acts">`+
     // The path rides in a data attribute rather than in the handler's text: it is arbitrary user
     // data, and a project directory with a quote in it would otherwise end the attribute.
+    // Removed cards that can come back — the Mac's 🗃 drawer. Only there when there are some.
+    (p.history?`<button class="icb hist" onclick="openArch('${p.id}')" title="${tr('proj.history',{n:p.history})}" aria-label="${tr('proj.history',{n:p.history})}">${ic('archive','s16')}<span class="hn">${p.history}</span></button>`:'')+
     `<button class="icb" data-path="${att(p.path)}" onclick="fbOpen(this.dataset.path)" title="${tr('proj.browse')}" aria-label="${tr('proj.browse')}">${ic('folder')}</button>`+
     `<button class="icb" onclick="newTerm('${p.id}')" title="${tr('proj.newTerm')}" aria-label="${tr('proj.newTerm')}">${ic('plus')}</button>`+
     `</span></div>`;
@@ -4798,7 +5148,7 @@ function openPendingTerm(s){
    it is up (see fbSyncHash). */
 function termSyncHash(){
   if(document.getElementById('fb').classList.contains('show')) return;
-  const want=curId?'#t='+curId:'';
+  const want=curId&&!convArch?'#t='+curId:'';    // a removed card has no link to come back to
   if(location.hash!==want) history.replaceState(null,'',location.pathname+location.search+want);
 }
 readTermHash();

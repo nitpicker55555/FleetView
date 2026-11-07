@@ -2595,6 +2595,36 @@ final class AppState: ObservableObject {
                 return ("409 Conflict", "application/json", Self.errorJSON(why))
             }
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
+        case "/archive":
+            // A project's removed cards — the desktop's 🗃 drawer, which `history` in /state counts.
+            guard let s = query["projectId"], let pid = UUID(uuidString: s) else {
+                return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
+            }
+            let now = Date()
+            let rows: [[String: Any]] = archived(inProject: pid).map { row in
+                [
+                    "id": row.id.uuidString, "name": row.name, "agent": row.agentKind.label,
+                    "prompt": row.lastPrompt, "tokens": row.newTokens, "cwd": row.cwd,
+                    // Elapsed seconds rather than dates, as /state does: the phone's clock is its own.
+                    "removed": max(0, Int(now.timeIntervalSince(row.removedAt))),
+                    "active": row.lastActivity.map { max(0, Int(now.timeIntervalSince($0))) } ?? -1,
+                ]
+            }
+            return ("200 OK", "application/json",
+                    (try? JSONSerialization.data(withJSONObject: rows)) ?? Data("[]".utf8))
+        case "/archive/restore":
+            // Back onto the board with its conversation resumed — what dragging a row out of the
+            // desktop drawer does (restoreConversation finds the row by its transcript).
+            guard let s = query["id"], let id = UUID(uuidString: s),
+                  let row = terminalArchive.first(where: { $0.id == id }), let path = row.transcriptPath else {
+                return ("404 Not Found", "application/json", Data(#"{"error":"no such removed card"}"#.utf8))
+            }
+            let sid = row.sessionId ?? (AgentHome.isCodex(path)
+                ? CodexTree.sessionId(fromRollout: path)
+                : ((path as NSString).lastPathComponent as NSString).deletingPathExtension)
+            let (status, body) = restoreConversation(path: path, sid: sid)
+            return (status, "application/json",
+                    (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8))
         case "/favicon.ico":
             // Answer once instead of 404-ing forever: browsers ask unprompted and keep retrying.
             return ("204 No Content", "image/x-icon", Data())
@@ -2660,6 +2690,15 @@ final class AppState: ObservableObject {
         return ConversationSpec(path: path, cwd: t?.cwd ?? "", ownPrompt: t?.lastPrompt ?? "",
                                 status: t?.status.rawValue, shared: path.map(terminalsSharing) ?? 0,
                                 tmuxPath: remote.tmuxPath, tmuxSession: RemoteServer.sessionName(for: id))
+    }
+
+    /// The same for a removed card (`/conversation?arch=`): its transcript as it was left, with no
+    /// terminal and so no screen. nil when the drawer has no such row.
+    func archivedConversationSpec(_ id: UUID) -> ConversationSpec? {
+        guard let row = terminalArchive.first(where: { $0.id == id }) else { return nil }
+        let path = row.transcriptPath.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
+        return ConversationSpec(path: path, cwd: row.cwd, ownPrompt: row.lastPrompt, status: nil,
+                                shared: 0, tmuxPath: nil, tmuxSession: "")
     }
 
     /// Resolve what `/ask` needs for a terminal: the agent session id (from its transcript), cwd, and
@@ -2891,7 +2930,10 @@ final class AppState: ObservableObject {
                              trigTimed: trig.isEmpty ? nil : trig.filter(\.isTimed).count)
         }
         return WebSnapshot(
-            projects: projects.map { .init(id: $0.id.uuidString, name: $0.name, path: $0.path) },
+            projects: projects.map { p in
+                let history = archived(inProject: p.id).count
+                return .init(id: p.id.uuidString, name: p.name, path: p.path, history: history > 0 ? history : nil)
+            },
             terminals: terms,
             clusters: clusters.map { .init(id: $0.id.uuidString, name: $0.name) },
             notes: notes.map { .init(id: $0.id.uuidString, text: $0.text) },
