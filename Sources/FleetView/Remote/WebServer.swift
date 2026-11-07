@@ -48,6 +48,10 @@ struct WebSnapshot: Codable {
     /// than the phone's own dark mode: it is a mirror of that window, and the two disagreeing reads
     /// as a bug rather than a preference.
     let dark: Bool
+    /// The seed the desktop's palette is generated from (`#rrggbb`). When it changes the page fetches
+    /// `/theme.css` and lays it over its own variables. Optional so an older peer's /state still
+    /// decodes.
+    let seed: String?
 }
 
 /// A tiny, dependency-free HTTP/1.1 server (Network.framework) that serves the web dashboard.

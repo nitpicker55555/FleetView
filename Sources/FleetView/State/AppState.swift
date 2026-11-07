@@ -2484,7 +2484,16 @@ final class AppState: ObservableObject {
     func webResponse(path: String, query: [String: String]) -> (String, String, Data) {
         switch path {
         case "/", "/index.html":
-            return ("200 OK", "text/html; charset=utf-8", Data(WebDashboardPage.html.utf8))
+            // The seed's colours go in with the page, so its first paint is already right; after that
+            // the page follows `seed` in /state through /theme.css.
+            let theme = ThemeStore.shared
+            let html = WebDashboardPage.html.replacingOccurrences(
+                of: "</head>",
+                with: "<style id=\"seedcss\" data-seed=\"\(ThemeStore.hex(theme.seed))\">\(theme.dashboardCSS())</style>\n</head>",
+                options: [], range: WebDashboardPage.html.range(of: "</head>"))
+            return ("200 OK", "text/html; charset=utf-8", Data(html.utf8))
+        case "/theme.css":
+            return ("200 OK", "text/css; charset=utf-8", Data(ThemeStore.shared.dashboardCSS().utf8))
         case "/state":
             let data = (try? JSONEncoder().encode(webSnapshot())) ?? Data("{}".utf8)
             return ("200 OK", "application/json", data)
@@ -2893,7 +2902,8 @@ final class AppState: ObservableObject {
             askGeo: AuditConfig.current.wantsBrowserLocation,
             fleetTriggers: fleetTriggers.count,
             fleetTriggersRunning: fleetTriggers.filter(\.running).count,
-            dark: Theme.isDark)
+            dark: Theme.isDark,
+            seed: ThemeStore.hex(ThemeStore.shared.seed))
     }
 
     /// Start (or reuse) a web terminal for an open session and return its URL (nil if not attachable).

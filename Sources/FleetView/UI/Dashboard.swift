@@ -13,7 +13,8 @@ struct DashboardView: View {
         if state.treeDrag != nil { return false }
         return state.treePanelTerminalId != nil
             || state.searchOpen
-            || state.dialog != nil
+            // Picking colours is the one dialog whose point is the board behind it.
+            || (state.dialog != nil && state.dialog != .theme)
             || state.draggingTerminalId != nil
     }
 

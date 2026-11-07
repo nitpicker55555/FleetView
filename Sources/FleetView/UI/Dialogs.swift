@@ -15,12 +15,15 @@ enum AppDialog: Identifiable, Equatable {
     case closeAll
     /// Where a shared conversation is published (FleetView → 分享设置…).
     case shareSettings
+    /// The seed colour the palette is generated from (FleetView → 配色…).
+    case theme
 
     var id: String {
         switch self {
         case .webLink(let t): return "webLink-\(t?.uuidString ?? "board")"
         case .closeAll:       return "closeAll"
         case .shareSettings:  return "shareSettings"
+        case .theme:          return "theme"
         }
     }
 }
@@ -44,6 +47,8 @@ struct DialogHost: View {
                         CloseAllDialog()
                     case .shareSettings:
                         ShareSettingsDialog()
+                    case .theme:
+                        ThemeDialog()
                     }
                 }
                 .background(Theme.surfaceContainerHigh)

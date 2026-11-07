@@ -4741,6 +4741,20 @@ function cycleScheme(){
 /* Before the first /state lands, so a saved choice is on the page it paints rather than one poll
    later — and so the button carries the right glyph from the start. */
 applyScheme();
+/* The Mac's seed colour (FleetView → 配色…). The page arrives with that seed's variables in
+   <style id="seedcss">; when /state reports a different seed, the new ones are fetched and swapped
+   in, so the phone changes colour with the Mac instead of on the next reload. */
+let seedBusy=false;
+async function applySeed(seed){
+  const el=document.getElementById('seedcss');
+  if(!seed||!el||el.dataset.seed===seed||seedBusy)return;
+  seedBusy=true;
+  try{
+    const r=await fetch('/theme.css',{cache:'no-store'});
+    if(r.ok){el.textContent=await r.text();el.dataset.seed=seed;}
+  }catch(e){}
+  seedBusy=false;
+}
 /* Connection state for the signal indicator; filled by ping() and tick() (see renderNet). */
 const net={rtts:[],fails:0,via:null,stateAt:0};
 async function tick(){
@@ -4751,6 +4765,7 @@ async function tick(){
     // browser that is following the Mac, flipping the Mac's theme and watching the phone stay dark
     // reads as broken. Redrawing the board behind the overlay is not: that is the guard below.
     applyScheme(state.dark);
+    applySeed(state.seed);
     net.stateAt=Date.now();
     if(termOpen()){watchTermAlive(state);return;}
     render(state,true);

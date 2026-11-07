@@ -58,6 +58,20 @@ enum Snapshot {
             state.dialog = .shareSettings
             shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
                   to: "\(dir)/dialog-share-\(suffix).png")
+            state.dialog = .theme
+            shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
+                  to: "\(dir)/dialog-theme-\(suffix).png")
+            // The board in every preset seed, and one far from all of them (a yellow, where the
+            // harmonised amber and the primary come closest).
+            if ProcessInfo.processInfo.environment["FV_SNAPSHOT_SEEDS"] != nil {
+                let keptSeed = ThemeStore.shared.seed
+                for (name, seed) in MaterialScheme.presets + [("yellow", 0xC9A400)] {
+                    ThemeStore.shared.setSeed(seed, persist: false)
+                    shoot(DashboardView().environmentObject(state), size: size, appearance: appearance,
+                          to: "\(dir)/seed-\(name)-\(suffix).png")
+                }
+                ThemeStore.shared.setSeed(keptSeed, persist: false)
+            }
             state.dialog = nil
             shoot(FleetTriggersPopover().environmentObject(state), size: NSSize(width: 500, height: 640),
                   appearance: appearance, to: "\(dir)/fleet-triggers-\(suffix).png")

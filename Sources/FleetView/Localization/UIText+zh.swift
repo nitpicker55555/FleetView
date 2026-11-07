@@ -571,6 +571,21 @@ extension UIText {
         case .fleetTrigOK(let a): return "成功 · \(a)"
         case .fleetTrigExit(let a): return "退出码 \(a)"
         case .menuShareSettings: return "分享设置…"
+        case .menuTheme: return "配色…"
+        case .themeTitle: return "配色"
+        case .themeBody: return "整套配色由一个种子色按 Material 3 的算法生成。换一个种子色，看板、卡片的状态色、文件窗口和手机上的网页看板一起改变。"
+        case .themeCustom: return "自定义"
+        case .themeReset: return "恢复默认"
+        case .themeDone: return "完成"
+        case .themeSeedName(let n):
+            switch n {
+            case "violet": return "紫"
+            case "blue": return "蓝"
+            case "teal": return "青"
+            case "green": return "绿"
+            case "rose": return "玫红"
+            default: return n
+            }
         case .shareSettingsTitle: return "分享设置"
         case .shareSettingsBody: return "分享会把一段会话做成一页 HTML，发到下面这个分享服务，由它给出公网链接。web 端 chat 的分享按钮和把卡片拖到「分享」都用它。不设置的话，分享只能下载 HTML。"
         case .shareSettingsEndpoint: return "服务地址"

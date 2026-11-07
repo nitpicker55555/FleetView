@@ -138,6 +138,9 @@ final class FileWindowController: NSObject, NSWindowDelegate {
         appearance = window.observe(\.effectiveAppearance) { [weak self] _, _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.model.editor.applyTheme() } }
         }
+        observers.append(NotificationCenter.default.addObserver(forName: ThemeStore.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.model.editor.applyTheme() }
+        })
         model.start()
     }
 
