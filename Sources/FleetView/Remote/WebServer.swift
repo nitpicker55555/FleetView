@@ -321,6 +321,7 @@ final class WebServer {
     /// `&full=1` is the whole file, every message — what sharing the whole conversation sends.
     /// `&before=<at>` is the page of messages before that position (ConversationPages), what the
     /// chat loads when it is scrolled up to its oldest message.
+    /// `&prompts=1` is every prompt of the conversation with its position — the chat's prompt wheel.
     /// `?arch=<id>` in place of `id` reads a removed card's conversation, from the project's drawer
     /// of them (`/archive`): read only, so there is no screen to look at.
     private func handleConversation(_ conn: NWConnection, _ query: [String: String],
@@ -346,7 +347,8 @@ final class WebServer {
                 answer("404 Not Found", Data(#"{"error":"no such removed card"}"#.utf8)); return
             }
             DispatchQueue.global(qos: .userInitiated).async {
-                answer("200 OK", spec.respond(limit: limit, whole: query["full"] == "1", before: before))
+                answer("200 OK", spec.respond(limit: limit, whole: query["full"] == "1", before: before,
+                                              prompts: query["prompts"] == "1"))
             }
         }
     }

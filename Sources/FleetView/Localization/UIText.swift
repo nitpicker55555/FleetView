@@ -292,6 +292,7 @@ enum UIText {
     case statusCount(Int, String)
     case topSearch
     case topSearchHelp
+    case topSettingsHelp
     case topHideRecent
     case topShowRecent
     case topJobsHelp

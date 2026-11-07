@@ -284,6 +284,7 @@ extension UIText {
         case .statusCount(let a, let b): return "\(b): \(a)"
         case .topSearch: return "Search"
         case .topSearchHelp: return "Search all Claude / Codex conversations (⌘K)"
+        case .topSettingsHelp: return "Settings"
         case .topHideRecent: return "Hide “Recent”"
         case .topShowRecent: return "Show “Recent”"
         case .topJobsHelp: return "Background tasks — click to see progress or cancel"

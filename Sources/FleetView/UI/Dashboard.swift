@@ -712,6 +712,7 @@ struct TopBar: View {
             markFilterButton
             recentStripButton
             webButton
+            settingsButton
             powerButton
         }
         .padding(.leading, 20).padding(.trailing, 16)
@@ -939,6 +940,38 @@ struct TopBar: View {
 
     private var webButton: some View {
         barButton("iphone", help: L(.topWebHelp)) { state.dialog = .webLink(terminalId: nil) }
+    }
+
+    /// The settings the app menu holds — colours, sharing, updates — one click from the board, where
+    /// the colours are seen. A menu rather than a window: there are four of them, and each already
+    /// has its own dialog.
+    private var settingsButton: some View {
+        Menu {
+            Button(L(.menuTheme)) { state.dialog = .theme }
+            Button(L(.menuShareSettings)) { state.dialog = .shareSettings }
+            Button(L(.menuCheckUpdates)) {
+                state.updates.check(force: true) { outcome in
+                    UpdateUI.present(outcome, updates: state.updates)
+                }
+            }
+            Divider()
+            Button(L(.menuRevealSupport)) {
+                FV.ensureSupportDir()
+                NSWorkspace.shared.open(FV.supportDir)
+            }
+        } label: {
+            Image(systemName: "gearshape").font(.system(size: 14))
+                .foregroundColor(Theme.onSurfaceVariant)
+                .frame(width: Theme.controlHeight, height: Theme.controlHeight)
+                .background(Theme.surfaceContainerHigh)
+                .clipShape(Capsule())
+                .contentShape(Capsule())
+        }
+        // A plain button's menu draws the label as given. The borderless style the cards use sizes
+        // itself to the glyph and drops the background, which left this the one bare icon in a row
+        // of filled ones.
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+        .help(L(.topSettingsHelp))
     }
 
 }

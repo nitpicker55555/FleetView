@@ -492,6 +492,51 @@ enum WebDashboardPage {
   /* Hold the text to a comfortable measure on a wide screen instead of letting lines run the
      full width of a desktop browser. */
   #chat > *{max-width:760px;margin-left:auto;margin-right:auto}
+  /* ---- the prompt wheel: a side panel on the right edge, folded to a tab ---- */
+  #pwtab{position:absolute;right:0;top:calc(var(--padtop,0px) + var(--headh,54px) + 14px);z-index:6;
+    width:30px;height:44px;display:grid;place-items:center;border:0;border-radius:12px 0 0 12px;cursor:pointer;
+    background:var(--secondaryContainer);color:var(--onSecondaryContainer);box-shadow:0 1px 4px rgba(0,0,0,.25);
+    transition:transform .22s cubic-bezier(.2,.8,.3,1),opacity .2s}
+  #pwtab svg.ic{width:18px;height:18px}
+  #pside{position:absolute;right:8px;top:calc(var(--padtop,0px) + var(--headh,54px) + 8px);z-index:6;
+    width:min(300px,calc(100vw - 56px));display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--outlineVariant);border-radius:16px;
+    box-shadow:0 8px 28px rgba(0,0,0,.35);overflow:hidden;
+    transform:translateX(calc(100% + 16px));opacity:0;pointer-events:none;
+    transition:transform .24s cubic-bezier(.2,.8,.3,1),opacity .2s}
+  #term.pw #pside{transform:none;opacity:1;pointer-events:auto}
+  #term.pw #pwtab{transform:translateX(100%);opacity:0;pointer-events:none}
+  #term.termview #pwtab,#term.termview #pside,#term.shellview #pwtab,#term.shellview #pside{display:none}
+  #pside .pwh{display:flex;align-items:center;gap:8px;padding:10px 6px 8px 14px;font-size:13px;line-height:18px;font-weight:500}
+  #pside .pwh span{flex:1;min-width:0;color:var(--sub);font-weight:400;font-size:12px}
+  #pside .pwh button{flex:none;width:32px;height:32px;border:0;background:none;color:var(--sub);cursor:pointer;
+    display:grid;place-items:center;border-radius:999px}
+  /* Ten rows at a time: the one in the middle band is the chosen one, the rest turn away from it
+     like a drum, so how far a prompt is from the choice reads at a glance. */
+  #pwheel{--pwi:36px;position:relative;height:calc(var(--pwi) * 10);overflow-y:auto;scroll-snap-type:y mandatory;
+    overscroll-behavior:contain;scrollbar-width:none;outline:none;
+    -webkit-mask-image:linear-gradient(transparent,#000 16%,#000 84%,transparent);
+    mask-image:linear-gradient(transparent,#000 16%,#000 84%,transparent)}
+  #pwheel::-webkit-scrollbar{display:none}
+  #pwheel .pad{height:calc(var(--pwi) * 4.5)}
+  #pwheel .pi{height:var(--pwi);display:flex;align-items:center;gap:8px;padding:0 14px;scroll-snap-align:center;
+    cursor:pointer;font-size:13px;line-height:18px;color:var(--text);transform-origin:center;will-change:transform,opacity;
+    opacity:.25}
+  #pwheel .pi .n{flex:none;min-width:24px;text-align:right;color:var(--sub);font-size:11px;font-variant-numeric:tabular-nums}
+  #pwheel .pi .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #pwheel .pi.on .t{font-weight:500}
+  #pwband{position:absolute;left:8px;right:8px;height:36px;top:calc(50% - 18px);border-radius:10px;
+    background:var(--secondaryContainer);pointer-events:none}
+  #pwwrap{position:relative}
+  #pwdet{border-top:1px solid var(--outlineVariant);padding:10px 14px 12px;font-size:12px;line-height:18px;color:var(--sub);
+    cursor:pointer;min-height:58px}
+  #pwdet .w{display:flex;gap:6px;align-items:center;margin-bottom:4px}
+  #pwdet .w b{color:var(--accent);font-weight:500}
+  #pwdet .x{color:var(--text);display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;
+    word-break:break-word;white-space:pre-wrap}
+  #pwnote{padding:28px 14px;text-align:center;font-size:12px;color:var(--sub)}
+  /* Where a jump landed, for a moment. */
+  .msg.hit .mtext,.msg.hit.tool,.msg.hit.think{box-shadow:0 0 0 2px var(--accent);border-radius:16px;transition:box-shadow .6s}
   #chat.on{display:block}
   .msg{margin:0 0 16px;font-size:14px;line-height:22px}
   /* One floating bar carries the prompt currently being answered. Making each prompt sticky piled
@@ -1178,6 +1223,13 @@ enum WebDashboardPage {
   </div>
   <div id="chat" class="on"><div id="chatnote" data-i18n="common.loading"></div></div>
   <div id="stickyq"><div class="sq"></div></div>
+  <button id="pwtab" onclick="togglePw(true)" data-i18n-title="pw.open" data-i18n-aria="pw.open"><i data-ic="list-ordered"></i></button>
+  <div id="pside" role="dialog">
+    <div class="pwh"><b data-i18n="pw.title"></b><span id="pwcount"></span>
+      <button onclick="togglePw(false)" data-i18n-title="common.collapse" data-i18n-aria="common.collapse"><i data-ic="chevron-right"></i></button></div>
+    <div id="pwwrap"><div id="pwband"></div><div id="pwheel" tabindex="0"></div></div>
+    <div id="pwdet" onclick="pwJump(pwSel)"></div>
+  </div>
   <button id="jump" onclick="jumpLatest()" data-i18n-title="chat.jump" data-i18n-aria="chat.jump"><i data-ic="arrow-down"></i></button>
   <iframe id="termframe" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
   <div id="termerr"></div>
@@ -1383,6 +1435,8 @@ const I18N={
     'chat.compactTokens':'压缩前 {n} tokens','chat.compactSummary':'点按看压缩后留下的摘要',
     'chat.older':'加载更早的消息','chat.olderLoading':'正在加载更早的消息…','chat.olderFailed':'更早的消息没加载出来',
     'chat.start':'对话从这里开始',
+    'pw.open':'我的 prompt','pw.title':'我的 prompt','pw.count':'{n} 条','pw.loading':'加载中…','pw.empty':'还没有 prompt',
+    'pw.hint':'滚动挑选，点按跳过去','pw.jumping':'正在跳过去…','pw.nth':'第 {n} 条',
     'sync.first':'拉取中…','sync.pulling':'拉取中…','sync.ok':'已是最新','sync.retrying':'连不上 Mac',
     'sync.at':'上次同步 {t}','sync.atRetrying':'上次同步 {t}，正在重试',
     'send.sending':'发送中…','send.retry':'网络断了，正在重试（第 {n} 次）','send.delivered':'已送达，等 agent 接收',
@@ -1523,6 +1577,8 @@ const I18N={
     'chat.compactTokens':'{n} tokens before','chat.compactSummary':'Tap to read the summary it left',
     'chat.older':'Load earlier messages','chat.olderLoading':'Loading earlier messages…','chat.olderFailed':'Couldn’t load earlier messages',
     'chat.start':'The conversation starts here',
+    'pw.open':'My prompts','pw.title':'My prompts','pw.count':{one:'{n} prompt',other:'{n} prompts'},'pw.loading':'Loading…',
+    'pw.empty':'No prompts yet','pw.hint':'Scroll to pick, tap to jump','pw.jumping':'Jumping…','pw.nth':'#{n}',
     'sync.first':'Updating…','sync.pulling':'Updating…','sync.ok':'Up to date','sync.retrying':'Mac unreachable',
     'sync.at':'Last updated {t}','sync.atRetrying':'Last updated {t}, retrying',
     'send.sending':'Sending…','send.retry':'Connection lost, retrying ({n})','send.delivered':'Delivered, waiting for the agent',
@@ -1672,6 +1728,7 @@ const IC={
   'calendar-clock':'<path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5M16 2v4M8 2v4M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/>',
   'circle-stop':'<circle cx="12" cy="12" r="10"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
   check:'<path d="M20 6 9 17l-5-5"/>',
+  'list-ordered':'<path d="M10 12h11"/><path d="M10 18h11"/><path d="M10 6h11"/><path d="M4 10h2"/><path d="M4 6h1v4"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>',
   'check-check':'<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
   'cloud-off':'<path d="m2 2 20 20"/><path d="M5.782 5.782A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.307-.193"/><path d="M21.532 16.5A4.5 4.5 0 0 0 17.5 10h-1.79A7.008 7.008 0 0 0 10 5.07"/>',
   'triangle-alert':'<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
@@ -1901,14 +1958,17 @@ function readingAt(el){
   const top=el.getBoundingClientRect().top;
   for(const n of el.querySelectorAll('.msg[data-k]')){
     const r=n.getBoundingClientRect();
-    if(r.bottom>top) return {k:n.dataset.k,off:r.top-top};
+    if(r.bottom>top) return {k:n.dataset.k,at:n.dataset.at,off:r.top-top};
   }
   return {bottom:true};
 }
 /* Put the view back there. False when that message is not in the list on screen. */
 function goTo(el,at){
   if(!at||at.bottom){ el.scrollTop=el.scrollHeight; return true; }
-  const n=el.querySelector('.msg[data-k="'+at.k+'"]');      // msgKey is [a-z0-9]: safe in a selector
+  // By position when there is one: it is unique, where two messages can share a content key — and
+  // a page loaded above can bring in the twin, which the key would then find first.
+  const n=(at.at&&el.querySelector('.msg[data-at="'+at.at+'"]'))||
+          el.querySelector('.msg[data-k="'+at.k+'"]');      // msgKey is [a-z0-9]: safe in a selector
   if(!n) return false;
   el.scrollTop+=n.getBoundingClientRect().top-el.getBoundingClientRect().top-at.off;
   return true;
@@ -1980,7 +2040,7 @@ function openTerm(id,name,from,arch){
   if(curId&&curId!==id) saveDraft();                       // leaving one card for another
   endPick(); closeShare();
   curId=id;curUrl='';termLoaded=false;chatFails=0;termGone=false;
-  convArch=arch?arch.id:''; convReset(); syncAt=0; syncSent=0;
+  convArch=arch?arch.id:''; convReset(); syncAt=0; syncSent=0; pwReset();
   document.getElementById('term').classList.toggle('arch',!!convArch);
   // Shown before anything is drawn into it: a pane that is not laid out cannot be scrolled.
   document.getElementById('term').classList.add('show');
@@ -2080,7 +2140,7 @@ function closeTerm(){
   document.getElementById('termerr').classList.remove('on');
   endPick(); closeShare();
   curId='';termLoaded=false;stopChatPoll();pendingPos=null;settle=null;
-  convArch=''; convReset(); document.getElementById('term').classList.remove('arch');
+  convArch=''; convReset(); pwReset(); document.getElementById('term').classList.remove('arch');
   beaconSelect('','');
   termSyncHash();
 }
@@ -2088,6 +2148,7 @@ function closeTerm(){
    Terminal = the live ttyd mirror, loaded lazily so just reading costs nothing. */
 function setView(v){
   curView=v;
+  document.getElementById('term').classList.toggle('termview',v==='term');
   document.getElementById('tabChat').classList.toggle('on',v==='chat');
   document.getElementById('tabTerm').classList.toggle('on',v==='term');
   document.getElementById('chat').classList.toggle('on',v==='chat');
@@ -2242,7 +2303,7 @@ function paintTop(){ const t=document.getElementById('chattop'); if(t) t.innerHT
 /* Scrolled up to the oldest message — or a list too short to scroll at all: fetch the page before it.
    The reading position is held by renderChat, which keeps the message at the top of the view where
    it was while the list grows above it. */
-async function loadOlder(){
+async function loadOlder(quiet){
   if(olderBusy||!curId||!convMore||!convAll.length||typeof convAll[0].at!=='number') return;
   const want=curId, before=convAll[0].at;
   olderBusy=true; olderFailed=false; paintTop();
@@ -2256,7 +2317,7 @@ async function loadOlder(){
     convAll=page.concat(convAll);
     convMore=page.length>0&&!!(j.info&&j.info.more);
     olderBusy=false;
-    renderChat(convAll);
+    if(!quiet) renderChat(convAll);
   }catch(e){ if(want===curId) olderFailed=true; }
   finally{ olderBusy=false; if(want===curId) paintTop(); }
 }
@@ -2265,6 +2326,162 @@ function maybeOlder(){
   if(!convMore||olderBusy||olderFailed||!el.classList.contains('on')) return;
   if(el.scrollTop<600||el.scrollHeight<=el.clientHeight+40) loadOlder();
 }
+
+/* ---------- my prompts, on a wheel ----------
+   A long conversation is mostly the agent: finding where you asked something meant scrolling
+   through all of it. The wheel lists every prompt of the conversation — the Mac sends them all
+   (`prompts=1`), not only what is loaded — ten at a time; scrolling it picks one, and tapping jumps
+   the chat there, fetching the pages in between first when it is further back than what is loaded.
+   Folded to a tab on the right edge; whether it is open is this device's to remember. */
+const PW_KEY='fv_pw';
+let pwList=[], pwSel=-1, pwSrc='', pwBusy=false, pwRaf=0, pwAt=-1, pwPainted=new Set(), hitAt=null, hitUntil=0;
+function pwOpen(){ return document.getElementById('term').classList.contains('pw'); }
+function pwReset(){ pwList=[]; pwSel=-1; pwSrc=''; pwAt=-1; document.getElementById('pwheel').innerHTML=''; pwPaintDet(); }
+function togglePw(on){
+  document.getElementById('term').classList.toggle('pw',on);
+  try{ localStorage.setItem(PW_KEY,on?'1':''); }catch(e){}
+  if(on) pwLoad(true);
+}
+/* Everything the user said that is loaded, for a Mac that cannot list them (no `prompts=1`). */
+function pwFromLoaded(){
+  return convAll.filter(m=>m.role==='user'&&m.kind==='text'&&!m.sub&&typeof m.at==='number')
+    .map(m=>({at:m.at,text:m.text,ts:m.ts}));
+}
+async function pwLoad(first){
+  if(!curId||pwBusy) return;
+  const want=curId;
+  pwBusy=true;
+  if(first&&!pwList.length) document.getElementById('pwheel').innerHTML='<div id="pwnote">'+tr('pw.loading')+'</div>';
+  let list=null;
+  try{
+    const r=await fetch(convURL(want)+'&prompts=1',{cache:'no-store',timeout:30000});
+    const j=await r.json();
+    if(Array.isArray(j.prompts)) list=j.prompts;
+  }catch(e){}
+  pwBusy=false;
+  if(want!==curId) return;
+  if(!list) list=pwFromLoaded();
+  const stay=pwSel>=0&&pwList[pwSel]?pwList[pwSel].at:null;
+  pwList=list;
+  pwRender(first?null:stay);
+}
+/* A new prompt joined the chat while the wheel is open: list it. */
+function pwMaybeRefresh(){
+  const last=[...convAll].reverse().find(m=>m.role==='user'&&m.kind==='text'&&!m.sub&&typeof m.at==='number');
+  if(last&&(!pwList.length||last.at>pwList[pwList.length-1].at)) pwLoad(false);
+}
+function pwRender(keepAt){
+  const w=document.getElementById('pwheel');
+  document.getElementById('pwcount').textContent=pwList.length?tr('pw.count',{n:pwList.length}):'';
+  if(!pwList.length){ w.innerHTML='<div id="pwnote">'+tr('pw.empty')+'</div>'; pwSel=-1; pwPaintDet(); return; }
+  pwPainted=new Set();
+  w.innerHTML='<div class="pad"></div>'+pwList.map((p,i)=>
+    '<div class="pi" data-i="'+i+'"><span class="n">'+(i+1)+'</span><span class="t">'+esc(flatText(p.text||''))+'</span></div>').join('')+
+    '<div class="pad"></div>';
+  // Land on the prompt being kept, else the one being read in the chat, else the latest.
+  let i=keepAt!=null?pwList.findIndex(p=>p.at===keepAt):-1;
+  if(i<0) i=pwReading();
+  pwSel=-1;
+  pwTo(i,false);
+}
+/* The prompt the chat is showing: the last one at or above the top of the view. */
+function pwReading(){
+  const el=document.getElementById('chat');
+  const atBottom=el.scrollHeight-el.scrollTop-el.clientHeight<120;
+  if(atBottom||!pwList.length) return pwList.length-1;
+  const top=el.getBoundingClientRect().top+(document.getElementById('term').classList.contains('headhide')?0:
+    document.getElementById('thead').offsetHeight);
+  let at=null;
+  for(const n of el.querySelectorAll('.msg[data-at]')){ if(n.getBoundingClientRect().bottom>top){ at=+n.dataset.at; break; } }
+  if(at===null) return pwList.length-1;
+  let i=0;
+  for(let k=0;k<pwList.length;k++){ if(pwList[k].at<=at) i=k; else break; }
+  return i;
+}
+function pwItemH(){ const w=document.getElementById('pwheel'); return parseFloat(getComputedStyle(w).getPropertyValue('--pwi'))||36; }
+function pwTo(i,smooth){
+  const w=document.getElementById('pwheel');
+  i=Math.max(0,Math.min(pwList.length-1,i));
+  w.scrollTo({top:i*pwItemH(),behavior:smooth?'smooth':'auto'});
+  pwPaint();
+}
+/* The drum: each row turned and dimmed by its distance from the middle, and the middle one chosen. */
+function pwPaint(){
+  pwRaf=0;
+  const w=document.getElementById('pwheel'), h=pwItemH(), c=w.scrollTop/h;
+  const sel=Math.max(0,Math.min(pwList.length-1,Math.round(c)));
+  const items=w.querySelectorAll('.pi');
+  // Only the rows near the middle are turned each frame; one left behind by a long jump goes back
+  // to the plain far look, or it would keep the old angle — and still say it was the chosen one.
+  const lo=Math.max(0,Math.floor(c)-7), hi=Math.min(items.length-1,Math.ceil(c)+7);
+  for(const i of pwPainted) if((i<lo||i>hi)&&items[i]){
+    items[i].style.transform=''; items[i].style.opacity='.25'; items[i].classList.remove('on');
+  }
+  pwPainted=new Set();
+  for(let i=lo;i<=hi;i++){
+    const d=i-c, a=Math.min(1,Math.abs(d)/5);
+    items[i].style.transform='perspective(520px) rotateX('+(-d*11).toFixed(1)+'deg) scale('+(1-a*.18).toFixed(3)+')';
+    items[i].style.opacity=(1-a*.75).toFixed(2);
+    items[i].classList.toggle('on',i===sel);
+    pwPainted.add(i);
+  }
+  if(sel!==pwSel){ pwSel=sel; pwPaintDet(); }
+}
+function pwPaintDet(){
+  const d=document.getElementById('pwdet'), p=pwList[pwSel];
+  if(!p){ d.innerHTML='<span>'+tr('pw.hint')+'</span>'; return; }
+  d.innerHTML='<div class="w"><b>'+tr('pw.nth',{n:pwSel+1})+'</b>'+(p.ts?'<span>'+esc(hhmm(p.ts))+'</span>':'')+
+    (pwAt===pwSel?'<span>· '+tr('pw.jumping')+'</span>':'')+'</div><div class="x">'+esc(p.text||'')+'</div>';
+}
+document.getElementById('pwheel').addEventListener('scroll',()=>{ if(!pwRaf) pwRaf=requestAnimationFrame(pwPaint); },{passive:true});
+document.getElementById('pwheel').addEventListener('click',e=>{
+  const it=e.target.closest?e.target.closest('.pi'):null;
+  if(!it) return;
+  const i=+it.dataset.i;
+  pwTo(i,true);
+  pwSel=i; pwPaintDet();
+  pwJump(i);
+});
+document.getElementById('pwheel').addEventListener('keydown',e=>{
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){ e.preventDefault(); pwTo(pwSel+(e.key==='ArrowDown'?1:-1),true); }
+  else if(e.key==='Enter'){ e.preventDefault(); pwJump(pwSel); }
+});
+/* Put the chat on prompt `i`: load back to it if it is further up than what is loaded, then scroll
+   it to just under the header — where the floating prompt bar steps aside for it — and mark it. */
+async function pwJump(i){
+  const p=pwList[i]; if(!p||!curId) return;
+  const want=curId, el=document.getElementById('chat');
+  pwAt=i; pwPaintDet();
+  try{
+    for(let n=0;n<80&&curId===want&&convAll.length&&convAll[0].at>p.at;n++){
+      if(olderBusy){ await new Promise(r=>setTimeout(r,120)); continue; }
+      if(!convMore||olderFailed) break;
+      await loadOlder(true);
+    }
+    if(curId!==want) return;
+    renderChat(convAll);
+    // The bubble it is in: the last message at or before it — a prompt can share a bubble with
+    // what was said just before it.
+    let target=null;
+    for(const n of el.querySelectorAll('.msg[data-at]')){ if(+n.dataset.at<=p.at) target=n; else break; }
+    if(!target) target=el.querySelector('.msg[data-at]');
+    if(!target) return;
+    settle=null; pendingPos=null; stickBottom=false;
+    const cover=document.getElementById('term').classList.contains('headhide')?0:document.getElementById('thead').offsetHeight;
+    el.scrollTop=Math.max(0,target.offsetTop-cover-2);
+    updateStickyPrompt();
+    // Kept by position rather than on the node: landing near the top of what is loaded fetches the
+    // page above, and the redraw that brings it would take the mark off with the old node.
+    hitAt=target.dataset.at; hitUntil=performance.now()+1600;
+    target.classList.add('hit');
+    setTimeout(()=>{ if(performance.now()>=hitUntil){ hitAt=null;
+      const n=document.querySelector('#chat .msg.hit'); if(n) n.classList.remove('hit'); } },1650);
+  }finally{
+    if(pwAt===i){ pwAt=-1; pwPaintDet(); }
+  }
+}
+/* Reopened as it was left on this device. */
+try{ if(localStorage.getItem(PW_KEY)) document.getElementById('term').classList.add('pw'); }catch(e){}
 
 /* ---------- is what is on screen the latest? ----------
    The chat is a copy of a file on the Mac, fetched every 3 s, and nothing used to say whether that
@@ -2318,13 +2535,15 @@ async function loadChat(){
     }
     // A plain shell has no conversation — show its scrollback instead, which is the thing you
     // actually want to read remotely (and unlike the terminal mirror, this scrolls on touch).
+    document.getElementById('term').classList.toggle('shellview',!!curInfo.shell);
     if(curInfo.shell) await renderShell();
     else {
       convMerge(j);
+      if(pwOpen()) pwMaybeRefresh();
       renderChat(convAll,j.note); cachePut(convKey(want),j);
       // The first live list is the last word on where to open: the latest message, which
       // renderChat has just gone to.
-      if(!liveSeen&&(j.messages||[]).length){ liveSeen=true; pendingPos=null; }
+      if(!liveSeen&&(j.messages||[]).length){ liveSeen=true; pendingPos=null; if(pwOpen()&&!pwList.length) pwLoad(true); }
     }
     renderInfo(curInfo);
     renderPerm(curInfo);
@@ -2754,17 +2973,19 @@ function msgKey(m){
   let h=0; for(let i=0;i<s.length;i++){ h=(h*31+s.charCodeAt(i))|0; }
   return 'k'+(h>>>0).toString(36);
 }
+/* The message's position, so a jump can find it (see pwJump). */
+function atAttr(m){ return typeof m.at==='number'?' data-at="'+m.at+'"':''; }
 function msgHTML(m){
   if(m.kind==='compact'){
     const what=[tr(m.trigger==='auto'?'chat.compactAuto':m.trigger==='manual'?'chat.compactManual':'chat.compact')];
     if(m.tokens) what.push(tr('chat.compactTokens',{n:short(m.tokens)}));
-    return '<div class="msg compact" data-k="'+msgKey(m)+'"'+(m.text?' title="'+tr('chat.compactSummary')+'"':'')+'>'+
+    return '<div class="msg compact" data-k="'+msgKey(m)+'"'+atAttr(m)+''+(m.text?' title="'+tr('chat.compactSummary')+'"':'')+'>'+
       '<div class="cdiv">'+ic('fold-vertical','s12')+'<span>'+esc(what.join(' · '))+'</span>'+
       (m.text?ic('chevron-down','s12'):'')+'</div>'+
       (m.text?'<div class="mbody"><div class="mtext md">'+md(m.text)+'</div></div>':'')+'</div>';
   }
   if(m.kind==='thinking')
-    return '<div class="msg think" data-k="'+msgKey(m)+'">'+
+    return '<div class="msg think" data-k="'+msgKey(m)+'"'+atAttr(m)+'>'+
       '<div class="mhead">'+ic('lightbulb','s16')+'<span class="sum">'+tr('chat.thinking')+'</span></div><div class="mtext">'+esc(m.text)+'</div></div>';
   if(m.kind==='tool'){
     // Tools whose payload IS the content get a purpose-built view; edits get a diff;
@@ -2777,14 +2998,14 @@ function msgHTML(m){
     const det=special ? special : (d ? d.html
       : (m.detail?'<b>'+tr('chat.input')+'</b><div>'+esc(m.detail)+'</div>':'')+
         (m.output?'<b>'+tr('chat.output')+'</b><div>'+esc(m.output)+'</div>':''));
-    return '<div class="msg tool'+(m.ok===false?' bad':'')+(m.pending?' run':'')+'" data-k="'+msgKey(m)+'">'+
+    return '<div class="msg tool'+(m.ok===false?' bad':'')+(m.pending?' run':'')+'" data-k="'+msgKey(m)+'"'+atAttr(m)+'>'+
       '<div class="mhead">'+(m.pending?'<span class="spin"></span>':ic(TOOLICON[m.cat]||'dot','s16'))+
       '<b>'+esc(m.tool||'')+'</b><span class="sum">'+esc(m.text)+'</span>'+(d?statHTML(d):'')+
       (m.pending?'<span class="when">'+since(m.ts)+'</span>':'')+
       (m.ok===false?'<span style="color:var(--red)" title="'+tr('chat.failed')+'">'+ic('x','s16')+'</span>':'')+'</div>'+
       (det?'<div class="mbody">'+det+'</div>':'')+'</div>';
   }
-  return '<div class="msg '+(m.role==='user'?'user':'asst')+(m.sub?' sub':'')+(m.queued?' queued':'')+'" data-k="'+msgKey(m)+'">'+
+  return '<div class="msg '+(m.role==='user'?'user':'asst')+(m.sub?' sub':'')+(m.queued?' queued':'')+'" data-k="'+msgKey(m)+'"'+atAttr(m)+'>'+
     '<span class="cp" data-copy="1">'+tr('chat.copy')+'</span>'+
     (m.sub?'<div class="tag">'+tr('chat.subagent')+'</div>':'')+
     (m.ts?'<span class="when">'+hhmm(m.ts)+'</span>':'')+
@@ -2827,6 +3048,7 @@ function renderChat(msgs,note){
   });
   tagPicks(el,msgs);
   reconcileSent(el,msgs);
+  if(hitAt&&performance.now()<hitUntil){ const n=el.querySelector('.msg[data-at="'+hitAt+'"]'); if(n) n.classList.add('hit'); }
   if(flyNext){                       // only when the conversation is first put on screen
     flyNext=false;
     const all=el.querySelectorAll('.msg'), n=all.length, from=Math.max(0,n-8);

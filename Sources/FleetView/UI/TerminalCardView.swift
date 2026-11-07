@@ -271,27 +271,49 @@ struct TerminalCardView: View {
     }
 
     /// Whose it is, and what it has cost — then the actions, on hover.
+    ///
+    /// The card is a fixed 280 wide, and an id, an agent, a token count, a trigger chip and a commit
+    /// chip together already fill it. The actions used to hold their place while invisible, and the
+    /// token count — the one thing here free to shrink — was squeezed into two lines ("9." over "…").
+    /// So the actions take room only while shown, every item keeps to one line, and when they still
+    /// do not fit the token count gives way first (it is in the agent mark's tooltip then), the id
+    /// chip second: the chips are what get clicked.
     private var footer: some View {
         HStack(spacing: 8) {
-            idChip
-            if terminal.agentKind != .unknown {
-                AgentMark(kind: terminal.agentKind, tint: container?.fg)
-                    .help(terminal.agentKind == .claude ? "Claude" : "Codex")
+            ViewThatFits(in: .horizontal) {
+                badges(tokens: true, id: true)
+                badges(tokens: false, id: true)
+                badges(tokens: false, id: false)
             }
-            if terminal.newTokens > 0 {
-                Text(TokenUsage.short(terminal.newTokens))
-                    .font(.fvLabelSmall).monospacedDigit()
-                    .foregroundColor(fgSecondary)
-                    .help(L(.tokensHelp(terminal.newTokens)))
-            }
-            triggerChip
-            commitChip
             Spacer(minLength: 4)
             controls
+                .frame(width: hovering ? nil : 0, alignment: .trailing)
+                .clipped()
                 .opacity(hovering ? 1 : 0)
                 .allowsHitTesting(hovering)
         }
         .frame(height: 28)
+    }
+
+    private func badges(tokens: Bool, id: Bool) -> some View {
+        HStack(spacing: 8) {
+            if id { idChip }
+            if terminal.agentKind != .unknown {
+                let name = terminal.agentKind == .claude ? "Claude" : "Codex"
+                AgentMark(kind: terminal.agentKind, tint: container?.fg)
+                    .help(tokens || terminal.newTokens == 0 ? name
+                          : name + " · " + L(.tokensHelp(terminal.newTokens)))
+            }
+            if tokens, terminal.newTokens > 0 {
+                Text(TokenUsage.short(terminal.newTokens))
+                    .font(.fvLabelSmall).monospacedDigit()
+                    .foregroundColor(fgSecondary)
+                    .lineLimit(1).fixedSize()
+                    .help(L(.tokensHelp(terminal.newTokens)))
+            }
+            triggerChip
+            commitChip
+        }
     }
 
     /// Something will make this agent act on its own later — a schedule, or background work that

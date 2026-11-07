@@ -1,5 +1,12 @@
 import Foundation
 
+/// One prompt in `GET /conversation?prompts=1`.
+struct ConvPrompt: Codable {
+    let at: Double
+    let text: String
+    let ts: String?
+}
+
 /// One transcript line, kept small: where it is, and the few fields that decide whether it belongs
 /// to the conversation being shown. What ConversationPages indexes a whole file into, and what
 /// `activePath` walks — for the polled tail as much as for the pages before it, so the two agree on
@@ -19,6 +26,11 @@ struct TranscriptLink {
     /// A prompt someone actually typed, clipped — what a terminal's own last prompt is matched
     /// against to pick its branch when several terminals share one session.
     var prompt: String? = nil
+    /// What the web chat's prompt wheel lists for this line: a prompt as typed (an injected one —
+    /// a slash command's wrapper, an interruption, a reminder — is not), or one typed mid-turn and
+    /// written as a `queued_command`. With its time.
+    var asked: String? = nil
+    var ts: String? = nil
 
     /// A line with no tree to place it in (Codex, or one that is not JSON): its position only.
     init(at: Int, length: Int) {
@@ -34,6 +46,15 @@ struct TranscriptLink {
         sidechain = (r["isSidechain"] as? Bool) ?? false
         let type = r["type"] as? String
         if type == "last-prompt" { leaf = r["leafUuid"] as? String }
+        if type == "attachment", !sidechain, let a = r["attachment"] as? [String: Any],
+           (a["type"] as? String) == "queued_command", (a["commandMode"] as? String) == "prompt" {
+            let text = (a["prompt"] as? String) ?? (a["prompt"] as? [[String: Any]])?
+                .compactMap { ($0["type"] as? String) == "text" ? $0["text"] as? String : nil }
+                .joined(separator: "\n")
+            asked = text.flatMap(PromptText.clean).map { String($0.prefix(400)) }
+            ts = r["timestamp"] as? String
+            return
+        }
         if (r["subtype"] as? String) == "compact_boundary" {
             boundary = true
             logicalParent = r["logicalParentUuid"] as? String
@@ -56,6 +77,8 @@ struct TranscriptLink {
                 .compactMap { $0["text"] as? String }.first { !Conversation.trim($0).isEmpty }
         }
         if let text, !text.hasPrefix("<task-notification") { prompt = String(text.prefix(400)) }
+        asked = text.flatMap(PromptText.clean).map { String($0.prefix(400)) }
+        if asked != nil { ts = r["timestamp"] as? String }
     }
 }
 
@@ -274,6 +297,7 @@ enum ConversationPages {
         let path: String
         let recs: [TranscriptLink]
         let shift: Int
+        var cut: Int? = nil           // a history_base's share of its file ends here
     }
 
     /// The files the conversation is made of, oldest first. A Claude session is one file. A Codex
@@ -294,10 +318,31 @@ enum ConversationPages {
               seen.insert(p).inserted, let recs = index(p, codex: true) {
             let cut = b.endByte ?? ((recs.last.map { $0.at + $0.length + 1 }) ?? 0)
             shift -= cut
-            out.insert(Segment(path: p, recs: recs.filter { $0.at < cut }, shift: shift), at: 0)
+            out.insert(Segment(path: p, recs: recs.filter { $0.at < cut }, shift: shift, cut: cut), at: 0)
             meta = CodexTree.meta(p)
         }
         return out
+    }
+
+    /// Every prompt of the conversation, oldest first, at the position of the message it is in the
+    /// chat — the web's prompt wheel, which jumps to one by loading pages back to its position.
+    /// Claude's come from the index, on the branch the chat shows; Codex's from CodexTree's turns,
+    /// which are the same lines (a turn's `byte` is its line's offset), down the history_base chain.
+    static func prompts(path: String, ownPrompt: String) -> [ConvPrompt] {
+        let segs = segments(path)
+        guard let own = segs.last else { return [] }
+        if AgentHome.isCodex(path) {
+            return segs.flatMap { seg in
+                CodexTree.turns(of: seg.path).filter { t in seg.cut.map { t.byte < $0 } ?? true }
+                    .map { ConvPrompt(at: Double($0.byte + seg.shift), text: $0.text, ts: $0.ts) }
+            }
+        }
+        var branches = 0
+        let active = activePath(own.recs, ownPrompt: ownPrompt, branches: &branches)
+        return own.recs.compactMap { r in
+            guard let text = r.asked, !r.sidechain, onPath(r, active) else { return nil }
+            return ConvPrompt(at: Double(r.at), text: text, ts: r.ts)
+        }
     }
 
     /// The `limit` messages before position `before`, oldest first.

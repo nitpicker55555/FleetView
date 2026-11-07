@@ -84,7 +84,8 @@ struct ConversationSpec: Sendable {
     ///   conversation" needs. Not cached and not on the 3 s poll: it runs once per share.
     /// - Parameter before: the page of messages before this position instead of the tail (see
     ///   ConversationPages) — what the chat asks for when it is scrolled up to its oldest message.
-    func respond(limit: Int, whole: Bool = false, before: Double? = nil) -> Data {
+    /// - Parameter prompts: only the conversation's prompts, every one (ConversationPages.prompts).
+    func respond(limit: Int, whole: Bool = false, before: Double? = nil, prompts: Bool = false) -> Data {
         guard let path else {
             // The pane's own scrollback is the readable content then, and it scrolls natively on
             // a phone.
@@ -93,6 +94,12 @@ struct ConversationSpec: Sendable {
             info.shell = true
             return (try? JSONEncoder().encode(ConvResult(messages: [], info: info)))
                 ?? Data(#"{"messages":[],"info":{"shell":true}}"#.utf8)
+        }
+        if prompts {
+            let session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+            let list = ConversationPages.prompts(path: path, ownPrompt: ownPrompt)
+            struct Out: Codable { let prompts: [ConvPrompt]; let session: String }
+            return (try? JSONEncoder().encode(Out(prompts: list, session: session))) ?? Data(#"{"prompts":[]}"#.utf8)
         }
         if let before {
             var page = ConversationPages.page(path: path, before: before, limit: limit, cwd: cwd,
