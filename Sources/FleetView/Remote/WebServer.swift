@@ -29,7 +29,12 @@ struct WebSnapshot: Codable {
         let trig: Int?
         let trigTimed: Int?
     }
-    struct Proj: Codable { let id: String; let name: String; let path: String }
+    struct Proj: Codable {
+        let id: String; let name: String; let path: String
+        /// Removed cards that can come back (`/archive`), the project's history; nil when none, so a
+        /// project without any is byte-for-byte what it was, and an older peer's /state still decodes.
+        let history: Int?
+    }
     struct Clust: Codable { let id: String; let name: String }
     struct NoteJ: Codable { let id: String; let text: String }   // doubles as the web quick-command list
 
@@ -314,23 +319,34 @@ final class WebServer {
     /// scrolling: how you read history on a phone, where the terminal mirror cannot scroll a TUI.
     /// The main actor only says which transcript and screen; reading them happens here.
     /// `&full=1` is the whole file, every message — what sharing the whole conversation sends.
+    /// `&before=<at>` is the page of messages before that position (ConversationPages), what the
+    /// chat loads when it is scrolled up to its oldest message.
+    /// `?arch=<id>` in place of `id` reads a removed card's conversation, from the project's drawer
+    /// of them (`/archive`): read only, so there is no screen to look at.
     private func handleConversation(_ conn: NWConnection, _ query: [String: String],
                                     _ scope: WebAudit.Scope) {
         func answer(_ status: String, _ body: Data) {
             WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
             send(conn, status: status, type: "application/json", body: body, setCookie: scope.setCookie)
         }
-        guard let s = query["id"], let id = UUID(uuidString: s) else {
+        let archived = query["arch"].flatMap(UUID.init(uuidString:))
+        guard let id = archived ?? query["id"].flatMap(UUID.init(uuidString:)) else {
             answer("400 Bad Request", Data(#"{"error":"bad id"}"#.utf8)); return
         }
         let limit = min(400, Int(query["limit"] ?? "") ?? 120)
+        let before = query["before"].flatMap(Double.init)
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
                 self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
             }
-            let spec = MainActor.assumeIsolated { app.conversationSpec(id) }
+            let spec = MainActor.assumeIsolated {
+                archived == nil ? app.conversationSpec(id) : app.archivedConversationSpec(id)
+            }
+            guard let spec else {
+                answer("404 Not Found", Data(#"{"error":"no such removed card"}"#.utf8)); return
+            }
             DispatchQueue.global(qos: .userInitiated).async {
-                answer("200 OK", spec.respond(limit: limit, whole: query["full"] == "1"))
+                answer("200 OK", spec.respond(limit: limit, whole: query["full"] == "1", before: before))
             }
         }
     }
@@ -569,19 +585,66 @@ final class WebServer {
         guard let s = query["id"], let id = UUID(uuidString: s) else {
             answer("400 Bad Request", Data(#"{"error":"bad id"}"#.utf8)); return
         }
+        // A retry of a send already typed is answered with the first one's outcome, not typed again.
+        let key = query["nonce"].flatMap { $0.isEmpty ? nil : s + "/" + $0 }
+        if let key, !Self.claimSend(key, answer: { outcome in
+            answer("200 OK", Data(#"{"ok":true,"submit":"\#(outcome)","repeat":true}"#.utf8))
+        }) { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
+                if let key { Self.settleSend(key, "unknown") }
                 self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data())
                 return
             }
             MainActor.assumeIsolated {
                 AuditContext.with(scope.actor, trace: scope.trace) {
                     app.webType(id, text: query["text"] ?? "", enter: query["enter"] == "1") { outcome in
+                        if let key { Self.settleSend(key, outcome.rawValue) }
                         answer("200 OK", Data(#"{"ok":true,"submit":"\#(outcome.rawValue)"}"#.utf8))
                     }
                 }
             }
         }
+    }
+
+    /// Sends by nonce (`/type?…&nonce=`): the outcome once known, and who is waiting for it until then.
+    ///
+    /// The web's Send retries when a request fails, and a request can fail after the Mac has done
+    /// the work — the answer lost on the way back, a phone that slept mid-request. Typed again, the
+    /// prompt would reach the agent twice. So the page sends one nonce per message, and a repeat of
+    /// one already seen waits for, or is handed, the first outcome. Kept ten minutes: a retry comes
+    /// within seconds, but a phone can sleep through its last one.
+    private static var sends: [String: (outcome: String?, waiting: [@Sendable (String) -> Void], at: Date)] = [:]
+    private static let sendsLock = NSLock()
+
+    /// True when this is the first sight of `key` — go ahead and type. False when it is a repeat:
+    /// `answer` has been, or will be, called with the first try's outcome.
+    private static func claimSend(_ key: String, answer: @escaping @Sendable (String) -> Void) -> Bool {
+        sendsLock.lock()
+        let now = Date()
+        sends = sends.filter { now.timeIntervalSince($0.value.at) < 600 }
+        if let seen = sends[key] {
+            if let outcome = seen.outcome {
+                sendsLock.unlock()
+                answer(outcome)
+            } else {
+                sends[key]?.waiting.append(answer)
+                sendsLock.unlock()
+            }
+            return false
+        }
+        sends[key] = (nil, [], now)
+        sendsLock.unlock()
+        return true
+    }
+
+    private static func settleSend(_ key: String, _ outcome: String) {
+        sendsLock.lock()
+        let waiting = sends[key]?.waiting ?? []
+        sends[key]?.outcome = outcome
+        sends[key]?.waiting = []
+        sendsLock.unlock()
+        for w in waiting { w(outcome) }
     }
 
     /// POST /upload — the raw bytes of one image, answered with the absolute path it was written to.

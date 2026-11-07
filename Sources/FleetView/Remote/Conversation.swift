@@ -24,6 +24,13 @@ struct ConvMsg: Codable {
     var patch: String? = nil      // Codex apply_patch → already a patch, just colourised
     var pending: Bool = false     // tool call with no result yet → still running, or awaiting approval
     var queued: Bool = false      // typed mid-turn: a queued_command in the transcript, or else prompt history
+    /// Where the message sits in the conversation: the byte offset of the transcript line it came
+    /// from, plus a fraction for the second and later message of one line (see `Conversation.build`).
+    /// Positions only grow as the file does, so the page can keep a message that slid out of the
+    /// polled window and ask for the ones before its oldest (`before=`) without overlap or a gap.
+    var at: Double? = nil
+    var trigger: String? = nil    // kind == "compact": "auto" or "manual", when the transcript says
+    var tokens: Int? = nil        // kind == "compact": how full the context was when it ran
 }
 
 /// One tappable choice parsed off the agent's on-screen prompt (e.g. "1. Yes"), so a permission
@@ -49,10 +56,13 @@ struct ConvInfo: Codable {
     var pendingText: String? = nil
     var question: String? = nil        // the prompt line shown on screen
     var options: [ConvOption] = []     // choices parsed off the screen
+    /// Whether anything comes before the first message — what the page asks for with `before=`.
+    /// nil from an older FleetView, which has no paging.
+    var more: Bool? = nil
 }
 
 struct ConvResult: Codable {
-    let messages: [ConvMsg]
+    var messages: [ConvMsg]
     var info: ConvInfo
 }
 
@@ -72,7 +82,9 @@ struct ConversationSpec: Sendable {
 
     /// - Parameter whole: the entire transcript rather than its tail — what a "share the whole
     ///   conversation" needs. Not cached and not on the 3 s poll: it runs once per share.
-    func respond(limit: Int, whole: Bool = false) -> Data {
+    /// - Parameter before: the page of messages before this position instead of the tail (see
+    ///   ConversationPages) — what the chat asks for when it is scrolled up to its oldest message.
+    func respond(limit: Int, whole: Bool = false, before: Double? = nil) -> Data {
         guard let path else {
             // The pane's own scrollback is the readable content then, and it scrolls natively on
             // a phone.
@@ -81,6 +93,12 @@ struct ConversationSpec: Sendable {
             info.shell = true
             return (try? JSONEncoder().encode(ConvResult(messages: [], info: info)))
                 ?? Data(#"{"messages":[],"info":{"shell":true}}"#.utf8)
+        }
+        if let before {
+            var page = ConversationPages.page(path: path, before: before, limit: limit, cwd: cwd,
+                                              ownPrompt: ownPrompt)
+            page.info.session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+            return (try? JSONEncoder().encode(page)) ?? Data(#"{"messages":[]}"#.utf8)
         }
         var result = whole
             ? Conversation.parse(path: path, cwd: cwd, limit: .max, ownPrompt: ownPrompt, whole: true)
@@ -109,6 +127,11 @@ enum Conversation {
     /// Only the tail of the file is parsed — Codex rollouts reach tens of MB and we just want the
     /// recent conversation. 1.5 MB comfortably covers hundreds of messages.
     private static let tailBytes: UInt64 = 1_500_000
+    /// How far the tail may grow to fill `limit` (see `parse`). Parsing is about 650 MB/s here, so
+    /// this is ~20 ms, and only while the agent is writing — an unchanged file is a cache hit.
+    private static let maxTailBytes: UInt64 = 12_000_000
+    private static var windowNeeded: [String: UInt64] = [:]
+    private static let windowLock = NSLock()
 
     /// - Parameter ownPrompt: this terminal's last submitted prompt (recorded per terminal by the
     ///   hooks). When several terminals resume the SAME session they all append to one file and each
@@ -276,16 +299,23 @@ enum Conversation {
             let boundary = m.role == "user" && m.kind == "text" && !m.sub
             while boundary, let q = pending.first, q.ms <= at {
                 pending.removeFirst()
-                out.append(ConvMsg(role: "user", kind: "text", text: q.text, tool: nil, cat: nil,
-                                   detail: nil, output: nil, ok: nil,
-                                   ts: isoString(q.ms), sub: false, queued: true))
+                // Half a byte before the line it is shown above: between that line and the one
+                // before it, which is at least a byte and a newline earlier.
+                var put = ConvMsg(role: "user", kind: "text", text: q.text, tool: nil, cat: nil,
+                                  detail: nil, output: nil, ok: nil,
+                                  ts: isoString(q.ms), sub: false, queued: true)
+                put.at = m.at.map { $0.rounded(.down) - 0.5 }
+                out.append(put)
             }
             out.append(m)
         }
+        let end = msgs.last?.at.map { $0 + 0.5 }
         for q in pending {
-            out.append(ConvMsg(role: "user", kind: "text", text: q.text, tool: nil, cat: nil,
-                               detail: nil, output: nil, ok: nil,
-                               ts: isoString(q.ms), sub: false, queued: true))
+            var put = ConvMsg(role: "user", kind: "text", text: q.text, tool: nil, cat: nil,
+                              detail: nil, output: nil, ok: nil,
+                              ts: isoString(q.ms), sub: false, queued: true)
+            put.at = end
+            out.append(put)
         }
         return out
     }
@@ -350,37 +380,82 @@ enum Conversation {
         return result
     }
 
+    /// The tail of a transcript as chat: the last `limit` messages, read from the last `tailBytes`
+    /// of the file — more when that came out short, because the window is bytes and a message is
+    /// not. A Claude line carrying a screenshot or a long tool result runs to tens of kilobytes: in
+    /// a 151 MB session the 1.5 MB tail held about fifty lines, and the web chat opened on a dozen
+    /// messages with nothing above them. `info.more` says whether anything comes before the first
+    /// message; the page asks for it with `before=` (ConversationPages).
     static func parse(path: String, cwd: String = "", limit: Int = 120,
                       ownPrompt: String = "", whole: Bool = false) -> ConvResult {
+        // Start from the window this file needed last time: it is polled every 3 s, and growing
+        // from 1.5 MB on every poll parsed the same tail three times over.
+        windowLock.lock()
+        var bytes = whole ? UInt64.max : max(tailBytes, windowNeeded[path] ?? 0)
+        windowLock.unlock()
+        while true {
+            guard let window = readTail(path, bytes: bytes) else {
+                return ConvResult(messages: [], info: ConvInfo())
+            }
+            var result = build(window.lines, path: path, cwd: cwd, ownPrompt: ownPrompt, live: true)
+            if window.start > 0, result.messages.count < limit, bytes < maxTailBytes {
+                bytes = min(maxTailBytes, bytes * 3)
+                continue
+            }
+            if !whole {
+                windowLock.lock()
+                windowNeeded[path] = bytes
+                if windowNeeded.count > 64 { windowNeeded.removeAll() }
+                windowLock.unlock()
+            }
+            let cut = result.messages.count > limit
+            if cut { result.messages = Array(result.messages.suffix(limit)) }
+            result.info.more = window.start > 0 || cut || ConversationPages.hasBase(path)
+            return result
+        }
+    }
+
+    /// One transcript line: where it starts (its byte offset; negative inside a Codex history_base,
+    /// see ConversationPages) and what it says.
+    struct Line {
+        let at: Int
+        let obj: [String: Any]
+    }
+
+    /// Lines → chat. `live` is the tail being polled: tool calls without a result are running, and
+    /// prompts typed mid-turn are put back from the input history. An older page is neither — its
+    /// unanswered calls were interrupted long ago, and the history's timestamps cannot be placed in
+    /// a slice of the conversation. `lookahead` lines are read only for the results of calls made
+    /// before them, so a call just before a page's end does not show as never answered.
+    static func build(_ lines: [Line], path: String, cwd: String, ownPrompt: String, live: Bool,
+                      lookahead: [Line] = []) -> ConvResult {
         var info = ConvInfo()
-        guard let text = tail(path, whole: whole) else { return ConvResult(messages: [], info: info) }
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
         var msgs: [ConvMsg] = []
         var toolIndex: [String: Int] = [:]      // tool_use / call id → index in msgs
 
-        let records: [[String: Any]] = lines.compactMap {
-            guard let d = $0.data(using: .utf8) else { return nil }
-            return (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
-        }
         // A Claude session is a TREE, not a list: rewinding or editing a prompt starts a new branch
         // and the old one stays in the file. Rendering the file linearly interleaves abandoned
         // attempts with the real conversation, so follow only the active branch.
-        let active = activePath(records, ownPrompt: ownPrompt, &info)
+        let active = ConversationPages.activePath(lines.map { TranscriptLink($0.obj, at: $0.at) },
+                                                  ownPrompt: ownPrompt, branches: &info.branches)
 
-        for obj in records {
-            if obj["payload"] != nil {
+        for line in lines {
+            let obj = line.obj
+            let first = msgs.count
+            if obj["payload"] != nil || (obj["type"] as? String) == "compacted" {
                 parseCodex(obj, into: &msgs, toolIndex: &toolIndex)
             } else {
-                if let active {
-                    // Keep subagent (sidechain) records regardless — they hang off their own chain.
-                    let uuid = obj["uuid"] as? String
-                    let sidechain = (obj["isSidechain"] as? Bool) ?? false
-                    if !sidechain, let uuid, !active.contains(uuid) { continue }
-                }
+                if let active, !ConversationPages.onPath(obj, active) { continue }
                 parseClaude(obj, into: &msgs, toolIndex: &toolIndex, cwd: cwd)
                 collectInfo(obj, into: &info)
             }
+            // Every message a line produced gets the line's position, and a fraction for the second
+            // and later one — a reply's text, thinking and tool calls can share one line.
+            for i in first..<msgs.count { msgs[i].at = Double(line.at) + Double(i - first) / 1024 }
         }
+        for line in lookahead { applyResult(line.obj, to: &msgs, toolIndex: toolIndex) }
+        guard live else { return ConvResult(messages: msgs, info: info) }
+
         // A tool call that never got a result is either still running or waiting for approval —
         // that's what drives the live spinner and the "needs you" card.
         for i in msgs.indices where msgs[i].kind == "tool" && msgs[i].ok == nil && msgs[i].output == nil {
@@ -393,7 +468,8 @@ enum Conversation {
         // Put back the prompts that were typed while the agent was working (see mergeQueued).
         let sessionId = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         // Prompts from every branch in the file, so a compacted-away one is still recognised.
-        let everSaid: [String] = records.compactMap { obj in
+        let everSaid: [String] = lines.compactMap { line in
+            let obj = line.obj
             if let q = queuedCommand(obj) { return flatten(q.text) }
             guard (obj["type"] as? String) == "user",
                   let m = obj["message"] as? [String: Any] else { return nil }
@@ -403,120 +479,35 @@ enum Conversation {
                           .joined(separator: " ")
             return t.isEmpty ? nil : flatten(t)
         }
-        let merged = mergeQueued(msgs, sessionId: sessionId, everSaid: everSaid)
-        let out = merged.count > limit ? Array(merged.suffix(limit)) : merged
-        return ConvResult(messages: out, info: info)
+        return ConvResult(messages: mergeQueued(msgs, sessionId: sessionId, everSaid: everSaid), info: info)
     }
 
-    /// The set of record uuids on the session's *active* branch, walking `parentUuid` back from the
-    /// current leaf. Claude marks the live tip with a `last-prompt` record carrying `leafUuid`;
-    /// without one, the newest record is the tip. Returns nil when the file has no tree at all
-    /// (nothing to filter), and fills in how many branches the session has.
-    private static func activePath(_ records: [[String: Any]], ownPrompt: String,
-                                   _ info: inout ConvInfo) -> Set<String>? {
-        var parent: [String: String] = [:]
-        var children: [String: [String]] = [:]     // in file order ⇒ last child is the newest
-        var byUuid: [String: [String: Any]] = [:]
-        var order: [String] = []
-        var leaf: String?
-        // Records a compaction carried into the session it started. It keeps the newest few
-        // verbatim, but leaves them where they were in the old chain — only one not yet flushed is
-        // written after the boundary, onto the summary — so the last one left behind has no child
-        // on disk and looks like the tip of an abandoned branch. It is not: the conversation went
-        // on, past the compaction. Taken for a tip, it froze a web chat at the moment of the
-        // compaction while the session ran on for another hour (see TreeGraph's `continuesFrom`).
-        var carried = Set<String>()
-
-        for r in records {
-            if (r["type"] as? String) == "last-prompt", let l = r["leafUuid"] as? String { leaf = l }
-            if (r["subtype"] as? String) == "compact_boundary" {
-                if let l = r["logicalParentUuid"] as? String { carried.insert(l) }
-                if let kept = (r["compactMetadata"] as? [String: Any])?["preservedMessages"] as? [String: Any] {
-                    carried.formUnion((kept["allUuids"] as? [String]) ?? (kept["uuids"] as? [String]) ?? [])
-                }
-            }
-            guard let u = r["uuid"] as? String else { continue }
-            byUuid[u] = r
-            order.append(u)
-            if let p = r["parentUuid"] as? String {
-                parent[u] = p
-                children[p, default: []].append(u)
-            }
+    /// Only the tool results in a line, put on the calls they answer (see `build`'s lookahead).
+    private static func applyResult(_ obj: [String: Any], to msgs: inout [ConvMsg], toolIndex: [String: Int]) {
+        if let p = obj["payload"] as? [String: Any] {
+            let t = p["type"] as? String
+            guard t == "function_call_output" || t == "custom_tool_call_output",
+                  let id = (p["call_id"] as? String) ?? (p["id"] as? String), let i = toolIndex[id] else { return }
+            msgs[i].output = clip(flatten(p["output"] ?? p["result"]), 1200)
+            msgs[i].ok = true
+            return
         }
-        guard !order.isEmpty else { return nil }
-        let leaves = order.filter { children[$0] == nil && !carried.contains($0) }
-        info.branches = children.values.filter { $0.count > 1 }.count
-
-        var tip: String?
-        // Preferred: the branch whose most recent user prompt is the one THIS terminal submitted.
-        // Several terminals resuming one session share the file, and this is the only per-terminal
-        // marker in it (the hooks record the prompt against the terminal that sent it).
-        let want = normalized(ownPrompt)
-        if !want.isEmpty {
-            tip = leaves.reversed().first { l in
-                guard let text = latestUserText(from: l, parent: parent, byUuid: byUuid) else { return false }
-                return matches(normalized(text), want)
-            }
+        guard (obj["type"] as? String) == "user", let m = obj["message"] as? [String: Any],
+              let blocks = m["content"] as? [[String: Any]] else { return }
+        for b in blocks where (b["type"] as? String) == "tool_result" {
+            guard let id = b["tool_use_id"] as? String, let i = toolIndex[id] else { continue }
+            msgs[i].output = clip(flatten(b["content"]), 1200)
+            msgs[i].ok = !((b["is_error"] as? Bool) ?? false)
         }
-        if tip == nil {
-            // Otherwise: `leafUuid` is the tip *as of the last prompt*, so replies made after it hang
-            // below — descend to the current end of that branch before walking back, or the newest
-            // messages get filtered out as if they belonged to another branch.
-            tip = leaf.flatMap { byUuid[$0] != nil ? $0 : nil } ?? order.last
-            var visited = Set<String>()
-            while let u = tip, let kids = children[u], let next = kids.last, !visited.contains(u) {
-                visited.insert(u)
-                tip = next
-            }
-        }
-        var path = Set<String>()
-        while let u = tip, !path.contains(u) {
-            path.insert(u)
-            tip = parent[u]
-        }
-        return path.isEmpty ? nil : path
-    }
-
-    /// Text of the most recent real user prompt on a branch (skipping tool results, subagents, and
-    /// what Claude itself writes into the user role).
-    ///
-    /// The injected ones have to be skipped or the live branch stops matching the prompt that
-    /// started it, and the match falls to some older leaf instead: a background task finishing
-    /// lands as a `<task-notification>` user record (`promptSource: "system"`), a compaction as its
-    /// summary (`isCompactSummary`). Same rule as TreeGraph's `injected`.
-    private static func latestUserText(from leafUuid: String, parent: [String: String],
-                                       byUuid: [String: [String: Any]]) -> String? {
-        var u: String? = leafUuid
-        var seen = Set<String>()
-        while let cur = u, !seen.contains(cur) {
-            seen.insert(cur)
-            if let r = byUuid[cur], (r["type"] as? String) == "user",
-               (r["isSidechain"] as? Bool) != true,
-               (r["isMeta"] as? Bool) != true,
-               (r["isCompactSummary"] as? Bool) != true,
-               (r["promptSource"] as? String) != "system",
-               let msg = r["message"] as? [String: Any] {
-                var text: String?
-                if let s = msg["content"] as? String, !trim(s).isEmpty { text = s }
-                if text == nil, let blocks = msg["content"] as? [[String: Any]] {
-                    text = blocks.lazy.filter { ($0["type"] as? String) == "text" }
-                        .compactMap { $0["text"] as? String }.first { !trim($0).isEmpty }
-                }
-                // Older builds mark a notice only by its wrapper.
-                if let text, !text.hasPrefix("<task-notification") { return text }
-            }
-            u = parent[cur]
-        }
-        return nil
     }
 
     /// Whitespace-collapsed comparison: the stored prompt has newlines flattened to spaces.
-    private static func normalized(_ s: String) -> String {
+    static func normalized(_ s: String) -> String {
         s.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     /// Either side may be truncated, so a long common prefix counts as a match.
-    private static func matches(_ a: String, _ b: String) -> Bool {
+    static func matches(_ a: String, _ b: String) -> Bool {
         if a == b { return true }
         let n = min(a.count, b.count)
         guard n >= 12 else { return false }
@@ -602,8 +593,33 @@ enum Conversation {
             if let queued = queuedCommand(obj) { append(&msgs, queued) }
             return
         }
+        if type == "system", (obj["subtype"] as? String) == "compact_boundary" {
+            // A divider rather than nothing: the chat runs on through a compaction (see
+            // ConversationPages.activePath), and what is above it is what the agent no longer sees.
+            let meta = obj["compactMetadata"] as? [String: Any]
+            var m = ConvMsg(role: "system", kind: "compact", text: "", tool: nil, cat: nil, detail: nil,
+                            output: nil, ok: nil, ts: obj["timestamp"] as? String, sub: false)
+            m.trigger = meta?["trigger"] as? String
+            m.tokens = (meta?["preTokens"] as? NSNumber)?.intValue
+            msgs.append(m)
+            return
+        }
         guard type == "user" || type == "assistant" else { return }
         guard let message = obj["message"] as? [String: Any] else { return }
+        if (obj["isCompactSummary"] as? Bool) == true {
+            // The summary the compacted session starts from. It is written as a prompt, and shown as
+            // one it was a screen of "This session is being continued…" under your name; it belongs
+            // to the divider above it, folded.
+            let text = clip(trim(flatten(message["content"])), 6000)
+            if let i = msgs.indices.last, msgs[i].kind == "compact", msgs[i].text.isEmpty {
+                msgs[i].text = text
+            } else {
+                msgs.append(ConvMsg(role: "system", kind: "compact", text: text, tool: nil, cat: nil,
+                                    detail: nil, output: nil, ok: nil, ts: obj["timestamp"] as? String,
+                                    sub: false))
+            }
+            return
+        }
         let role = (message["role"] as? String) ?? type ?? "user"
         let ts = obj["timestamp"] as? String
         let sub = (obj["isSidechain"] as? Bool) ?? false
@@ -684,6 +700,13 @@ enum Conversation {
         guard let p = obj["payload"] as? [String: Any] else { return }
         let ts = obj["timestamp"] as? String
         let outer = obj["type"] as? String
+        if outer == "compacted" {
+            // Codex compacts in place: this line, then the turn carries on in the same rollout.
+            msgs.append(ConvMsg(role: "system", kind: "compact",
+                                text: clip(trim((p["message"] as? String) ?? ""), 6000), tool: nil,
+                                cat: nil, detail: nil, output: nil, ok: nil, ts: ts, sub: false))
+            return
+        }
         switch p["type"] as? String {
         // Messages come from `response_item`, not from the `event_msg` stream that used to carry a
         // copy of each one. Codex 0.147 stopped emitting that stream, so reading it meant a newer
@@ -743,7 +766,8 @@ enum Conversation {
 
     // MARK: - Helpers
 
-    /// Read only the last `tailBytes` of the file, dropping a partial first line.
+    /// Read only the last `bytes` of the file, dropping a partial first line, and parse it line by
+    /// line with each line's offset in the file — what a message's `at` is made of.
     ///
     /// The partial line is dropped as BYTES, before decoding. Decoding first and trimming after
     /// looks equivalent and is not: the window starts at an arbitrary offset, so in a transcript
@@ -751,18 +775,85 @@ enum Conversation {
     /// the whole window then fails — not partially, entirely. `String(data:encoding:)` returns nil
     /// for one bad byte anywhere, so the conversation came back empty and the web chat said there
     /// was none, for a 15 MB transcript that was perfectly readable. It also moved as the file grew,
-    /// which is what made it look intermittent.
-    private static func tail(_ path: String, whole: Bool = false) -> String? {
+    /// which is what made it look intermittent. Lines are now parsed one by one from the bytes, so
+    /// there is no whole-window decode left to fail; a line that is not JSON (the one being written,
+    /// usually) is skipped on its own.
+    private static func readTail(_ path: String, bytes: UInt64) -> (start: UInt64, lines: [Line])? {
         guard let h = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { return nil }
         defer { try? h.close() }
         guard let size = try? h.seekToEnd() else { return nil }
-        let start = size > tailBytes && !whole ? size - tailBytes : 0
+        let start = size > bytes ? size - bytes : 0
         try? h.seek(toOffset: start)
         guard var data = try? h.readToEnd() else { return nil }
+        var base = Int(start)
         if start > 0, let nl = data.firstIndex(of: 0x0A) {
+            base += nl + 1 - data.startIndex
             data = data.subdata(in: data.index(after: nl)..<data.endIndex)
         }
-        return String(data: data, encoding: .utf8)
+        var lines: [Line] = []
+        var from = data.startIndex
+        while from < data.endIndex {
+            let nl = data[from...].firstIndex(of: 0x0A) ?? data.endIndex
+            if nl > from {
+                autoreleasepool {
+                    if let obj = (try? JSONSerialization.jsonObject(with: shrunk(data.subdata(in: from..<nl)))) as? [String: Any] {
+                        lines.append(Line(at: base + (from - data.startIndex), obj: obj))
+                    }
+                }
+            }
+            from = nl + 1
+        }
+        return (start, lines)
+    }
+
+    /// A transcript line with every string longer than `over` bytes cut to its first `keep`, still
+    /// valid JSON — so a line can be parsed without materialising what it carries.
+    ///
+    /// Lines run to megabytes: a screenshot as base64, a tool's entire output, a whole file written.
+    /// The chat shows 1,200 characters of a tool's output and none of an image, but JSONSerialization
+    /// has to build every string in full before any of it can be dropped, and a page of a rollout
+    /// whose lines reach 11 MB took the process from 78 MB to over 1 GB. A reply is never cut: no
+    /// reply comes near `over`. The cut lands on a character boundary — never inside an escape, a
+    /// surrogate pair or a UTF-8 sequence — and ends in "…".
+    static func shrunk(_ line: Data, over: Int = 256 << 10, keep: Int = 64 << 10) -> Data {
+        guard line.count > over else { return line }
+        return line.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Data in
+            let b = raw.bindMemory(to: UInt8.self)
+            let n = b.count
+            var out = Data(capacity: min(n, 8 << 20))
+            var copied = 0                      // everything before this is already in `out`
+            var i = 0
+            while i < n {
+                guard b[i] == 0x22 else { i += 1; continue }     // a string opens
+                let s = i + 1
+                var j = s
+                while j < n, b[j] != 0x22 { j += b[j] == 0x5C ? 2 : 1 }
+                if j - s > over {
+                    // Step whole characters up to `keep`: an escape (a \u high surrogate with its
+                    // pair), or one UTF-8 sequence.
+                    var k = s
+                    while k < s + keep {
+                        let c = b[k]
+                        if c == 0x5C {
+                            if k + 1 < n, b[k + 1] == 0x75 {        // \uXXXX
+                                // \uD800–\uDBFF opens a surrogate pair: take both halves.
+                                let d = k + 3 < n ? b[k + 3] | 0x20 : 0
+                                let high = k + 3 < n && (b[k + 2] | 0x20) == 0x64
+                                    && (d == 0x38 || d == 0x39 || d == 0x61 || d == 0x62)
+                                k += high ? 12 : 6
+                            } else { k += 2 }
+                        } else if c >= 0xF0 { k += 4 } else if c >= 0xE0 { k += 3 } else if c >= 0xC0 { k += 2 } else { k += 1 }
+                    }
+                    k = min(k, j)
+                    out.append(b.baseAddress! + copied, count: k - copied)
+                    out.append(contentsOf: [0xE2, 0x80, 0xA6, 0x22])    // "…" and the closing quote
+                    copied = min(n, j + 1)
+                }
+                i = j + 1
+            }
+            if copied < n { out.append(b.baseAddress! + copied, count: n - copied) }
+            return out
+        }
     }
 
     /// Merge consecutive same-role text so a streamed reply reads as one message.
@@ -875,7 +966,7 @@ enum Conversation {
         return ""
     }
 
-    private static func trim(_ s: String) -> String {
+    static func trim(_ s: String) -> String {
         s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
