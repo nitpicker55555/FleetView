@@ -1,7 +1,10 @@
+import CryptoKit
 import FleetViewAudit
 import FleetViewFiles
 import Foundation
+import IOKit
 import Network
+import SystemConfiguration
 
 /// A live snapshot of the dashboard, serialized to the web page as JSON (`GET /state`).
 struct WebSnapshot: Codable {
@@ -57,6 +60,50 @@ struct WebSnapshot: Codable {
     /// `/theme.css` and lays it over its own variables. Optional so an older peer's /state still
     /// decodes.
     let seed: String?
+    /// Which Mac this board is, so a client that paired over one address can find the same board
+    /// over another when that one stops answering. Optional so an older peer's /state still decodes.
+    let machine: Machine?
+
+    /// A phone pairs by scanning the QR, which carries one address — usually the Tailscale one. The
+    /// evening the tailnet is down at home, the same Mac is a room away on the Wi-Fi, but nothing
+    /// told the phone what to look for there (Josie, 2026-11-08). So the board says who it is:
+    /// `id` is the same from every address it is reached on and across relaunches, and tells it
+    /// apart from any other FleetView on the network (another Mac, another account on this one);
+    /// `host` is the Bonjour name, so `<host>.local` finds it on the LAN with no tailnet and after
+    /// DHCP has moved `lan`; `lan` and `tailscale` are the addresses it has right now.
+    struct Machine: Codable {
+        let id: String
+        let name: String          // the Mac's Computer Name, for showing
+        let host: String?         // LocalHostName → `<host>.local`
+        let lan: String?
+        let tailscale: String?
+        let port: Int
+
+        /// Asked on every /state, so the parts that cannot change while the app runs (or would need
+        /// a rename to) are read once; the addresses are read each time, as the networks come and go.
+        static func current(port: Int) -> Machine {
+            Machine(id: fixed.id, name: fixed.name, host: fixed.host,
+                    lan: Tooling.lanIP(), tailscale: Tooling.tailscaleIP(), port: port)
+        }
+
+        private static let fixed: (id: String, name: String, host: String?) = {
+            let host = SCDynamicStoreCopyLocalHostName(nil) as String?
+            let name = (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? Host.current().localizedName ?? host ?? "Mac"
+            // The hardware UUID, hashed with the account: stable across reinstalls and renames,
+            // different for a second account's FleetView on the same Mac, and not the raw UUID.
+            let seed = "fleetview:\(platformUUID() ?? host ?? name):\(NSUserName())"
+            let id = SHA256.hash(data: Data(seed.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+            return (id, name, host)
+        }()
+
+        private static func platformUUID() -> String? {
+            let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+            guard service != 0 else { return nil }
+            defer { IOObjectRelease(service) }
+            return IORegistryEntryCreateCFProperty(service, kIOPlatformUUIDKey as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? String
+        }
+    }
 }
 
 /// A tiny, dependency-free HTTP/1.1 server (Network.framework) that serves the web dashboard.
