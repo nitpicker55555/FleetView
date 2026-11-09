@@ -2960,7 +2960,8 @@ final class AppState: ObservableObject {
             fleetTriggers: fleetTriggers.count,
             fleetTriggersRunning: fleetTriggers.filter(\.running).count,
             dark: Theme.isDark,
-            seed: ThemeStore.hex(ThemeStore.shared.seed))
+            seed: ThemeStore.hex(ThemeStore.shared.seed),
+            machine: .current(port: web.port))
     }
 
     /// Start (or reuse) a web terminal for an open session and return its URL (nil if not attachable).
