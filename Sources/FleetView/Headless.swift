@@ -97,6 +97,14 @@ enum Headless {
         return CGSessionCopyCurrentDictionary() == nil
     }
 
+    /// The self-updater's quit: stop exactly as a signal would (state saved, sessions left running),
+    /// then exit so swap.sh — waiting on this pid — can put the new bundle in place.
+    static func quitForUpdate() -> Never {
+        FV.log("headless: quitting for the self-update")
+        if let s = state { AppStartup.stop(s) }
+        exit(0)
+    }
+
     static func run() -> Never {
         active = true
         let state = AppState()

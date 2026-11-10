@@ -2512,6 +2512,27 @@ final class AppState: ObservableObject {
         case "/state":
             let data = (try? JSONEncoder().encode(webSnapshot())) ?? Data("{}".utf8)
             return ("200 OK", "application/json", data)
+        case "/update":
+            func orNull(_ v: Any?) -> Any { v ?? NSNull() }
+            // The self-update from afar — the only way a headless board can update, and the way to
+            // update a Mac nobody is sitting at (`project-manager update`). `?check=1` asks GitHub now
+            // (the answer shows up in the next GET); `?install=<version>` installs what is on offer.
+            if query["check"] == "1" { updates.check(force: true) }
+            if let v = query["install"] {
+                let err = SelfUpdate.installRemotely(v, updates: updates)
+                let o: [String: Any] = ["started": err == nil, "error": orNull(err)]
+                return (err == nil ? "200 OK" : "409 Conflict", "application/json",
+                        (try? JSONSerialization.data(withJSONObject: o)) ?? Data("{}".utf8))
+            }
+            var o: [String: Any] = ["current": FV.shortVersion, "version": FV.version, "headless": Headless.active,
+                                    "status": orNull(updates.status), "log": SelfUpdate.logTail(20)]
+            if let r = updates.available {
+                o["available"] = ["version": r.version, "url": r.url, "asset": orNull(r.assetURL),
+                                  "blocked": orNull(SelfUpdate.precheck(r)?.localizedDescription)] as [String: Any]
+            } else {
+                o["available"] = NSNull()
+            }
+            return ("200 OK", "application/json", (try? JSONSerialization.data(withJSONObject: o)) ?? Data("{}".utf8))
         case "/open":
             guard let s = query["id"], let id = UUID(uuidString: s) else {
                 return ("400 Bad Request", "application/json", Data(#"{"error":"bad id"}"#.utf8))
