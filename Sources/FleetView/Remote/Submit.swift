@@ -177,6 +177,115 @@ enum Submit {
 
     /// Text with every space, line break and box edge taken out — what survives a TUI re-wrapping
     /// it at a different width with its own indentation.
+    /// What the composer at the bottom of `pane` holds, as typed text: from the last marker line to
+    /// the rule under it, the marker and the continuation indent taken off. nil when there is no
+    /// composer on screen. A Claude ghost suggestion (`Try "…"`) is returned as it is — `isGhost`
+    /// tells it apart, since the plain capture has no colours to tell it by.
+    static func composerText(_ pane: String) -> String? {
+        let lines = pane.components(separatedBy: "\n")
+        guard let start = lines.lastIndex(where: isMarkerLine) else { return nil }
+        var out: [String] = []
+        for (i, line) in lines[start...].enumerated() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if i > 0, t.hasPrefix("─") || t.hasPrefix("╰") || t.hasPrefix("└") { break }
+            var body = Substring(line).drop(while: { $0 == " " || $0 == "│" })
+            if i == 0 { body = body.dropFirst().drop(while: { $0 == " " }) }   // the marker
+            out.append(String(body).trimmingCharacters(in: .whitespaces))
+        }
+        return out.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The keys that accept a first-run "trust this folder?" menu on `screen`, or nil when none is up.
+    /// Claude's opens on "No, exit" (an Enter meant for anything else quits it); Codex's on
+    /// "1. Trust and continue". The same reading as project-manager's `_trust_keys`.
+    static func trustKeys(_ screen: String) -> [String]? {
+        let tail = Array(screen.components(separatedBy: "\n").suffix(30))
+        let text = tail.joined(separator: "\n")
+        func cursorLine(_ mark: Character) -> String {
+            tail.first { $0.trimmingCharacters(in: .whitespaces).first == mark } ?? ""
+        }
+        if text.contains("Yes, I trust this folder"), text.contains("Enter to confirm") {
+            return cursorLine("❯").contains("Yes, I trust") ? ["Enter"] : ["Down", "Enter"]
+        }
+        if text.contains("Trust this folder?"), text.contains("Trust and continue") {
+            return cursorLine("›").contains("Trust and continue") ? ["Enter"] : ["Up", "Enter"]
+        }
+        return nil
+    }
+
+    /// Claude's suggestion for an empty composer, drawn dim where a draft would be.
+    static func isGhost(_ text: String) -> Bool {
+        text.hasPrefix("Try \"") && text.hasSuffix("\"") && !text.contains("\n")
+    }
+
+    /// What is really typed in the composer of a pane captured WITH its escapes (`capture-pane -e`):
+    /// "" for an empty one, and "" too when all it shows is Claude's suggestion. That suggestion is
+    /// not always `Try "…"` — after a turn it is the reply Claude expects ("批准" on the PM,
+    /// 2026-11-11) — and the only thing that tells it from a draft is that it is drawn dim
+    /// (`\e[2m`). nil when there is no composer on screen.
+    static func composerDraft(_ escaped: String) -> String? {
+        let lines = escaped.components(separatedBy: "\n")
+        guard let start = lines.lastIndex(where: { isMarkerLine(stripEscapes($0)) }) else { return nil }
+        if firstTextIsDim(lines[start]) { return "" }
+        let text = composerText(lines[start...].map(stripEscapes).joined(separator: "\n")) ?? ""
+        return isGhost(text) ? "" : text
+    }
+
+    /// The pane's text with its CSI sequences taken out.
+    static func stripEscapes(_ s: String) -> String {
+        s.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[@-~]", with: "", options: .regularExpression)
+    }
+
+    /// Whether the first thing written after the prompt marker is drawn dim.
+    static func firstTextIsDim(_ line: String) -> Bool {
+        let u = Array(line.unicodeScalars)
+        var dim = false, marker = false, i = 0
+        while i < u.count {
+            let c = u[i]
+            if c == "\u{1B}", i + 1 < u.count, u[i + 1] == "[" {
+                var j = i + 2, params = ""
+                while j < u.count, !(0x40...0x7E).contains(u[j].value) { params.unicodeScalars.append(u[j]); j += 1 }
+                if j < u.count, u[j] == "m" {
+                    if params.isEmpty { dim = false }
+                    for p in params.split(separator: ";") {
+                        if p == "2" { dim = true } else if p == "0" || p == "22" { dim = false }
+                    }
+                }
+                i = j + 1
+                continue
+            }
+            if !marker {
+                if c == "❯" || c == "›" || c == ">" { marker = true }
+            } else if c != " " && c != "\u{A0}" && c != "│" {
+                return dim
+            }
+            i += 1
+        }
+        return false
+    }
+
+    /// Whether the composer's text is `prompt` given back: Claude puts a prompt it was interrupted on
+    /// before answering back into the composer, word for word. Compared without whitespace, since
+    /// the composer wraps; a long prompt may come back collapsed to a paste placeholder.
+    static func isReturned(_ composer: String, prompt: String) -> Bool {
+        let c = squeeze(composer), p = squeeze(prompt)
+        guard !c.isEmpty, !isGhost(composer) else { return false }
+        if c.contains("[Pastedtext") || c.contains("[PastedContent") { return p.count > 200 }
+        return p.hasPrefix(String(c.prefix(60))) || c.hasPrefix(String(p.prefix(60)))
+    }
+
+    /// Empty the composer without Escape or Ctrl-C: two Escapes on an empty composer open Claude's
+    /// rewind, and a Ctrl-C arms "press again to exit". Ctrl-U clears a line and Backspace joins it to
+    /// the one above, so a line count's worth of the pair clears any draft (measured on Claude Code
+    /// 2.1.319 with a three-line one).
+    static func clearComposer(lines: Int, session: String, tmux: Tmux) {
+        for _ in 0...max(1, lines) {
+            _ = tmux(["send-keys", "-t", session, "C-u"], false)
+            _ = tmux(["send-keys", "-t", session, "BSpace"], false)
+        }
+        _ = tmux(["send-keys", "-t", session, "C-u"], false)
+    }
+
     static func squeeze(_ s: String) -> String {
         String(s.unicodeScalars.filter {
             !CharacterSet.whitespacesAndNewlines.contains($0) && $0 != "│"

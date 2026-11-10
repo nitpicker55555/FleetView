@@ -35,6 +35,15 @@ auto-discovers the local server via ~/.fleetview/web-port.
   project-manager notes add <text...>      append a note
   project-manager notes rm <note-sel>      delete a note (prints it back, so you can re-add it)
 
+FleetView's PM (the card in the right-hand column) — with -u, another Mac's:
+  project-manager pm                       the PM: status, the cards it started, its side threads
+  project-manager pm say <text…> [-w]      say something on its main line (-w: wait for its answer)
+  project-manager pm show | tail           its main line's recent conversation
+  project-manager pm ask <project> <q…>    ask in that project's side thread (read-only, keeps its
+                                           context: ask again for a follow-up); waits for the answer
+  project-manager pm thread <project>      a side thread's questions and answers (`general`: no project)
+  project-manager pm threads | refork <project> | start
+
 History of the conversations (Claude + Codex) on this Mac — or, with -u, on that one:
   project-manager projects                 L0  projects by last activity
   project-manager history [<project>]      L1  a project's conversations + transcript paths
@@ -762,6 +771,13 @@ def _confirm_submit(t, text, tries=4):
 def cmd_send(a):
     t = resolve(state(), a.sel)      # also the "before" a --wait measures the new turn against
     text = " ".join(a.text)
+    # A card started with `--no-wait` can still be on its first-run trust menu, where this Enter
+    # would pick "No, exit". Answer it, and let the agent reach its prompt, before typing.
+    if _accept_trust(t["id"]):
+        deadline = time.time() + 20
+        while time.time() < deadline and not _agent_settled(api_text("/capture?id=%s&lines=40" % t["id"])):
+            time.sleep(0.6)
+        time.sleep(1.0)
     verdict = _type(t["id"], text, enter=not a.no_enter)
     if a.no_enter:
         print("typed into %s (no enter)" % t["name"]); return
@@ -1224,6 +1240,11 @@ def cmd_new(a):
         api_json("/type?" + urllib.parse.urlencode(
             {"id": tid, "text": cmd, "enter": "1"}, quote_via=urllib.parse.quote))
         done.append("running %s" % c("1", cmd))
+        tool = cmd.split()[0].split("/")[-1]
+        if tool in ("claude", "codex", "sp-claude", "sp-codex"):
+            # Up to its prompt, past a first-run trust menu, so whatever is sent next lands there.
+            if not _start_agent_settled(tid, codex="codex" in tool):
+                done.append("its agent has not reported in yet")
     print(", ".join(done))
 
 
@@ -1284,8 +1305,77 @@ def cmd_open(a):
         api_json("/type?" + urllib.parse.urlencode({"id": tid, "text": cmd, "enter": "1"},
                                                    quote_via=urllib.parse.quote))
         said += " running %s" % cmd.split()[0]
+        if not _start_agent_settled(tid, codex=bool(a.codex)):
+            said += " (its agent has not reported in yet)"
     print(said)
 
+
+
+# ---- a new folder's "trust this folder?" ----
+#
+# The first time an agent starts in a folder it asks whether to trust it. Claude's menu opens on
+# "No, exit", so an Enter meant for something else — the first `send` of a task — picks it and the
+# agent quits: the PM lost a minute that way opening jelly-island (2026-11-11), working the menu out
+# with `key down` / `key enter`, as every agent opening a card in a new folder had to. A card this
+# script starts an agent in is in a folder on the board, or one the caller just made for the job, so
+# the question is answered here — by what the menu says on screen, never by a blind keystroke.
+
+def _trust_keys(screen):
+    """The keys that accept a trust-this-folder menu showing on `screen`, or None."""
+    tail = screen.rstrip().splitlines()[-30:]
+    text = "\n".join(tail)
+    if "Yes, I trust this folder" in text and "Enter to confirm" in text:        # Claude
+        cur = next((l for l in tail if l.strip().startswith("❯")), "")
+        return ["Enter"] if "Yes, I trust" in cur else ["Down", "Enter"]
+    if "Trust this folder?" in text and "Trust and continue" in text:            # Codex
+        cur = next((l for l in tail if l.strip().startswith("›")), "")
+        return ["Enter"] if "Trust and continue" in cur else ["Up", "Enter"]
+    return None
+
+def _agent_settled(screen):
+    """The agent is at its own prompt: its footer is drawn and no trust menu is up."""
+    tail = "\n".join(screen.rstrip().splitlines()[-8:])
+    return any(m in tail for m in ("bypass permissions", "context left", "for shortcuts", "esc to interrupt"))
+
+def _accept_trust(tid, watch=0.0, quiet=False):
+    """Answer the trust menu if it is up, or comes up within `watch` seconds; stop watching as soon as
+    the agent is at its prompt instead. True if a menu was answered."""
+    deadline = time.time() + watch
+    answered = False
+    settled_at = None
+    while True:
+        screen = api_text("/capture?id=%s&lines=40" % tid)
+        keys = _trust_keys(screen)
+        # Codex draws its ordinary composer and footer first and puts the menu over them a moment
+        # later, so "at its prompt" only counts once it has held for a few seconds.
+        if keys or not _agent_settled(screen):
+            settled_at = None
+        elif settled_at is None:
+            settled_at = time.time()
+        if keys:
+            for k in keys:
+                api_json("/key?" + urllib.parse.urlencode({"id": tid, "k": k}))
+                time.sleep(0.3)
+            answered = True
+            time.sleep(1.0)
+            if _trust_keys(api_text("/capture?id=%s&lines=40" % tid)) is None:
+                if not quiet:
+                    print(c("90", "trusted this folder for %s (its agent's first run here)" % tid[:8].lower()),
+                          file=sys.stderr, flush=True)
+                return True
+        elif (settled_at and time.time() - settled_at >= 3) or time.time() >= deadline:
+            return answered
+        if time.time() >= deadline:
+            return answered
+        time.sleep(0.6)
+
+def _start_agent_settled(tid, codex, timeout=40):
+    """After typing the agent's command into a fresh card: wait for it to come up, answering the trust
+    menu on the way. Claude reports ready only once past the menu; Codex reports at launch and asks
+    afterwards, so it gets a few seconds more of watching."""
+    ok = _wait_agent_ready(tid, timeout=timeout)
+    _accept_trust(tid, watch=10 if codex else 2)
+    return ok
 
 def _wait_agent_ready(tid, timeout=120):
     """Wait until the agent in a freshly opened terminal can actually take a prompt.
@@ -1304,12 +1394,17 @@ def _wait_agent_ready(tid, timeout=120):
     the task arrived.
     """
     deadline = time.time() + timeout
+    look = 0.0
     while time.time() < deadline:
         for t in state()["terminals"]:
             if t["id"].lower().startswith(tid.lower()):
                 if t.get("agent") or "":
                     return True
                 break
+        # Claude does not report until its trust menu is answered, so the menu is answered here.
+        if time.time() >= look:
+            _accept_trust(tid)
+            look = time.time() + 1.5
         time.sleep(0.5)
     return False
 
@@ -1462,6 +1557,8 @@ def cmd_subagent(a):
         # than leaving a card that looks like it was given a task.
         done("opened %s in %s — agent did not report ready within 120s, task NOT sent; "
              "send it with: project-manager send %s '<task>'" % (full, proj["name"], full[:8]), 1)
+    if a.codex:
+        _accept_trust(tid, watch=10)
     before = _term_now(tid)
     if not _send_task(tid, task):
         done("opened %s in %s — agent started but the task would not stick; "
@@ -3410,6 +3507,166 @@ def cmd_search(a):
     print(c("90", _cmd("\nnext: project-manager session <id> -t <N>   (the turn a hit is in)")))
 
 
+
+# ---- the PM ----
+#
+# FleetView's project manager (docs/design/2026-11-11-pm-card.md): one card that directs the others
+# and does none of the work. Its main line is an ordinary card, so `say` and `show` are `send` and
+# `show` aimed at it. Its side questions are threads FleetView itself runs (/manager/…), one per
+# project, forked once from the main line and resumed for every follow-up — so a thread remembers
+# what it was asked, and the main line is never touched. Everything here is HTTP: `-u` reaches
+# another Mac's PM exactly as it reaches this one's.
+
+def _pm_info():
+    try:
+        return json.loads(_get("/manager"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            sys.exit("%s predates the PM (no /manager) — update FleetView there" % BASE)
+        raise
+    except urllib.error.URLError as e:
+        sys.exit("cannot reach FleetView at %s (%s)" % (BASE, e))
+
+def _pm_id(info=None):
+    info = info or _pm_info()
+    if not info.get("id"):
+        why = "" if info.get("enabled", True) else " — it is off there (a headless FleetView needs FV_PM=1)"
+        sys.exit("no PM on %s%s. start it with: %s" % (BASE, why, _cmd("project-manager pm start")))
+    return info["id"]
+
+def _pm_key(sel):
+    """A side thread's key: a project on that board (name or id prefix), or `general`."""
+    if sel.lower() in ("general", "-", "通用", "any"):
+        return "general", "general"
+    st = state()
+    pmp = (st.get("pm") or {}).get("projectId")
+    hits = [p for p in match_projects(st, sel) if p["id"] != pmp]
+    if len(hits) != 1:
+        if hits:
+            print("%r matches several projects:" % sel, file=sys.stderr)
+            for p in hits[:12]:
+                print("  " + p["name"], file=sys.stderr)
+        else:
+            print("no project %r on %s — `general` asks about no project in particular" % (sel, BASE),
+                  file=sys.stderr)
+        sys.exit(2)
+    return hits[0]["id"], hits[0]["name"]
+
+def _pm_thread(key):
+    return json.loads(_get("/manager/thread?key=" + urllib.parse.quote(key)))
+
+def _pm_when(ms):
+    return time.strftime("%m-%d %H:%M", time.localtime(ms / 1000.0)) if ms else ""
+
+def _pm_print_turn(t, full=True):
+    if t.get("forked"):
+        print(c("90", "── forked from the main line %s ──" % _pm_when(t.get("askedAt"))))
+    print(c("1", "Q") + c("90", " %s" % _pm_when(t.get("askedAt"))) + "  " + t.get("q", ""))
+    if "a" in t:
+        a = t["a"]
+        if not full and len(a) > REPLY_CAP:
+            a = a[:REPLY_CAP] + c("90", " … (%d more characters)" % (len(a) - REPLY_CAP))
+        print(c("31" if t.get("failed") else "1", "A") + c("90", " %s" % _pm_when(t.get("answeredAt"))) + "  " + a)
+    else:
+        print(c("90", "A  (answering…)"))
+
+def cmd_pm(a):
+    act = a.paction or "status"
+    if act == "start":
+        try:
+            info = json.loads(_get("/manager/start", timeout=30))
+        except urllib.error.HTTPError as e:
+            sys.exit("could not start the PM: HTTP %d" % e.code)
+        print("PM %s on %s" % (info.get("id", "?")[:8].lower(), BASE) if info.get("id")
+              else "the PM did not start on %s (enabled=%s)" % (BASE, info.get("enabled")))
+        return
+    if act in ("say", "show", "tail"):
+        pid = _pm_id()
+        if act == "say":
+            return cmd_send(argparse.Namespace(sel=pid, text=a.rest, no_enter=False, wait=a.wait,
+                                               timeout=a.timeout, full=a.full))
+        if not a.rest:
+            return (cmd_show if act == "show" else cmd_tail)(argparse.Namespace(sel=pid, lines=a.lines))
+        sys.exit("`pm %s` takes no arguments" % act)
+    info = _pm_info()
+    if act == "status":
+        if not info.get("id"):
+            _pm_id(info)
+        st = state()
+        by = {t["id"]: t for t in st["terminals"]}
+        pm = by.get(info["id"], {})
+        print("%s %s  %s  [%s]   home %s" % (dot(pm.get("status", "closed")), c("1", "PM"),
+                                             info["id"].lower(), pm.get("statusLabel", info.get("status", "?")),
+                                             info.get("home", "?")))
+        ws = [by[w] for w in info.get("workers", []) if w in by]
+        print(c("1", "its cards (%d):" % len(ws)))
+        for t in ws:
+            print("  %s %-24s %s  %s  [%s]" % (dot(t["status"]), t["name"][:24], t["id"][:8].lower(),
+                                              proj_name(st, t["projectId"]), t["statusLabel"]))
+        th = info.get("threads", [])
+        print(c("1", "side threads (%d):" % len(th)))
+        for x in th:
+            print("  %-24s %s%s  %s" % (x["name"][:24], "%d turns" % x["turns"],
+                                       c("33", "  answering…") if x.get("waiting") else "", c("90", x.get("file", ""))))
+        print(c("90", "next: %s · %s" % (_cmd("project-manager pm say \"…\""),
+                                         _cmd("project-manager pm ask <project> \"…\""))))
+        return
+    if act == "threads":
+        for x in info.get("threads", []):
+            print("%-24s %3d turns%s  %s" % (x["name"][:24], x["turns"],
+                                            c("33", "  answering…") if x.get("waiting") else "", x.get("file", "")))
+        return
+    if not a.rest:
+        sys.exit("`pm %s` needs a project (or `general`)" % act)
+    key, name = _pm_key(a.rest[0])
+    if act == "thread":
+        th = _pm_thread(key)
+        print(c("1", "%s · side thread" % th.get("name", name)) + c("90", "   %s" % th.get("file", "")))
+        for t in th.get("items", []):
+            _pm_print_turn(t, full=True)
+            print()
+        if not th.get("items"):
+            print(c("90", "(nothing asked yet)"))
+        return
+    if act == "refork":
+        _get("/manager/refork?key=" + urllib.parse.quote(key))
+        print("the next question about %s forks the main line again" % name)
+        return
+    if act == "ask":
+        q = " ".join(a.rest[1:]).strip()
+        if not q:
+            sys.exit("what is the question?")
+        before = len(_pm_thread(key).get("items", []))
+        try:
+            _get("/manager/ask?" + urllib.parse.urlencode({"key": key, "q": q}, quote_via=urllib.parse.quote))
+        except urllib.error.HTTPError as e:
+            err = ""
+            try:
+                err = json.loads(e.read().decode("utf-8", "replace")).get("error", "")
+            except Exception:
+                pass
+            sys.exit({"busy": "the last question in %s's thread is still being answered" % name,
+                      "nosession": "the PM has no conversation yet — say something to it first (pm say)",
+                      "unknown": "no project %r there" % name}.get(err, "ask failed: HTTP %d %s" % (e.code, err)))
+        if a.no_wait:
+            print("asked in %s's thread. read it with: %s" % (name, _cmd("project-manager pm thread %s" % name)))
+            return
+        print(c("90", "asking in %s's side thread (read-only; the main line is not touched)…" % name),
+              file=sys.stderr, flush=True)
+        deadline = time.time() + (a.timeout or 900)
+        try:
+            while True:
+                time.sleep(1.5)
+                items = _pm_thread(key).get("items", [])
+                if len(items) > before and "a" in items[before]:
+                    _pm_print_turn(items[before], full=a.full)
+                    sys.exit(1 if items[before].get("failed") else 0)
+                if time.time() > deadline:
+                    sys.exit(EXIT_TIMEOUT)
+        except KeyboardInterrupt:
+            sys.exit(130)
+    sys.exit("unknown pm action %r" % act)
+
 def main():
     p = argparse.ArgumentParser(prog="project-manager", description="Control a running FleetView instance.")
     p.add_argument("-u", "--url", help="target another FleetView (same as FLEETVIEW_URL)")
@@ -3611,6 +3868,19 @@ def main():
     t.add_argument("sel")
     t.add_argument("-n", "--lines", type=int, default=80)
     s.set_defaults(fn=cmd_trigger, sel=None)
+    s = sub.add_parser("pm", help="FleetView's PM: its main line (say/show) and each project's side-question thread (ask/thread)")
+    s.add_argument("paction", nargs="?", metavar="ACTION",
+                   choices=("status", "say", "show", "tail", "ask", "thread", "threads", "refork", "start"),
+                   help="status (default) · say TEXT · show · tail · ask PROJECT QUESTION · thread PROJECT · "
+                        "threads · refork PROJECT · start")
+    s.add_argument("rest", nargs="*", help="the text (say), or the project — name, id prefix, or `general` — "
+                                          "then the question (ask)")
+    s.add_argument("-w", "--wait", action="store_true", help="say: block until the PM has answered, print it")
+    s.add_argument("--no-wait", action="store_true", help="ask: do not wait for the answer")
+    s.add_argument("-t", "--timeout", type=float, default=0, help="say -w / ask: give up after SEC (exit 124)")
+    s.add_argument("--full", action="store_true", help="the whole answer, not the first %d characters" % REPLY_CAP)
+    s.add_argument("-l", "--lines", type=int, default=200, help="show/tail: how much")
+    s.set_defaults(fn=cmd_pm)
     s = sub.add_parser("notes", help="the shared Notes list / web quick-commands")
     s.add_argument("action", nargs="?", choices=("ls", "add", "rm"), help="default: ls")
     s.add_argument("rest", nargs="*", help="text to add, or which note to remove")

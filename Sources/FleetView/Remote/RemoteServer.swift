@@ -172,13 +172,29 @@ final class RemoteServer {
     /// bypasses xterm.js). `enter` also submits it, and checks that it did: see `Submit` for why a
     /// Return sent straight after the text is not enough. `done` hears the outcome, on the write
     /// queue, once the checking is over.
-    func sendText(_ id: UUID, text: String, enter: Bool,
+    /// `clearingReturned` is the card's last prompt: if the agent gave it back to its composer (an
+    /// Escape from its window or the terminal mirror, which `reclaimComposer` never saw), it is
+    /// taken out before typing — or this text would be typed on the end of it and sent as one —
+    /// and handed to `onCleared`.
+    func sendText(_ id: UUID, text: String, enter: Bool, clearingReturned: String? = nil,
+                  onCleared: (@Sendable (String) -> Void)? = nil,
                   done: (@Sendable (Submit.Outcome) -> Void)? = nil) {
         guard let tmuxPath else { done?(.typed); return }
         let session = RemoteServer.sessionName(for: id)
         let mine = ledger.bump(session)
         let ledger = ledger
         writeQueue(for: session).async {
+            if enter, !text.isEmpty, let prompt = clearingReturned, !prompt.isEmpty {
+                let tmux: Submit.Tmux = { args, capture in
+                    Self.spawnTmux(tmuxPath, args, timeout: Self.tmuxTimeout, capture: capture)
+                }
+                if let c = Submit.composerDraft(tmux(["capture-pane", "-p", "-e", "-t", session], true)),
+                   Submit.isReturned(c, prompt: prompt) {
+                    Submit.clearComposer(lines: c.components(separatedBy: "\n").count, session: session, tmux: tmux)
+                    Thread.sleep(forTimeInterval: 0.2)
+                    onCleared?(c)
+                }
+            }
             let outcome = Submit.run(text: text, enter: enter, session: session,
                                      superseded: { ledger.current(session) != mine },
                                      tmux: { args, capture in
@@ -189,6 +205,44 @@ final class RemoteServer {
                 FV.log("type: \(session) still holds its text after \(Submit.retries) extra Enters")
             }
             done?(outcome)
+        }
+    }
+
+    /// After an Escape: if the agent gave the prompt it was interrupted on back into its composer,
+    /// take it out again and report it. Left there, it is invisible from the web and the next
+    /// message typed in is appended to it (2026-11-11, the PM: "帮我用threejs的ultra" sat in its
+    /// composer after an Esc). `done` gets the text taken out, or nil. On the terminal's write queue,
+    /// after the Escape itself, so nothing typed meanwhile is mistaken for the returned prompt.
+    func reclaimComposer(_ id: UUID, prompt: String, after delay: TimeInterval = 1.0,
+                         done: @escaping @Sendable (String?) -> Void) {
+        guard let tmuxPath, !prompt.isEmpty else { done(nil); return }
+        let session = RemoteServer.sessionName(for: id)
+        writeQueue(for: session).async {
+            let tmux: Submit.Tmux = { args, capture in
+                Self.spawnTmux(tmuxPath, args, timeout: Self.tmuxTimeout, capture: capture)
+            }
+            var found: String?
+            // Claude takes a moment to unwind the request; look a few times.
+            for wait in [delay, 0.6, 0.8] {
+                Thread.sleep(forTimeInterval: wait)
+                if let c = Submit.composerDraft(tmux(["capture-pane", "-p", "-e", "-t", session], true)),
+                   Submit.isReturned(c, prompt: prompt) { found = c; break }
+            }
+            guard let text = found else { done(nil); return }
+            Submit.clearComposer(lines: text.components(separatedBy: "\n").count, session: session, tmux: tmux)
+            done(text)
+        }
+    }
+
+    /// What is really typed in the composer right now (Claude's dim suggestion counts as nothing),
+    /// after anything queued for this terminal — nil when there is no composer on screen. For
+    /// deciding whether typing would land on someone's leftovers.
+    func peekComposer(_ id: UUID, done: @escaping @Sendable (String?) -> Void) {
+        guard let tmuxPath else { done(nil); return }
+        let session = RemoteServer.sessionName(for: id)
+        writeQueue(for: session).async {
+            done(Submit.composerDraft(Self.spawnTmux(tmuxPath, ["capture-pane", "-p", "-e", "-t", session],
+                                                     timeout: Self.tmuxTimeout, capture: true)))
         }
     }
 

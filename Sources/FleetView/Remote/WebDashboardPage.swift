@@ -1142,6 +1142,16 @@ enum WebDashboardPage {
   .icb.hist .hn{font-size:12px;line-height:16px}
   /* A removed card's conversation is read only: the composer gives way to a way back onto the board. */
   #archbar{display:none}
+  /* A prompt an Escape cut off before it was answered: the Mac took it back out of the agent's
+     composer, and offers it here instead of leaving it hidden in the terminal. */
+  #cutbar{display:none;align-items:center;gap:8px;padding:8px 10px 2px 16px;font-size:12px;line-height:16px;color:var(--sub)}
+  #cutbar.on{display:flex}
+  #cutbar .cn{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #cutbar .cn b{color:var(--text);font-weight:500}
+  #cutbar .put{flex:none;height:32px;padding:0 14px;border:0;border-radius:999px;background:var(--secondaryContainer);
+    color:var(--onSecondaryContainer);font-size:12px;font-weight:500;cursor:pointer}
+  #cutbar .x{flex:none;width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:999px;
+    background:transparent;color:var(--sub);cursor:pointer;padding:0}
   #term.arch #inputbar > :not(#archbar),#term.arch #tabs,#term.arch #sharebtn,#term.arch #popbtn{display:none}
   #term.arch #archbar{display:flex;align-items:center;gap:12px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
     font-size:13px;line-height:18px;color:var(--sub)}
@@ -1198,6 +1208,58 @@ enum WebDashboardPage {
   #triglist .tempty b{display:block;color:var(--text);font-size:14px;line-height:20px;font-weight:500;margin-bottom:4px}
   /* iOS zooms the page into any field under 16px the moment it is focused. */
   @media (pointer:coarse){ textarea.fbedit{font-size:16px} }
+
+  /* ---------- the PM ----------
+     Dock mode (`/?dock=pm`) is the page inside the Mac's right-hand PM column: only the PM's
+     conversation, no board behind it and no way back to one. */
+  body.dockpm>header,body.dockpm #panel,body.dockpm #tray,body.dockpm #projs,body.dockpm #chip,
+  body.dockpm #dock,body.dockpm #termbar .ib.back{display:none!important}
+  body.dockpm #root{padding-top:24px}
+  /* 400pt is not much bar: the latency (it is this Mac), sharing and the pop-out make way for the title. */
+  body.dockpm #tnetsig,body.dockpm #sharebtn,body.dockpm #popbtn{display:none!important}
+  #term.pmcard .ttl{min-width:52px}
+  @media (max-width:560px){ #term.pmcard #popbtn,#term.pmcard #tnetsig{display:none} }
+  /* The switcher between the PM's main line and a project's side question. Only on the PM's card. */
+  #pmsel{display:none;flex:none;align-items:center;gap:4px;height:36px;max-width:46%;padding:0 10px 0 14px;
+    border:0;border-radius:999px;background:var(--card);color:var(--text);font-size:13px;font-weight:500;cursor:pointer}
+  #pmsel span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  #pmsel svg.ic{flex:none}
+  #term.pmcard #pmsel{display:inline-flex}
+  #term.pmsq #pmsel{background:var(--secondaryContainer);color:var(--onSecondaryContainer)}
+  #pmmenu{display:none;position:absolute;z-index:9;top:calc(var(--padtop,0px) + var(--headh,54px) + 6px);
+    right:8px;width:min(340px,calc(100% - 16px));max-height:min(70vh,520px);overflow:auto;padding:6px;
+    background:var(--panel);border:1px solid var(--outlineVariant);border-radius:16px;
+    box-shadow:0 8px 28px rgba(0,0,0,.28)}
+  #pmmenu.on{display:block}
+  #pmmenu .mh{font-size:12px;line-height:16px;color:var(--sub);padding:10px 12px 4px}
+  #pmmenu .mi{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:0 12px;border:0;
+    border-radius:12px;background:transparent;color:var(--text);font-size:14px;text-align:left;cursor:pointer}
+  #pmmenu .mi:hover{background:color-mix(in srgb,var(--text) 8%,transparent)}
+  #pmmenu .mi.on{background:var(--secondaryContainer);color:var(--onSecondaryContainer)}
+  #pmmenu .mi .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #pmmenu .mi .n{flex:none;display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--sub);
+    font-variant-numeric:tabular-nums}
+  #pmmenu .mi.on .n{color:inherit}
+  #pmmenu .mi .spin{width:10px;height:10px}
+  #pmmenu .sep{height:1px;background:var(--outlineVariant);margin:4px 8px}
+  /* A side question's thread takes the conversation's place; the composer stays and asks it. */
+  #pmside{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;display:none;
+    padding:calc(var(--headh,54px) + 16px) 20px 26px;background:var(--bg);overscroll-behavior:contain}
+  #term.pmsq #pmside{display:block}
+  #term.pmsq #chat,#term.pmsq #stickyq,#term.pmsq #pwtab,#term.pmsq #jump,#term.pmsq #pside{display:none!important}
+  #pmside .pqh{display:flex;align-items:center;gap:8px;font-size:15px;line-height:22px;font-weight:500;margin-bottom:4px}
+  #pmside .pqh .pqre{margin-left:auto;flex:none;height:32px;padding:0 12px;border-radius:999px;font-size:12px;
+    background:transparent;border:1px solid var(--outline);color:var(--text);cursor:pointer}
+  #pmside .pqnote{font-size:12px;line-height:18px;color:var(--sub);margin-bottom:18px;word-break:break-all}
+  #pmside .pqfork{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--sub);margin:14px 0}
+  #pmside .pqfork:before,#pmside .pqfork:after{content:'';flex:1;height:1px;background:var(--outlineVariant)}
+  #pmside .pqwait{display:flex;align-items:center;gap:8px;color:var(--sub);font-size:13px}
+  #pmside .msg.asst.bad .mtext{color:var(--red)}
+  /* What FleetView typed into the PM about its team reads as a notice, not as you talking. */
+  .msg.user.pminbox .mtext{background:var(--card);color:var(--text);font-size:13px}
+  /* The PM pinned above the board, and the badge on the cards it started. */
+  section.pmpin .zh .ts{display:inline-flex;align-items:center;gap:6px}
+  .card .pmw{display:inline-flex;flex:none;opacity:.8}
 </style>
 </head>
 <body>
@@ -1233,8 +1295,9 @@ enum WebDashboardPage {
        read and come back when you scroll up (see headBar). The status strip is its subtitle. -->
   <div id="thead">
     <div id="termbar">
-      <button class="ib" onclick="closeTerm()" data-i18n-aria="common.back" data-i18n-title="common.back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <button class="ib back" onclick="closeTerm()" data-i18n-aria="common.back" data-i18n-title="common.back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
       <div class="ttl"><span class="tname" id="termname"></span><div id="sinfo"></div></div>
+      <button id="pmsel" onclick="pmMenuToggle()" aria-haspopup="menu" data-i18n-title="pm.pick" data-i18n-aria="pm.pick"><span id="pmsellbl"></span><i data-ic="chevron-down" class="s14"></i></button>
       <button class="netsig tsig" id="tnetsig" onclick="netToast()" data-i18n-aria="net.aria"></button>
       <div id="tabs">
         <button id="tabChat" class="on" onclick="setView('chat')" data-i18n="tab.chat"></button>
@@ -1245,6 +1308,8 @@ enum WebDashboardPage {
     </div>
   </div>
   <div id="chat" class="on"><div id="chatnote" data-i18n="common.loading"></div></div>
+  <div id="pmside"></div>
+  <div id="pmmenu" role="menu"></div>
   <div id="stickyq"><div class="sq"></div></div>
   <button id="pwtab" onclick="togglePw(true)" data-i18n-title="pw.open" data-i18n-aria="pw.open"><i data-ic="list-ordered"></i></button>
   <div id="pside" role="dialog">
@@ -1263,6 +1328,7 @@ enum WebDashboardPage {
   </div>
   <div id="inputbar">
     <div id="archbar"><span data-i18n="arch.readonly"></span><button onclick="archRestoreCur()" data-i18n="arch.restore"></button></div>
+    <div id="cutbar"><span class="cn"></span><button class="put" onclick="cutPut()" data-i18n="cut.put"></button><button class="x" onclick="cutDismiss()" data-i18n-title="cut.dismiss" data-i18n-aria="cut.dismiss"><i data-ic="x" class="s16"></i></button></div>
     <div id="grip"><span class="gbar"></span><span class="gtools">
       <button class="fsz" onclick="taFont(-1)" data-i18n-title="composer.smaller">A−</button>
       <button class="fsz" onclick="taFont(1)" data-i18n-title="composer.larger">A+</button>
@@ -1421,6 +1487,8 @@ function poll(fn,ms,now=true){
    Tailscale) and key names (Esc, Tab, ⏎) are the same in both. */
 const I18N={
   zh:{
+    'cut.note':'已打断，这条没发出去：','cut.put':'放回输入框','cut.dismiss':'不要了','cut.busy':'输入框里已经有字了','term.native':'终端在单独的窗口里打开了（关掉它 PM 也不会停）',
+    'pm.main':'主线','pm.side':'旁问','pm.sideHead':'旁问 · 每个项目一条线程','pm.general':'不限项目','pm.pick':'切换主线 / 旁问','pm.sideTitle':'{name} · 旁问','pm.sideNote':'从 PM 主线分叉出来的只读线程，可以一直追问；不会写回主线，问答记在 ','pm.sideEmpty':'还没问过 {name}。第一问会从 PM 主线分叉。','pm.answering':'回答中…','pm.forkedAt':'{time} 从主线分叉','pm.refork':'重新分叉','pm.reforkTitle':'下一问从 PM 主线的最新状态重新分叉','pm.reforked':'下一问会从主线重新分叉','pm.askPh':'问 {name}（只读）…','pm.busy':'上一问还在回答','pm.noSession':'PM 还没有会话，先在主线跟它说句话','pm.askFailed':'没问出去：{err}','pm.start':'启动 PM','pm.notRunning':'PM 还没在跑','pm.notRunningSub':'它是一张常驻的卡片，只指挥别人做事。','pm.pinned':'PM','pm.worker':'PM 派出的卡片','pm.threads':'{n} 轮',
     'common.loading':'加载中…','common.back':'返回','common.retry':'重试',
     'common.collapse':'收起','common.expand':'展开','common.newTerm':'新终端','common.tokens':'{n} tokens',
     'status.working':'运行中','status.idle':'空闲','status.needsYou':'等你处理','status.shell':'Shell',
@@ -1558,6 +1626,8 @@ const I18N={
     'trig.none':'没有触发器','trig.noneDetail':'这个终端的 agent 没有定时或后台任务，也没有 launchd 任务指向它。'
   },
   en:{
+    'cut.note':'Interrupted — this was not sent: ','cut.put':'Put back','cut.dismiss':'Discard','cut.busy':'The message box is not empty','term.native':'The terminal opened in its own window (closing it does not stop the PM)',
+    'pm.main':'Main line','pm.side':'Side question','pm.sideHead':'Side questions · one thread per project','pm.general':'Any project','pm.pick':'Switch between the main line and side questions','pm.sideTitle':'{name} · side question','pm.sideNote':'A read-only thread forked from the PM\'s main line. Ask follow-ups for as long as you like; nothing is written back to the main line. Kept in ','pm.sideEmpty':'Nothing asked about {name} yet. The first question forks the PM\'s main line.','pm.answering':'Answering…','pm.forkedAt':'Forked from the main line at {time}','pm.refork':'Fork again','pm.reforkTitle':'The next question forks the PM\'s main line as it is now','pm.reforked':'The next question forks the main line again','pm.askPh':'Ask about {name} (read-only)…','pm.busy':'The last question is still being answered','pm.noSession':'The PM has no conversation yet — say something to it on the main line first','pm.askFailed':'Could not ask: {err}','pm.start':'Start the PM','pm.notRunning':'The PM is not running','pm.notRunningSub':'A card that stays on and only directs the others.','pm.pinned':'PM','pm.worker':'Started by the PM','pm.threads':'{n} turns',
     'common.loading':'Loading…','common.back':'Back','common.retry':'Retry',
     'common.collapse':'Collapse','common.expand':'Expand','common.newTerm':'New terminal','common.tokens':'{n} tokens',
     'status.working':'Running','status.idle':'Idle','status.needsYou':'Needs you','status.shell':'Shell',
@@ -2105,6 +2175,7 @@ function openTerm(id,name,from,arch){
   requestAnimationFrame(()=>{
     if(barH) applyBar(); else { autoGrow(document.getElementById('inputtext')); placeJump(); }
   });
+  pmOnOpen();
 }
 /* Swipe right to go back, the way the phone's own apps do. The overlay follows your finger with
    resistance, then either settles back or carries on out to the right.
@@ -2171,6 +2242,8 @@ swipeBack('term','chat','pre.code,.mbody,#presets,#keys,#inputbar,#drawer,#tabs'
    long-press to copy, a code preview scrolls sideways, and a PDF is an iframe that pans itself. */
 swipeBack('fb','fbbody','#fbpath,#fbcrumbs,pre,iframe,textarea,.fbtools,table',()=>fbClose());
 function closeTerm(){
+  if(DOCK&&curId&&state&&state.pm&&curId===state.pm.id) return;
+  pmOnClose();
   saveDraft();
   closeDrawer(); showTermHead();
   document.getElementById('stickyq').classList.remove('on');
@@ -2188,6 +2261,10 @@ function closeTerm(){
 /* Chat = structured transcript (native scrolling, works on touch).
    Terminal = the live ttyd mirror, loaded lazily so just reading costs nothing. */
 function setView(v){
+  /* In the Mac's PM column the terminal is the Mac's own window: native drawing, keyboard and IME, and
+     no WebGL inside a web view inside the app — where the mirror came up black (2026-11-11). */
+  if(v==='term'&&DOCK&&curId){ fetch('/action?id='+encodeURIComponent(curId)+'&do=show',{cache:'no-store'}).catch(()=>{});
+    toast(tr('term.native')); v='chat'; }
   curView=v;
   document.getElementById('term').classList.toggle('termview',v==='term');
   document.getElementById('tabChat').classList.toggle('on',v==='chat');
@@ -2531,6 +2608,7 @@ document.addEventListener('click',e=>{
   if(document.getElementById('tray').classList.contains('on')&&!inside('tray','traybtn')){
     document.getElementById('tray').classList.remove('on'); closed=true; }
   if(document.getElementById('projs').classList.contains('on')&&!inside('projs','projbtn')){ closeProjects(); closed=true; }
+  if(document.getElementById('pmmenu').classList.contains('on')&&!inside('pmmenu','pmsel')){ pmMenu(false); closed=true; }
   if(closed){ e.preventDefault(); e.stopPropagation(); }
 },true);
 
@@ -3061,7 +3139,8 @@ function msgHTML(m){
       imgsHTML(m)+
       (det?'<div class="mbody">'+det+'</div>':'')+'</div>';
   }
-  return '<div class="msg '+(m.role==='user'?'user':'asst')+(m.sub?' sub':'')+(m.queued?' queued':'')+'" data-k="'+msgKey(m)+'"'+atAttr(m)+'>'+
+  const inbox=m.role==='user'&&/^\[FleetView 收件箱\]/.test(m.text||'');
+  return '<div class="msg '+(m.role==='user'?'user':'asst')+(m.sub?' sub':'')+(m.queued?' queued':'')+(inbox?' pminbox':'')+'" data-k="'+msgKey(m)+'"'+atAttr(m)+'>'+
     '<span class="cp" data-copy="1">'+tr('chat.copy')+'</span>'+
     (m.sub?'<div class="tag">'+tr('chat.subagent')+'</div>':'')+
     (m.ts?'<span class="when">'+hhmm(m.ts)+'</span>':'')+
@@ -3626,7 +3705,8 @@ function autoGrow(ta){
    560px line the expanded composer uses, so "this is a phone" is decided in one place. */
 const NARROW=matchMedia('(max-width:560px)');
 function fitPlaceholder(){
-  document.getElementById('inputtext').placeholder=tr(NARROW.matches?'composer.placeholderShort':'composer.placeholder');
+  document.getElementById('inputtext').placeholder=pmSideOpen()?tr('pm.askPh',{name:pmKeyName(pmKey)})
+    :tr(NARROW.matches?'composer.placeholderShort':'composer.placeholder');
 }
 NARROW.addEventListener('change',fitPlaceholder);
 fitPlaceholder();
@@ -3671,6 +3751,8 @@ applyTaFont();
 })();
 async function sendText(){
   if(!curId)return;
+  if(document.getElementById('cutbar').classList.contains('on')) cutDone();
+  if(pmSideOpen()){ pmAskSend(); return; }
   const ta=document.getElementById('inputtext');const t=ta.value;
   /* An empty box while the agent works means Stop; anything you typed is a message, always. The
      button label can be a poll behind the terminal, and letting it decide here meant a typed
@@ -4960,7 +5042,8 @@ function card(t){
     ? `<span class="when clock lm" data-run="${t.id}"></span>`
     : (t.idle>=0?`<span class="when lm" title="${t.lastRun>=0?tr('card.lastRun',{time:clockText(t.lastRun*1000)}):tr('card.lastActivity')}">${rel(t.idle)}</span>`:'');
   const extra=(t.done?`<span class="mk" title="${tr('card.marked')}">${ic('bookmark','s14')}</span>`:'')+
-    (t.window==='hidden'?`<span class="hid" title="${tr('card.hidden')}">${ic('eye-off','s14')}</span>`:'');
+    (t.window==='hidden'?`<span class="hid" title="${tr('card.hidden')}">${ic('eye-off','s14')}</span>`:'')+
+    (t.pmw?`<span class="pmw" title="${tr('pm.worker')}">${ic('pm-hub','s14')}</span>`:'');
   const tok=t.tokens>0?`<span class="ls" title="${tr('common.tokens',{n:t.tokens})}">${short(t.tokens)}</span>`:'';
   const trig=t.trig>0?`<span class="trig" role="button" title="${tr('trig.chip',{n:t.trig})}" onclick="event.stopPropagation();openTrig('${t.id}')">${ic(t.trigTimed>0?'alarm-clock':'hourglass','s12')}${t.trig}</span>`:'';
   const uid=t.id.toLowerCase();
@@ -5253,6 +5336,7 @@ let prevStatus=null, lastLive=null;
 /* `poll`: this is a fresh /state. Only then does anything animate — the same board drawn again for
    a chevron or the mark filter is a different view, not a change in the fleet. */
 function render(s,poll){
+  if(DOCK){ pmDockIdle(s); return; }   // the column shows the PM's conversation and nothing else
   const cnt=document.getElementById('counts');
   const cntText=tr('count.projects',{n:s.projects.length})+' · '+tr('count.terminals',{n:s.terminals.length});
   if(cnt.textContent!==cntText) cnt.textContent=cntText;
@@ -5292,7 +5376,12 @@ function render(s,poll){
      Newest run first, since what has just started is what you are most likely after. Sorted on the
      local anchor rather than the seconds as sent: two runs begun in the same second tie on one poll
      and not the next, and the pair would swap back and forth. */
-  const vis=onlyMarked?s.terminals.filter(t=>t.done):s.terminals;
+  /* The PM is not one of the board's cards: on the Mac it has the right-hand column, and here it is
+     pinned above everything as a card of its own. Its folder is not a project either. */
+  const pmT=s.pm?s.terminals.find(t=>t.id===s.pm.id):null;
+  const boardTerms=pmT?s.terminals.filter(t=>t!==pmT):s.terminals;
+  if(pmT&&!onlyMarked) html+=pmPin(pmT);
+  const vis=onlyMarked?boardTerms.filter(t=>t.done):boardTerms;
   const live=[...vis.filter(t=>t.status==='needsYou'),
               ...vis.filter(t=>t.status==='working').sort((a,b)=>(runStart[b.id]||0)-(runStart[a.id]||0))];
   if(live.length){
@@ -5304,7 +5393,8 @@ function render(s,poll){
   }
   const dorm=[];
   for(const p of s.projects){
-    const all=s.terminals.filter(t=>t.projectId===p.id);
+    if(s.pm&&p.id===s.pm.projectId) continue;
+    const all=boardTerms.filter(t=>t.projectId===p.id);
     const terms=onlyMarked?all.filter(t=>t.done):all;
     // A project with nothing marked is left out whole, the way the Mac's board does it — the point
     // of the filter is a board with only the work you are tracking on it.
@@ -5487,8 +5577,9 @@ async function tick(){
     applyScheme(state.dark);
     applySeed(state.seed);
     net.stateAt=Date.now();
-    if(termOpen()){watchTermAlive(state);return;}
+    if(termOpen()){watchTermAlive(state);pmTick();cutCheck();return;}
     render(state,true);
+    if(DOCK&&state.pm&&state.terminals.some(t=>t.id===state.pm.id)){ openTerm(state.pm.id,tr('pm.pinned')); return; }
     openPendingTerm(state);
     reportLocation(state);   // once per browser; no-op until the page is served over HTTPS
   }catch(e){}                // the signal indicator says offline; ping() is what decides that
@@ -5528,7 +5619,205 @@ window.addEventListener('hashchange',()=>{
   if(termOpen()) closeTerm();
   if(state) openPendingTerm(state);
 });
-poll(tick,1500);
+/* ---------- the PM ----------
+   FleetView's project manager is one card (state.pm) that directs the others and does none of the
+   work. On the Mac it lives in the column at the board's right edge, which is this page in dock mode
+   (`?dock=pm`): the PM's conversation and nothing else. On a phone it is pinned above the board.
+   On the PM's card the bar has a dropdown: the main line, or a side question about one project —
+   a read-only thread forked once from the PM's conversation and resumed for every follow-up
+   (/manager/ask), so it can be asked as long as you like without the main line hearing of it. Each
+   thread is also written to ~/.fleetview/pm/asks/<project>.md, which is how the main line finds out.
+   `var`, not `let`: fitPlaceholder can run before this block has. */
+var DOCK=new URLSearchParams(location.search).get('dock')==='pm';
+if(DOCK) document.body.classList.add('dockpm');
+if(!IC['message-circle']) IC['message-circle']='<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>';
+IC['pm-hub']='<circle cx="12" cy="5.5" r="2.5"/><path d="M12 8v4M5.5 12h13M5.5 12v4M12 12v4M18.5 12v4"/><circle cx="5.5" cy="18" r="2"/><circle cx="12" cy="18" r="2"/><circle cx="18.5" cy="18" r="2"/>';
+var pmInfo=null;     // /manager: the PM and its side-question threads
+var pmKey='';        // '' is the main line; otherwise the side thread's key (a project id, or 'general')
+var pmThread=null;   // /manager/thread for pmKey
+var pmTimer=null, pmSeq=0, pmJustSent=false;
+function pmIdNow(){ return state&&state.pm?state.pm.id:''; }
+function pmCardOpen(){ return !!curId&&curId===pmIdNow(); }
+function pmSideOpen(){ return !!pmKey&&pmCardOpen(); }
+function pmProjects(){
+  const s=state; if(!s) return [];
+  return s.projects.filter(p=>!s.pm||p.id!==s.pm.projectId);
+}
+function pmKeyName(k){
+  if(!k) return tr('pm.main');
+  if(k==='general') return tr('pm.general');
+  const p=pmProjects().find(x=>x.id===k);
+  if(p) return p.name;
+  const t=pmInfo&&(pmInfo.threads||[]).find(x=>x.key===k);
+  return t?t.name:k.slice(0,8);
+}
+/* The pinned card above the board. A card like any other — tapping it opens the PM's conversation. */
+function pmPin(t){
+  return `<section class="pmpin"><div class="zh"><span class="ts">${ic('pm-hub','s14')}${tr('pm.pinned')}</span></div>`+
+         `<div class="grid"><div class="rc">${card(Object.assign({},t,{window:'none'}))}</div></div></section>`;
+}
+/* Dock mode with no PM to show (not started yet, or its card was removed): a way to start it. */
+function pmDockIdle(s){
+  const root=document.getElementById('root');
+  const html='<div class="empty">'+ic('pm-hub')+'<span class="et ts">'+tr('pm.notRunning')+'</span>'+
+    '<span class="bs">'+tr('pm.notRunningSub')+'</span>'+
+    '<button class="tonal" onclick="pmStart()">'+tr('pm.start')+'</button></div>';
+  if(root.innerHTML!==html) root.innerHTML=html;
+}
+async function pmStart(){
+  try{ await fetch('/manager/start',{cache:'no-store'}); }catch(e){}
+  tick();
+}
+function pmOnOpen(){
+  const on=pmCardOpen();
+  const term=document.getElementById('term');
+  term.classList.toggle('pmcard',on);
+  if(!on){ pmSetKey('',true); pmStopPoll(); return; }
+  pmSetKey(pmKey,true);
+  pmPoll();
+  if(!pmTimer) pmTimer=poll(pmPoll,2500,false);
+}
+function pmOnClose(){ pmMenu(false); pmSetKey('',true); pmStopPoll(); document.getElementById('term').classList.remove('pmcard'); }
+function pmStopPoll(){ if(pmTimer){ clearInterval(pmTimer); pmTimer=null; } }
+/* Called by tick while a conversation is open: the column follows a PM card that was made again. */
+function pmTick(){
+  if(!DOCK||!state) return;
+  const id=pmIdNow();
+  if(id&&curId!==id&&state.terminals.some(t=>t.id===id)) openTerm(id,tr('pm.pinned'));
+}
+async function pmPoll(){
+  if(!pmCardOpen()) return;
+  const seq=++pmSeq, key=pmKey;
+  try{
+    const r=await fetch('/manager',{cache:'no-store'});
+    if(r.ok) pmInfo=await r.json();
+    if(key){
+      const t=await fetch('/manager/thread?key='+encodeURIComponent(key),{cache:'no-store'});
+      if(t.ok&&seq===pmSeq&&key===pmKey) pmThread=await t.json();
+    }
+  }catch(e){}
+  if(seq!==pmSeq) return;
+  pmPaintSel();
+  if(document.getElementById('pmmenu').classList.contains('on')) pmPaintMenu();
+  if(pmKey) pmRenderSide();
+}
+function pmSetKey(k,quiet){
+  const changed=k!==pmKey;
+  pmKey=k||'';
+  document.getElementById('term').classList.toggle('pmsq',pmSideOpen());
+  if(changed){ pmThread=null; pmSeq++; }
+  pmPaintSel();
+  fitPlaceholder();
+  if(pmKey){ pmRenderSide(); if(!quiet) pmPoll(); }
+  else if(!quiet&&pmCardOpen()){ loadChat(); }
+}
+function pmPaintSel(){
+  const l=document.getElementById('pmsellbl');
+  const txt=pmKey?pmKeyName(pmKey)+' · '+tr('pm.side'):tr('pm.main');
+  if(l.textContent!==txt) l.textContent=txt;
+}
+function pmMenu(on){
+  const m=document.getElementById('pmmenu');
+  m.classList.toggle('on',!!on);
+  document.getElementById('pmsel').setAttribute('aria-expanded',on?'true':'false');
+  if(on) pmPaintMenu();
+}
+function pmMenuToggle(){ pmMenu(!document.getElementById('pmmenu').classList.contains('on')); if(pmCardOpen()) pmPoll(); }
+function pmPick(k){ pmMenu(false); pmSetKey(k); }
+/* The dropdown: the main line, then a side thread for every project — the ones asked about most
+   recently first, each with what it holds (a turning ring while it is answering, the number of
+   turns otherwise) — then one for questions about no project in particular. */
+function pmPaintMenu(){
+  const threads=(pmInfo&&pmInfo.threads)||[];
+  const byKey={}; for(const t of threads) byKey[t.key]=t;
+  const mark=k=>{ const t=byKey[k]; if(!t) return '';
+    return '<span class="n">'+(t.waiting?'<span class="spin"></span>':'')+(t.turns?esc(tr('pm.threads',{n:t.turns})):'')+'</span>'; };
+  const item=(k,icon,label)=>'<button class="mi'+(pmKey===k?' on':'')+'" role="menuitemradio" aria-checked="'+(pmKey===k)+
+    '" onclick="pmPick(\''+k+'\')">'+icon+'<span class="nm">'+esc(label)+'</span>'+mark(k)+'</button>';
+  const projs=pmProjects().slice().sort((a,b)=>((byKey[b.id]||{}).updated||0)-((byKey[a.id]||{}).updated||0));
+  let h=item('',ic('pm-hub','s16'),tr('pm.main'));
+  h+='<div class="sep"></div><div class="mh">'+esc(tr('pm.sideHead'))+'</div>';
+  for(const p of projs) h+=item(p.id,ic('folder','s16'),p.name);
+  h+=item('general',ic('message-circle','s16'),tr('pm.general'));
+  const m=document.getElementById('pmmenu');
+  if(m.innerHTML!==h) m.innerHTML=h;
+}
+function pmRenderSide(){
+  const el=document.getElementById('pmside');
+  const th=pmThread, name=pmKeyName(pmKey);
+  let h='<div class="pqh">'+ic('pm-hub','s16')+'<span>'+esc(tr('pm.sideTitle',{name}))+'</span>'+
+    (th&&th.forked?'<button class="pqre" onclick="pmRefork()" title="'+esc(tr('pm.reforkTitle'))+'">'+esc(tr('pm.refork'))+'</button>':'')+'</div>'+
+    '<div class="pqnote">'+esc(tr('pm.sideNote'))+(th&&th.file?'<code>'+esc(th.file)+'</code>':'~/.fleetview/pm/asks/')+'</div>';
+  const items=(th&&th.items)||[];
+  if(!items.length&&!(th&&th.pending)) h+='<div id="chatnote">'+esc(tr('pm.sideEmpty',{name}))+'</div>';
+  const all=items.concat(th&&th.pending?[th.pending]:[]);
+  for(const t of all){
+    if(t.forked) h+='<div class="pqfork">'+esc(tr('pm.forkedAt',{time:hhmm(t.askedAt)}))+'</div>';
+    h+='<div class="msg user"><span class="when">'+hhmm(t.askedAt)+'</span><div class="mtext md">'+md(t.q)+'</div></div>';
+    if(t.a!==undefined) h+='<div class="msg asst'+(t.failed?' bad':'')+'">'+(t.answeredAt?'<span class="when">'+hhmm(t.answeredAt)+'</span>':'')+
+      '<div class="mtext md">'+md(t.a)+'</div></div>';
+    else h+='<div class="msg asst"><div class="pqwait"><span class="spin"></span>'+esc(tr('pm.answering'))+'</div></div>';
+  }
+  const stick=el.scrollHeight-el.scrollTop-el.clientHeight<60;
+  if(el.innerHTML!==h){ el.innerHTML=h; paintIcons(el); if(stick||pmJustSent) el.scrollTop=el.scrollHeight; }
+  pmJustSent=false;
+}
+async function pmAskSend(){
+  const ta=document.getElementById('inputtext'), q=ta.value.trim();
+  if(!q) return;
+  const items=(pmThread&&pmThread.items)||[], last=items[items.length-1];
+  if((last&&last.a===undefined&&!last.failed)||(pmThread&&pmThread.pending)){ toast(tr('pm.busy')); return; }
+  const key=pmKey;
+  ta.value=''; autoGrow(ta);
+  // Shown at once, the way a sent message is; the poll replaces it with the stored turn.
+  pmThread=Object.assign({key,items:[]},pmThread||{});
+  pmThread.pending={q,askedAt:Date.now(),forked:!pmThread.forked};
+  pmJustSent=true; pmRenderSide();
+  try{
+    const r=await fetch('/manager/ask?key='+encodeURIComponent(key)+'&q='+encodeURIComponent(q),{cache:'no-store'});
+    if(!r.ok){
+      let err='HTTP '+r.status; try{ err=(await r.json()).error||err; }catch(e){}
+      if(pmThread&&key===pmKey) pmThread.pending=null;
+      ta.value=q; autoGrow(ta);
+      toast(err==='busy'?tr('pm.busy'):err==='nosession'?tr('pm.noSession'):tr('pm.askFailed',{err}));
+    }
+  }catch(e){
+    if(pmThread&&key===pmKey) pmThread.pending=null;
+    ta.value=q; autoGrow(ta); toast(tr('pm.askFailed',{err:e.message||e}));
+  }
+  if(key===pmKey){ await pmPoll(); if(pmThread) pmThread.pending=null; pmRenderSide(); }
+}
+async function pmRefork(){
+  try{ await fetch('/manager/refork?key='+encodeURIComponent(pmKey),{cache:'no-store'}); toast(tr('pm.reforked')); }catch(e){}
+  pmPoll();
+}
+
+/* ---------- a prompt an Escape cut off ----------
+   Claude gives a prompt it is interrupted on before answering back to its composer, word for word.
+   From here that composer is invisible, and the next message would be typed on the end of it — so
+   after a web Escape the Mac takes it back out (RemoteServer.reclaimComposer) and /state carries it
+   as the card's `cut` for ten minutes. Offered, not forced: put it back to edit and resend, or let it
+   go. Each one is offered once. */
+var cutSeen={};
+function cutCheck(){
+  const bar=document.getElementById('cutbar');
+  const t=state&&curId?(state.terminals||[]).find(x=>x.id===curId):null;
+  const txt=t&&t.cut;
+  if(!txt||cutSeen[curId]===txt||convArch){ bar.classList.remove('on'); return; }
+  const cn=bar.querySelector('.cn'), html=esc(tr('cut.note'))+'<b>'+esc(txt)+'</b>';
+  if(cn.innerHTML!==html) cn.innerHTML=html;
+  if(!bar.classList.contains('on')){ bar.classList.add('on'); paintIcons(bar); placeJump(); }
+}
+function cutDone(){ const t=(state&&state.terminals||[]).find(x=>x.id===curId); if(t&&t.cut) cutSeen[curId]=t.cut;
+  document.getElementById('cutbar').classList.remove('on'); placeJump(); }
+function cutPut(){
+  const t=(state&&state.terminals||[]).find(x=>x.id===curId), ta=document.getElementById('inputtext');
+  if(!t||!t.cut) return cutDone();
+  if(ta.value.trim()&&ta.value!==t.cut){ toast(tr('cut.busy')); return; }
+  ta.value=t.cut; autoGrow(ta); saveDraft(); ta.focus(); cutDone();
+}
+function cutDismiss(){ cutDone(); }
+poll(tick,DOCK?4000:1500);
 // A tab opened by the file browser's ↗, or one reloaded while it was open, lands on that folder or file.
 { const m=location.hash.match(/^#fb=(.+)$/); if(m){ try{ fbOpenPath(decodeURIComponent(m[1])); }catch(e){} } }
 

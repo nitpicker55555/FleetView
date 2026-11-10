@@ -4,6 +4,9 @@ import AppKit
 // main.swift top-level runs on the main thread, which hosts the main actor, so we assume that
 // isolation to construct our @MainActor app objects.
 MainActor.assumeIsolated {
+    // Before anything is started: a card's identity, inherited from the shell that launched us,
+    // would otherwise be passed on to every process FleetView runs (see InheritedEnvironment).
+    InheritedEnvironment.scrub()
     // Before anything reads a preference: settings written under the old bundle id come along.
     LegacyDefaults.migrate()
     // Draw the board with sample data to PNGs and exit — the way to look at a UI change without

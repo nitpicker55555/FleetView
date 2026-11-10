@@ -111,6 +111,7 @@ enum Headless {
         self.state = state
         watcher = AppStartup.start(state)
         state.reconnectLiveTerminals()      // reattach terminals whose tmux sessions survived
+        state.pm.start(state)               // only with FV_PM=1 here (PMCoordinator.enabled)
         let line = "FleetView headless (\(FV.version)) — dashboard on port \(state.web.port)"
         FV.log(line)
         print(line)
