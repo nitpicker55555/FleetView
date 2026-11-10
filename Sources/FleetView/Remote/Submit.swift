@@ -200,6 +200,52 @@ enum Submit {
         text.hasPrefix("Try \"") && text.hasSuffix("\"") && !text.contains("\n")
     }
 
+    /// What is really typed in the composer of a pane captured WITH its escapes (`capture-pane -e`):
+    /// "" for an empty one, and "" too when all it shows is Claude's suggestion. That suggestion is
+    /// not always `Try "…"` — after a turn it is the reply Claude expects ("批准" on the PM,
+    /// 2026-11-11) — and the only thing that tells it from a draft is that it is drawn dim
+    /// (`\e[2m`). nil when there is no composer on screen.
+    static func composerDraft(_ escaped: String) -> String? {
+        let lines = escaped.components(separatedBy: "\n")
+        guard let start = lines.lastIndex(where: { isMarkerLine(stripEscapes($0)) }) else { return nil }
+        if firstTextIsDim(lines[start]) { return "" }
+        let text = composerText(lines[start...].map(stripEscapes).joined(separator: "\n")) ?? ""
+        return isGhost(text) ? "" : text
+    }
+
+    /// The pane's text with its CSI sequences taken out.
+    static func stripEscapes(_ s: String) -> String {
+        s.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[@-~]", with: "", options: .regularExpression)
+    }
+
+    /// Whether the first thing written after the prompt marker is drawn dim.
+    static func firstTextIsDim(_ line: String) -> Bool {
+        let u = Array(line.unicodeScalars)
+        var dim = false, marker = false, i = 0
+        while i < u.count {
+            let c = u[i]
+            if c == "\u{1B}", i + 1 < u.count, u[i + 1] == "[" {
+                var j = i + 2, params = ""
+                while j < u.count, !(0x40...0x7E).contains(u[j].value) { params.unicodeScalars.append(u[j]); j += 1 }
+                if j < u.count, u[j] == "m" {
+                    if params.isEmpty { dim = false }
+                    for p in params.split(separator: ";") {
+                        if p == "2" { dim = true } else if p == "0" || p == "22" { dim = false }
+                    }
+                }
+                i = j + 1
+                continue
+            }
+            if !marker {
+                if c == "❯" || c == "›" || c == ">" { marker = true }
+            } else if c != " " && c != "\u{A0}" && c != "│" {
+                return dim
+            }
+            i += 1
+        }
+        return false
+    }
+
     /// Whether the composer's text is `prompt` given back: Claude puts a prompt it was interrupted on
     /// before answering back into the composer, word for word. Compared without whitespace, since
     /// the composer wraps; a long prompt may come back collapsed to a paste placeholder.

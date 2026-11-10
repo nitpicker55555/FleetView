@@ -188,7 +188,7 @@ final class RemoteServer {
                 let tmux: Submit.Tmux = { args, capture in
                     Self.spawnTmux(tmuxPath, args, timeout: Self.tmuxTimeout, capture: capture)
                 }
-                if let c = Submit.composerText(tmux(["capture-pane", "-p", "-t", session], true)),
+                if let c = Submit.composerDraft(tmux(["capture-pane", "-p", "-e", "-t", session], true)),
                    Submit.isReturned(c, prompt: prompt) {
                     Submit.clearComposer(lines: c.components(separatedBy: "\n").count, session: session, tmux: tmux)
                     Thread.sleep(forTimeInterval: 0.2)
@@ -225,7 +225,7 @@ final class RemoteServer {
             // Claude takes a moment to unwind the request; look a few times.
             for wait in [delay, 0.6, 0.8] {
                 Thread.sleep(forTimeInterval: wait)
-                if let c = Submit.composerText(tmux(["capture-pane", "-p", "-t", session], true)),
+                if let c = Submit.composerDraft(tmux(["capture-pane", "-p", "-e", "-t", session], true)),
                    Submit.isReturned(c, prompt: prompt) { found = c; break }
             }
             guard let text = found else { done(nil); return }
@@ -234,14 +234,15 @@ final class RemoteServer {
         }
     }
 
-    /// The composer's text right now, after anything queued for this terminal — nil when there is
-    /// no composer on screen. For deciding whether typing would land on someone's leftovers.
+    /// What is really typed in the composer right now (Claude's dim suggestion counts as nothing),
+    /// after anything queued for this terminal — nil when there is no composer on screen. For
+    /// deciding whether typing would land on someone's leftovers.
     func peekComposer(_ id: UUID, done: @escaping @Sendable (String?) -> Void) {
         guard let tmuxPath else { done(nil); return }
         let session = RemoteServer.sessionName(for: id)
         writeQueue(for: session).async {
-            done(Submit.composerText(Self.spawnTmux(tmuxPath, ["capture-pane", "-p", "-t", session],
-                                                    timeout: Self.tmuxTimeout, capture: true)))
+            done(Submit.composerDraft(Self.spawnTmux(tmuxPath, ["capture-pane", "-p", "-e", "-t", session],
+                                                     timeout: Self.tmuxTimeout, capture: true)))
         }
     }
 

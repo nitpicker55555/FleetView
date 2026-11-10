@@ -211,7 +211,7 @@ final class PMCoordinator: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, let app = self.app else { return }
                 self.delivering = false
-                if let c = composer, !c.isEmpty, !Submit.isGhost(c) {
+                if let c = composer, !c.isEmpty {
                     FV.log("pm: its composer holds text, the digest waits")
                     self.scheduleFlush(after: 30)
                     return
