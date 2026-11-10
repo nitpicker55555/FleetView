@@ -771,6 +771,13 @@ def _confirm_submit(t, text, tries=4):
 def cmd_send(a):
     t = resolve(state(), a.sel)      # also the "before" a --wait measures the new turn against
     text = " ".join(a.text)
+    # A card started with `--no-wait` can still be on its first-run trust menu, where this Enter
+    # would pick "No, exit". Answer it, and let the agent reach its prompt, before typing.
+    if _accept_trust(t["id"]):
+        deadline = time.time() + 20
+        while time.time() < deadline and not _agent_settled(api_text("/capture?id=%s&lines=40" % t["id"])):
+            time.sleep(0.6)
+        time.sleep(1.0)
     verdict = _type(t["id"], text, enter=not a.no_enter)
     if a.no_enter:
         print("typed into %s (no enter)" % t["name"]); return
@@ -1233,6 +1240,11 @@ def cmd_new(a):
         api_json("/type?" + urllib.parse.urlencode(
             {"id": tid, "text": cmd, "enter": "1"}, quote_via=urllib.parse.quote))
         done.append("running %s" % c("1", cmd))
+        tool = cmd.split()[0].split("/")[-1]
+        if tool in ("claude", "codex", "sp-claude", "sp-codex"):
+            # Up to its prompt, past a first-run trust menu, so whatever is sent next lands there.
+            if not _start_agent_settled(tid, codex="codex" in tool):
+                done.append("its agent has not reported in yet")
     print(", ".join(done))
 
 
@@ -1293,8 +1305,77 @@ def cmd_open(a):
         api_json("/type?" + urllib.parse.urlencode({"id": tid, "text": cmd, "enter": "1"},
                                                    quote_via=urllib.parse.quote))
         said += " running %s" % cmd.split()[0]
+        if not _start_agent_settled(tid, codex=bool(a.codex)):
+            said += " (its agent has not reported in yet)"
     print(said)
 
+
+
+# ---- a new folder's "trust this folder?" ----
+#
+# The first time an agent starts in a folder it asks whether to trust it. Claude's menu opens on
+# "No, exit", so an Enter meant for something else — the first `send` of a task — picks it and the
+# agent quits: the PM lost a minute that way opening jelly-island (2026-11-11), working the menu out
+# with `key down` / `key enter`, as every agent opening a card in a new folder had to. A card this
+# script starts an agent in is in a folder on the board, or one the caller just made for the job, so
+# the question is answered here — by what the menu says on screen, never by a blind keystroke.
+
+def _trust_keys(screen):
+    """The keys that accept a trust-this-folder menu showing on `screen`, or None."""
+    tail = screen.rstrip().splitlines()[-30:]
+    text = "\n".join(tail)
+    if "Yes, I trust this folder" in text and "Enter to confirm" in text:        # Claude
+        cur = next((l for l in tail if l.strip().startswith("❯")), "")
+        return ["Enter"] if "Yes, I trust" in cur else ["Down", "Enter"]
+    if "Trust this folder?" in text and "Trust and continue" in text:            # Codex
+        cur = next((l for l in tail if l.strip().startswith("›")), "")
+        return ["Enter"] if "Trust and continue" in cur else ["Up", "Enter"]
+    return None
+
+def _agent_settled(screen):
+    """The agent is at its own prompt: its footer is drawn and no trust menu is up."""
+    tail = "\n".join(screen.rstrip().splitlines()[-8:])
+    return any(m in tail for m in ("bypass permissions", "context left", "for shortcuts", "esc to interrupt"))
+
+def _accept_trust(tid, watch=0.0, quiet=False):
+    """Answer the trust menu if it is up, or comes up within `watch` seconds; stop watching as soon as
+    the agent is at its prompt instead. True if a menu was answered."""
+    deadline = time.time() + watch
+    answered = False
+    settled_at = None
+    while True:
+        screen = api_text("/capture?id=%s&lines=40" % tid)
+        keys = _trust_keys(screen)
+        # Codex draws its ordinary composer and footer first and puts the menu over them a moment
+        # later, so "at its prompt" only counts once it has held for a few seconds.
+        if keys or not _agent_settled(screen):
+            settled_at = None
+        elif settled_at is None:
+            settled_at = time.time()
+        if keys:
+            for k in keys:
+                api_json("/key?" + urllib.parse.urlencode({"id": tid, "k": k}))
+                time.sleep(0.3)
+            answered = True
+            time.sleep(1.0)
+            if _trust_keys(api_text("/capture?id=%s&lines=40" % tid)) is None:
+                if not quiet:
+                    print(c("90", "trusted this folder for %s (its agent's first run here)" % tid[:8].lower()),
+                          file=sys.stderr, flush=True)
+                return True
+        elif (settled_at and time.time() - settled_at >= 3) or time.time() >= deadline:
+            return answered
+        if time.time() >= deadline:
+            return answered
+        time.sleep(0.6)
+
+def _start_agent_settled(tid, codex, timeout=40):
+    """After typing the agent's command into a fresh card: wait for it to come up, answering the trust
+    menu on the way. Claude reports ready only once past the menu; Codex reports at launch and asks
+    afterwards, so it gets a few seconds more of watching."""
+    ok = _wait_agent_ready(tid, timeout=timeout)
+    _accept_trust(tid, watch=10 if codex else 2)
+    return ok
 
 def _wait_agent_ready(tid, timeout=120):
     """Wait until the agent in a freshly opened terminal can actually take a prompt.
@@ -1313,12 +1394,17 @@ def _wait_agent_ready(tid, timeout=120):
     the task arrived.
     """
     deadline = time.time() + timeout
+    look = 0.0
     while time.time() < deadline:
         for t in state()["terminals"]:
             if t["id"].lower().startswith(tid.lower()):
                 if t.get("agent") or "":
                     return True
                 break
+        # Claude does not report until its trust menu is answered, so the menu is answered here.
+        if time.time() >= look:
+            _accept_trust(tid)
+            look = time.time() + 1.5
         time.sleep(0.5)
     return False
 
@@ -1471,6 +1557,8 @@ def cmd_subagent(a):
         # than leaving a card that looks like it was given a task.
         done("opened %s in %s — agent did not report ready within 120s, task NOT sent; "
              "send it with: project-manager send %s '<task>'" % (full, proj["name"], full[:8]), 1)
+    if a.codex:
+        _accept_trust(tid, watch=10)
     before = _term_now(tid)
     if not _send_task(tid, task):
         done("opened %s in %s — agent started but the task would not stick; "

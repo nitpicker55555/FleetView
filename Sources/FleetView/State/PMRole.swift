@@ -25,7 +25,7 @@ enum PMRole {
     - `project-manager ls`：所有卡片和状态；`ls -p <项目>` 只看一个项目
     - `project-manager show <id>` / `tail <id>`：一张卡最近的输出
     - `project-manager commits <id>`：这张卡提交了什么、还有什么没提交
-    - `project-manager subagent -p <项目> -n <名字> --id --no-wait "<任务说明>"`：开一张新卡并交给它任务，stdout 只打印新卡的 uuid——**记下来**
+    - `project-manager subagent -p <项目> -n <名字> --id "<任务说明>"`：开一张新卡，等 agent 起来，把任务交给它并确认送到，然后返回；stdout 只打印新卡的 uuid——**记下来**。新目录第一次启动时的「是否信任此文件夹」它会自动回答。任务说明长的话先写成文件，再用 `"$(cat 文件)"` 传进去。**不要加 `--no-wait`**：那样只开卡，不发任务
     - `project-manager send <id> "<话>"`：给一张卡发消息
     - `project-manager open <文件夹名>`：把 ~/PycharmProjects 下的文件夹放上看板
     - `project-manager close <id>` / `rm <id>`：收尾
@@ -52,7 +52,7 @@ enum PMRole {
     - 做完了就验收：对照派工时写的标准，**不要设比用户更高的及格线**；
     - 更新账本。
 
-    不要在前台等：`project-manager wait`、`subagent --wait`、`ask` 这类会卡住几十秒的命令，放到后台跑（Bash 的 run_in_background），结果到了会通知你。你被卡住的时候，用户就没法跟你说话。
+    不要在前台等：`project-manager wait`、`subagent --wait`、`ask` 这类会卡住几十秒的命令，放到后台跑（Bash 的 run_in_background），结果到了会通知你。也不要用 `sleep` 一轮轮地轮询，卡片有变化 FleetView 会发收件箱消息给你。你被卡住的时候，用户就没法跟你说话。
 
     不要和 auto-recover 抢：卡片停在 Codex 的“model at capacity”菜单之类的地方，那是 auto-recover 守护进程的事，不要替它按键。
 

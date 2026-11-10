@@ -66,7 +66,7 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager ask <id> <q…>` | **"BTW" side-query**: ask the agent a question using its current context **without** touching/interrupting its live session (forked print-mode query; the answer is thrown away after printing). Takes ~10-40s |
 | `project-manager log <id> [-p\|-c\|-f]` | Locate the agent's transcript file; `-p` path only, `-c` cat, `-f` follow (tail -f). With `-u` all three read the file on that machine |
 | `project-manager new <project> [label]` | Open a terminal in a project. `--claude` starts a permission-bypassed Claude session in it, `-c CMD` runs any other command |
-| `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project, `-n` to name the card, `--id` for the bare uuid on stdout, `--no-wait` to start the agent without sending the task, `--wait` to wait until the job is over (no background work left running) and print the reply, `--close` / `--rm` to then close the card (it stays on the board) or remove it, `--resume SESSION` to give the task to an existing conversation instead of a new agent. A `-p` project that is not on the board is opened for the job (exact folder name in ~/PycharmProjects) and closed again after it. With `-u` and no `-p`: the project of the same name over there |
+| `project-manager subagent <task…>` | Open a new agent terminal and hand it a task. `--codex` for Codex, `-p` for another project, `-n` to name the card, `--id` for the bare uuid on stdout, `--no-wait` to start the agent without sending the task, `--wait` to wait until the job is over (no background work left running) and print the reply, `--close` / `--rm` to then close the card (it stays on the board) or remove it, `--resume SESSION` to give the task to an existing conversation instead of a new agent. A `-p` project that is not on the board is opened for the job (exact folder name in ~/PycharmProjects) and closed again after it. With `-u` and no `-p`: the project of the same name over there. **`--no-wait` does not send the task** — leave it out to have the task delivered. A first run in a new folder's "trust this folder?" menu is answered for you (see below) |
 | `project-manager close <term>` | Close a terminal: its session stops (agent and all), its card stays on the board, and a click resumes the conversation. `rm` removes the card instead |
 | `project-manager audit [<card>] [-d DAYS] [--full]` | **What agents did to each other through project-manager**, from the audit log: who (the calling card, with its machine), to whom (the target card), what (the words sent — in full, secrets redacted — the key, the command, the screen or conversation read), when. `<card>` narrows to actions by or on one card. With `-u` it reads that machine's log |
 | `project-manager rename <id> <name…>` | Relabel a terminal |
@@ -224,6 +224,15 @@ become the same task queued five times — a delivered task appears exactly once
 
 If it still cannot land it, it says so and gives you the command to finish by hand rather than
 leaving a card that looks like it was briefed.
+
+## A new folder's "trust this folder?" menu — answered for you
+
+The first time Claude or Codex starts in a folder it asks whether to trust it, and Claude's menu opens
+on **"No, exit"**: an Enter meant for anything else quits the agent. `subagent`, `new --claude` / `-c
+<agent>`, `open --claude` / `--codex` and `send` all recognise the menu on screen and pick "trust"
+(Claude: Down + Enter, Codex: Enter on "1. Trust and continue") before going on — `stderr` says
+`trusted this folder for <id>`. Don't work the menu by hand with `key`; if a card shows some *other*
+menu, read it with `tail` first. Only folders a card is being started in get trusted, never a parent.
 
 ## Sending, and knowing it arrived
 
