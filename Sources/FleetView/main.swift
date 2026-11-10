@@ -4,6 +4,8 @@ import AppKit
 // main.swift top-level runs on the main thread, which hosts the main actor, so we assume that
 // isolation to construct our @MainActor app objects.
 MainActor.assumeIsolated {
+    // Before anything reads a preference: settings written under the old bundle id come along.
+    LegacyDefaults.migrate()
     // Draw the board with sample data to PNGs and exit — the way to look at a UI change without
     // launching a second FleetView (see Snapshot).
     if let dir = Snapshot.outputDir { Snapshot.run(into: dir) }

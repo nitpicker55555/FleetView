@@ -612,6 +612,55 @@ def cmd_whoami(a):
     print("    agent=%s  tokens=%s" % (me.get("agent") or "-", short_tokens(me.get("tokens", 0))))
 
 
+def cmd_update(a):
+    """FleetView's own update, from afar: what this instance runs, what GitHub has on offer, and
+    installing it. The only way to update a headless FleetView (nobody is there to click the dialog)
+    and the way to update a Mac nobody is sitting at. --install installs exactly the version on
+    offer; FleetView quits, swaps its bundle and starts again the way it was running (headless: in
+    the same tmux session), rolling back to the old bundle if the new one does not start.
+    """
+    def get(path):
+        try:
+            return json.loads(_get(path, timeout=20))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                sys.exit("this FleetView has no /update (it predates 0.5.0): update it by hand once, "
+                         "after that `project-manager update` works")
+            try:
+                return json.loads(e.read().decode("utf-8", "replace"))
+            except ValueError:
+                sys.exit("FleetView answered HTTP %d" % e.code)
+        except urllib.error.URLError as e:
+            sys.exit("cannot reach FleetView at %s (%s)." % (BASE, e))
+
+    if a.check:
+        get("/update?check=1")
+        time.sleep(4)                     # the check asks GitHub in the background
+    st = get("/update")
+    av = st.get("available")
+    print("running:   %s%s" % (st.get("version") or st.get("current"), "  (headless)" if st.get("headless") else ""))
+    if av:
+        print("on offer:  %s  %s" % (av.get("version"), av.get("url") or ""))
+        if av.get("blocked"):
+            print(c("33", "blocked:   %s" % av["blocked"]))
+    else:
+        print("on offer:  nothing newer" + ("" if a.check else "  (--check asks GitHub now)"))
+    if st.get("status"):
+        print("now:       %s" % st["status"])
+    if a.log:
+        for line in st.get("log") or []:
+            print(c("90", "  " + line))
+    if not a.install:
+        return
+    if not av:
+        sys.exit("nothing to install")
+    r = get("/update?install=" + urllib.parse.quote(av["version"]))
+    if not r.get("started"):
+        sys.exit("not started: %s" % r.get("error"))
+    print("installing %s — FleetView quits, swaps and comes back in a minute or so; "
+          "then `%s update --log` shows how it went" % (av["version"], PM))
+
+
 def cmd_watch(a):
     try:
         while True:
@@ -3379,6 +3428,11 @@ def main():
                    help="print only the project's directory")
     s.add_argument("--id", dest="id_only", action="store_true", help="print only this terminal's id")
     s.set_defaults(fn=cmd_whoami)
+    s = sub.add_parser("update", help="FleetView's own update: what runs, what is on offer, install it")
+    s.add_argument("--check", action="store_true", help="ask GitHub now instead of using the last answer")
+    s.add_argument("--install", action="store_true", help="install the version on offer (FleetView restarts)")
+    s.add_argument("--log", action="store_true", help="also print the end of update.log")
+    s.set_defaults(fn=cmd_update)
     s = sub.add_parser("ls", help="list terminals")
     s.add_argument("-m", "--marked", action="store_true", help="only terminals you marked")
     s.add_argument("-p", "--project", help="only this project (name substring or id prefix)")

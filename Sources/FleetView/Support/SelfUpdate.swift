@@ -99,6 +99,11 @@ enum SelfUpdate {
                     do {
                         let staged = try stage(zip: zip, expecting: release.version)
                         await MainActor.run {
+                            // Headless has no file windows and nobody to ask: straight to the swap.
+                            if Headless.active {
+                                handOff(staged: staged, target: target, updates: updates, job: job)
+                                return
+                            }
                             // Before swap.sh exists: it waits only 30 s for this process to quit, and
                             // a question asked after it starts would let the update give up silently.
                             // Unsaved edits in a file window are asked about now; staying keeps the
@@ -124,6 +129,65 @@ enum SelfUpdate {
             updates.status = nil
         }
         download.start()
+    }
+
+    /// The last lines of update.log (what swap.sh said), for `GET /update`.
+    static func logTail(_ n: Int) -> [String] {
+        guard let s = try? String(contentsOf: log, encoding: .utf8) else { return [] }
+        return Array(s.split(separator: "\n").suffix(n).map(String.init))
+    }
+
+    /// Install the release currently on offer without asking — the remote path (`GET /update?install=`,
+    /// `project-manager update --install`), which is the only way a headless FleetView can update at
+    /// all and the way to update a Mac nobody is sitting at. `version` has to name what is on offer,
+    /// so a request cannot install something other than what the caller just saw. nil = started.
+    static func installRemotely(_ version: String, updates: UpdateCheck) -> String? {
+        guard let r = updates.available else { return "nothing newer is on offer (check first)" }
+        guard UpdateCheck.normalise(version) == r.version else { return "on offer is \(r.version), not \(version)" }
+        if updates.status != nil { return "an update is already running" }
+        if let b = precheck(r) { return b.localizedDescription }
+        FV.log("self-update: remote install of \(r.version) requested")
+        install(r, updates: updates)
+        return nil
+    }
+
+    /// How the new bundle gets started once it is in place: the way this one was. A desktop app is
+    /// opened; a headless one is started with the same arguments, and when it was running inside
+    /// tmux (the only way the mini runs it — see Headless) in a tmux session of the same name on the
+    /// same server, so it keeps the responsible process TCC grants were made to. A placeholder
+    /// session keeps that server alive across the gap: if this was its last session, the server
+    /// would exit with it and the relaunch would have to start a new one from launchd.
+    private static func relaunchArgs() -> [String] {
+        guard Headless.active else { return ["open", "", ""] }
+        let env = ProcessInfo.processInfo.environment
+        // The pane this process runs in names its session; without -t tmux would answer with whichever
+        // session was used last, which on a shared server is somebody else's.
+        if let t = env["TMUX"], let socket = t.split(separator: ",").first.map(String.init), !socket.isEmpty,
+           let pane = env["TMUX_PANE"], !pane.isEmpty,
+           let session = tmux(socket, ["display-message", "-p", "-t", pane, "#S"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !session.isEmpty {
+            _ = tmux(socket, ["new-session", "-d", "-s", holdSession, "sleep 900"])
+            return ["tmux", socket, session]
+        }
+        return ["nohup", "", ""]
+    }
+
+    static let holdSession = "fv-update-hold"
+
+    private static func tmux(_ socket: String, _ args: [String]) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        var env = ProcessInfo.processInfo.environment
+        env.removeValue(forKey: "TMUX")
+        p.environment = env
+        p.arguments = ["tmux", "-S", socket] + args
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return nil }
+        return String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
     }
 
     /// Unpack and vet the download. Runs off the main actor — everything here is subprocesses and
@@ -171,8 +235,10 @@ enum SelfUpdate {
             return
         }
         let pid = ProcessInfo.processInfo.processIdentifier
+        let relaunch = relaunchArgs() + (Headless.active ? Array(CommandLine.arguments.dropFirst()) : [])
         let cmd = "nohup /bin/bash \(q(script.path)) \(pid) \(q(staged.path)) "
-                + "\(q(target.path)) \(q(backupApp.path)) \(q(log.path)) >/dev/null 2>&1 &"
+                + "\(q(target.path)) \(q(backupApp.path)) \(q(log.path)) "
+                + relaunch.map(q).joined(separator: " ") + " >/dev/null 2>&1 &"
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = ["-c", cmd]
@@ -182,8 +248,9 @@ enum SelfUpdate {
         }
         // `&` detaches it: /bin/sh exits immediately and bash is reparented to launchd, so it
         // survives the quit it is waiting for.
-        FV.log("self-update: handed off to swap.sh (pid \(pid) → \(target.path))")
+        FV.log("self-update: handed off to swap.sh (pid \(pid) → \(target.path), relaunch \(relaunch.first ?? "open"))")
         isHandingOff = true
+        if Headless.active { Headless.quitForUpdate() }
         NSApp.terminate(nil)
     }
 
@@ -243,12 +310,33 @@ enum SelfUpdate {
     private static let swapScript = """
     #!/bin/bash
     # Written by FleetView's self-update. Runs detached, after the app it replaces has quit.
-    #   swap.sh <pid> <staged-dir> <target.app> <backup.app> <log>
+    #   swap.sh <pid> <staged-dir> <target.app> <backup.app> <log> <mode> <tmux-socket> <tmux-session> [args…]
+    #   mode: open (the desktop app) · tmux (headless, back into the same session on the same server)
+    #         · nohup (headless, not in tmux)
     set -u
     PID="$1"; STAGED="$2"; TARGET="$3"; BACKUP="$4"; LOG="$5"
+    MODE="${6:-open}"; SOCKET="${7:-}"; SESSION="${8:-}"
+    shift 8 2>/dev/null || shift $#
+    ARGS=("$@")
     NEW="$STAGED/FleetView.app"
     exec >>"$LOG" 2>&1
-    echo "--- $(date '+%Y-%m-%d %H:%M:%S') swap pid=$PID target=$TARGET"
+    echo "--- $(date '+%Y-%m-%d %H:%M:%S') swap pid=$PID target=$TARGET mode=$MODE ${SESSION:+session=$SESSION}"
+
+    tm() { env -u TMUX tmux -S "$SOCKET" "$@"; }
+    launch() {
+      case "$MODE" in
+        tmux)
+          # The old session ends with the app it ran; wait for its name to be free, else use another.
+          name="$SESSION"
+          for _ in $(seq 1 20); do tm has-session -t "=$name" 2>/dev/null || break; sleep 0.5; done
+          tm has-session -t "=$name" 2>/dev/null && name="$SESSION-updated"
+          tm new-session -d -s "$name" "exec $(printf '%q ' "$TARGET/Contents/MacOS/FleetView" ${ARGS[@]+"${ARGS[@]}"})"
+          ;;
+        nohup) nohup "$TARGET/Contents/MacOS/FleetView" ${ARGS[@]+"${ARGS[@]}"} >/dev/null 2>&1 & ;;
+        *) open -a "$TARGET" ;;
+      esac
+    }
+    unhold() { [ "$MODE" = tmux ] && tm kill-session -t "=fv-update-hold" 2>/dev/null; true; }
 
     # The app has to be gone before its bundle moves out from under it. If it never exits, nothing
     # has been touched yet and the safest thing is to change nothing.
@@ -260,7 +348,8 @@ enum SelfUpdate {
     restore() {
       echo "rolling back to the previous bundle"
       rm -rf "$TARGET"
-      mv "$BACKUP" "$TARGET" && open -a "$TARGET"
+      mv "$BACKUP" "$TARGET" && launch
+      unhold
       exit 1
     }
 
@@ -269,18 +358,21 @@ enum SelfUpdate {
     mv "$TARGET" "$BACKUP" || { echo "could not move the old bundle aside"; exit 1; }
 
     ditto "$NEW" "$TARGET" || restore
-    open -a "$TARGET" || restore
+    launch || restore
 
     # Installing is not succeeding. A bundle that copies cleanly and then cannot start is the exact
     # failure this dance exists to survive, so the old one stays until a new process is seen.
     started=""
     for _ in $(seq 1 30); do
-      pgrep -f "$TARGET/Contents/MacOS/FleetView" >/dev/null 2>&1 && { started=1; break; }
+      # Anchored: a tmux server started with `tmux new-session … FleetView --headless` carries the same
+      # path in its own command line, and would count as the new app starting when it did not.
+      pgrep -f "^$TARGET/Contents/MacOS/FleetView" >/dev/null 2>&1 && { started=1; break; }
       sleep 0.5
     done
     [ -n "$started" ] || restore
 
     echo "updated to $(defaults read "$TARGET/Contents/Info" CFBundleShortVersionString 2>/dev/null)"
+    unhold
     rm -rf "$BACKUP" "$STAGED"
     """
 }
@@ -302,6 +394,10 @@ private final class Download: NSObject, URLSessionDownloadDelegate {
     private var task: URLSessionDownloadTask?
     private var saved: URL?
     private var settled = false
+    /// A slow line (release assets crawl at ~35 KB/s from some networks) stalls now and then; a stall
+    /// used to fail the whole update. Picks up where it stopped, a few times, before giving up.
+    private var attempts = 0
+    private static let maxAttempts = 5
 
     init(url: URL, version: String,
          progress: @escaping @MainActor (Double?, String) -> Void,
@@ -315,7 +411,7 @@ private final class Download: NSObject, URLSessionDownloadDelegate {
 
     func start() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForRequest = 60
         let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
         self.session = session
         let task = session.downloadTask(with: url)
@@ -360,6 +456,19 @@ private final class Download: NSObject, URLSessionDownloadDelegate {
         if let error {
             let ns = error as NSError
             let cancelled = ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
+            if !cancelled, !settled, attempts + 1 < Self.maxAttempts, ns.domain == NSURLErrorDomain {
+                attempts += 1
+                let resume = ns.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+                let n = attempts
+                Task { @MainActor [onProgress] in onProgress(nil, L(.updConnecting) + " (\(n + 1))") }
+                DispatchQueue.global().asyncAfter(deadline: .now() + Double(2 * attempts)) { [weak self] in
+                    guard let self, !self.settled else { return }
+                    let next = resume.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: self.url)
+                    self.task = next
+                    next.resume()
+                }
+                return
+            }
             settle(.failure(cancelled ? CancellationError() : error))
         } else if let saved {
             settle(.success(saved))
