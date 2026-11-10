@@ -177,6 +177,51 @@ enum Submit {
 
     /// Text with every space, line break and box edge taken out — what survives a TUI re-wrapping
     /// it at a different width with its own indentation.
+    /// What the composer at the bottom of `pane` holds, as typed text: from the last marker line to
+    /// the rule under it, the marker and the continuation indent taken off. nil when there is no
+    /// composer on screen. A Claude ghost suggestion (`Try "…"`) is returned as it is — `isGhost`
+    /// tells it apart, since the plain capture has no colours to tell it by.
+    static func composerText(_ pane: String) -> String? {
+        let lines = pane.components(separatedBy: "\n")
+        guard let start = lines.lastIndex(where: isMarkerLine) else { return nil }
+        var out: [String] = []
+        for (i, line) in lines[start...].enumerated() {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if i > 0, t.hasPrefix("─") || t.hasPrefix("╰") || t.hasPrefix("└") { break }
+            var body = Substring(line).drop(while: { $0 == " " || $0 == "│" })
+            if i == 0 { body = body.dropFirst().drop(while: { $0 == " " }) }   // the marker
+            out.append(String(body).trimmingCharacters(in: .whitespaces))
+        }
+        return out.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Claude's suggestion for an empty composer, drawn dim where a draft would be.
+    static func isGhost(_ text: String) -> Bool {
+        text.hasPrefix("Try \"") && text.hasSuffix("\"") && !text.contains("\n")
+    }
+
+    /// Whether the composer's text is `prompt` given back: Claude puts a prompt it was interrupted on
+    /// before answering back into the composer, word for word. Compared without whitespace, since
+    /// the composer wraps; a long prompt may come back collapsed to a paste placeholder.
+    static func isReturned(_ composer: String, prompt: String) -> Bool {
+        let c = squeeze(composer), p = squeeze(prompt)
+        guard !c.isEmpty, !isGhost(composer) else { return false }
+        if c.contains("[Pastedtext") || c.contains("[PastedContent") { return p.count > 200 }
+        return p.hasPrefix(String(c.prefix(60))) || c.hasPrefix(String(p.prefix(60)))
+    }
+
+    /// Empty the composer without Escape or Ctrl-C: two Escapes on an empty composer open Claude's
+    /// rewind, and a Ctrl-C arms "press again to exit". Ctrl-U clears a line and Backspace joins it to
+    /// the one above, so a line count's worth of the pair clears any draft (measured on Claude Code
+    /// 2.1.319 with a three-line one).
+    static func clearComposer(lines: Int, session: String, tmux: Tmux) {
+        for _ in 0...max(1, lines) {
+            _ = tmux(["send-keys", "-t", session, "C-u"], false)
+            _ = tmux(["send-keys", "-t", session, "BSpace"], false)
+        }
+        _ = tmux(["send-keys", "-t", session, "C-u"], false)
+    }
+
     static func squeeze(_ s: String) -> String {
         String(s.unicodeScalars.filter {
             !CharacterSet.whitespacesAndNewlines.contains($0) && $0 != "│"

@@ -97,6 +97,10 @@ final class AppState: ObservableObject {
 
     /// FleetView's project manager: the card kept running in the column at the board's right edge.
     let pm = PMCoordinator()
+    /// Prompts an Escape cut off before they were answered, taken back out of the agent's composer
+    /// (`RemoteServer.reclaimComposer`) and offered to the web's composer instead. Until the card's
+    /// next prompt, or ten minutes.
+    var returnedPrompts: [UUID: (text: String, at: Date)] = [:]
     /// Whether that column is shown. A look, kept per Mac rather than in state.json.
     @Published var pmDockShown: Bool = UserDefaults.standard.object(forKey: "pmDockShown") as? Bool ?? true {
         didSet { UserDefaults.standard.set(pmDockShown, forKey: "pmDockShown") }
@@ -2382,6 +2386,11 @@ final class AppState: ObservableObject {
             // then starts again, unless that run stopped within `resumeWindow`: "继续" after an Esc
             // is the same piece of work, and so is a follow-up sent while the agent was still going.
             finishRun(at: idx, endedBy: "new prompt")
+            // Offered until it is sent again (or ten minutes): the prompt that cleared it out of the
+            // composer is usually a different one, sent on top of it.
+            if let r = returnedPrompts[uid], let p = ev.prompt, Submit.squeeze(p) == Submit.squeeze(r.text) {
+                returnedPrompts[uid] = nil
+            }
             terminals[idx].runningSince = runStart(at: idx)
             terminals[idx].status = .working
             if let p = ev.prompt.flatMap(PromptText.clean) {
@@ -2723,6 +2732,21 @@ final class AppState: ObservableObject {
             // cancelled turn), so the card and the chat would sit on "running" forever. The desktop
             // Esc monitor already corrects this locally; do the same for a remote interrupt.
             if k == "Escape" || k == "C-c" { handleInterrupt(id) }
+            // Claude gives a prompt it was interrupted on before answering back to its composer,
+            // where the web cannot see it and the next message would be typed on the end of it.
+            if k == "Escape", let prompt = terminals.first(where: { $0.id == id })?.lastPrompt, !prompt.isEmpty {
+                remote.reclaimComposer(id, prompt: prompt) { text in
+                    guard let text else { return }
+                    // The prompt as sent, unless more had been typed after it (a message sent on top
+                    // of an earlier returned one): then all of it, its screen wrapping undone.
+                    let back = Submit.squeeze(text).count > Submit.squeeze(prompt).count + 1
+                        ? AppState.unwrap(text) : prompt
+                    Task { @MainActor [weak self] in
+                        self?.returnedPrompts[id] = (back, Date())
+                        FV.log("esc: took the returned prompt back out of \(id.uuidString.prefix(8))'s composer")
+                    }
+                }
+            }
             return ("200 OK", "application/json", Data(#"{"ok":true}"#.utf8))
         case "/scroll":
             guard let s = query["id"], let id = UUID(uuidString: s) else {
@@ -2993,7 +3017,14 @@ final class AppState: ObservableObject {
     /// here; only `wait=1` passes `done`, to hear whether the prompt actually submitted.
     func webType(_ id: UUID, text: String, enter: Bool,
                  done: (@Sendable (Submit.Outcome) -> Void)? = nil) {
-        remote.sendText(id, text: text, enter: enter, done: done)
+        let prompt = terminals.first(where: { $0.id == id })?.lastPrompt ?? ""
+        remote.sendText(id, text: text, enter: enter, clearingReturned: prompt, onCleared: { cleared in
+            let back = Submit.squeeze(cleared).count > Submit.squeeze(prompt).count + 1 ? AppState.unwrap(cleared) : prompt
+            Task { @MainActor [weak self] in
+                self?.returnedPrompts[id] = (back, Date())
+                FV.log("type: cleared a returned prompt out of \(id.uuidString.prefix(8))'s composer before typing")
+            }
+        }, done: done)
         markActivity(id)
     }
 
@@ -3087,7 +3118,8 @@ final class AppState: ObservableObject {
                              window: windowState(t.id).rawValue,
                              trig: trig.isEmpty ? nil : trig.count,
                              trigTimed: trig.isEmpty ? nil : trig.filter(\.isTimed).count,
-                             pmw: pm.isWorker(t.id) ? true : nil)
+                             pmw: pm.isWorker(t.id) ? true : nil,
+                             cut: returnedPrompts[t.id].flatMap { Date().timeIntervalSince($0.at) < 600 ? $0.text : nil })
         }
         let pmInfo = pm.terminalId.flatMap { id in terminals.first { $0.id == id } }
             .map { WebSnapshot.PMInfo(id: $0.id.uuidString, projectId: $0.projectId.uuidString,
@@ -3282,6 +3314,20 @@ final class AppState: ObservableObject {
         save()
     }
 
+    /// Composer lines rejoined: the TUI wraps at the pane's width, and the capture keeps the breaks.
+    /// Words split across a wrap get their space back; CJK runs on without one.
+    nonisolated static func unwrap(_ text: String) -> String {
+        let ascii = { (c: Character?) in c.map { $0.isASCII && ($0.isLetter || $0.isNumber || $0.isPunctuation) } ?? false }
+        var out = ""
+        for line in text.components(separatedBy: "\n") {
+            let l = line.trimmingCharacters(in: .whitespaces)
+            if l.isEmpty { continue }
+            if !out.isEmpty, ascii(out.last), ascii(l.first) { out += " " }
+            out += l
+        }
+        return out
+    }
+
     // MARK: A card that never has a window (the PM)
 
     /// The project a folder is on the board as, adding it quietly — no recent-projects entry, no
@@ -3374,6 +3420,18 @@ final class AppState: ObservableObject {
     /// paths opt out: `closeAllTerminals` clears them first and uses one `kill-server`, and
     /// `removeTerminal` has already stopped this one.
     private func handleWindowClosed(_ id: UUID) {
+        // The PM's window is a view onto a card that is meant to stay: closing it puts the PM back
+        // in its column, the way hiding does, instead of ending it.
+        if !isQuitting, pm.isPM(id), remote.sessionExists(id), let spec = remote.tmuxSpec(for: id),
+           let idx = terminals.firstIndex(where: { $0.id == id }),
+           let stand = HeadlessTerminal(termId: id, cwd: terminals[idx].cwd, autoRunClaude: false,
+                                        port: hookPort, tmux: spec, remote: remote) {
+            controllers[id] = nil
+            adopt(stand, for: id)
+            terminals[idx].windowHidden = true
+            save()
+            return
+        }
         let wasTracked = controllers.removeValue(forKey: id) != nil
         if wasTracked && !isQuitting { remote.stop(id); forgetReportedTriggers(id) }
         hiddenFrames[id] = nil

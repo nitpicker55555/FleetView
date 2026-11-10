@@ -203,14 +203,32 @@ final class PMCoordinator: ObservableObject {
         guard let t = app.terminals.first(where: { $0.id == pm }), t.status == .idle else { return }
         let wait = Self.digestSpacing - Date().timeIntervalSince(lastDigest)
         if wait > 0 { scheduleFlush(after: wait); return }
-        let events = pending.values.sorted { $0.at < $1.at }
-        pending.removeAll()
-        let text = digest(events)
-        lastDigest = Date()
-        app.webType(pm, text: text, enter: true)
-        Self.appendLine(PMPaths.inbox, ["kind": "digest", "at": ISO8601DateFormatter().string(from: Date()),
-                                        "text": text])
+        guard !delivering else { return }
+        delivering = true
+        // Never typed on the end of someone's text: a prompt an Escape gave back, or a draft typed
+        // into the PM's terminal. It waits for the composer to be empty again.
+        app.remote.peekComposer(pm) { composer in
+            Task { @MainActor [weak self] in
+                guard let self, let app = self.app else { return }
+                self.delivering = false
+                if let c = composer, !c.isEmpty, !Submit.isGhost(c) {
+                    FV.log("pm: its composer holds text, the digest waits")
+                    self.scheduleFlush(after: 30)
+                    return
+                }
+                guard !self.pending.isEmpty,
+                      app.terminals.first(where: { $0.id == pm })?.status == .idle else { return }
+                let events = self.pending.values.sorted { $0.at < $1.at }
+                self.pending.removeAll()
+                let text = self.digest(events)
+                self.lastDigest = Date()
+                app.webType(pm, text: text, enter: true)
+                Self.appendLine(PMPaths.inbox, ["kind": "digest", "at": ISO8601DateFormatter().string(from: Date()),
+                                                "text": text])
+            }
+        }
     }
+    private var delivering = false
 
     private func digest(_ events: [Event]) -> String {
         var lines = ["[FleetView 收件箱] 你派出的卡片有 \(events.count) 条变化："]

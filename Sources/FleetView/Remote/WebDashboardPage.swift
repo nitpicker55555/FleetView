@@ -1142,6 +1142,16 @@ enum WebDashboardPage {
   .icb.hist .hn{font-size:12px;line-height:16px}
   /* A removed card's conversation is read only: the composer gives way to a way back onto the board. */
   #archbar{display:none}
+  /* A prompt an Escape cut off before it was answered: the Mac took it back out of the agent's
+     composer, and offers it here instead of leaving it hidden in the terminal. */
+  #cutbar{display:none;align-items:center;gap:8px;padding:8px 10px 2px 16px;font-size:12px;line-height:16px;color:var(--sub)}
+  #cutbar.on{display:flex}
+  #cutbar .cn{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #cutbar .cn b{color:var(--text);font-weight:500}
+  #cutbar .put{flex:none;height:32px;padding:0 14px;border:0;border-radius:999px;background:var(--secondaryContainer);
+    color:var(--onSecondaryContainer);font-size:12px;font-weight:500;cursor:pointer}
+  #cutbar .x{flex:none;width:32px;height:32px;display:grid;place-items:center;border:0;border-radius:999px;
+    background:transparent;color:var(--sub);cursor:pointer;padding:0}
   #term.arch #inputbar > :not(#archbar),#term.arch #tabs,#term.arch #sharebtn,#term.arch #popbtn{display:none}
   #term.arch #archbar{display:flex;align-items:center;gap:12px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));
     font-size:13px;line-height:18px;color:var(--sub)}
@@ -1318,6 +1328,7 @@ enum WebDashboardPage {
   </div>
   <div id="inputbar">
     <div id="archbar"><span data-i18n="arch.readonly"></span><button onclick="archRestoreCur()" data-i18n="arch.restore"></button></div>
+    <div id="cutbar"><span class="cn"></span><button class="put" onclick="cutPut()" data-i18n="cut.put"></button><button class="x" onclick="cutDismiss()" data-i18n-title="cut.dismiss" data-i18n-aria="cut.dismiss"><i data-ic="x" class="s16"></i></button></div>
     <div id="grip"><span class="gbar"></span><span class="gtools">
       <button class="fsz" onclick="taFont(-1)" data-i18n-title="composer.smaller">A−</button>
       <button class="fsz" onclick="taFont(1)" data-i18n-title="composer.larger">A+</button>
@@ -1476,6 +1487,7 @@ function poll(fn,ms,now=true){
    Tailscale) and key names (Esc, Tab, ⏎) are the same in both. */
 const I18N={
   zh:{
+    'cut.note':'已打断，这条没发出去：','cut.put':'放回输入框','cut.dismiss':'不要了','cut.busy':'输入框里已经有字了','term.native':'终端在单独的窗口里打开了（关掉它 PM 也不会停）',
     'pm.main':'主线','pm.side':'旁问','pm.sideHead':'旁问 · 每个项目一条线程','pm.general':'不限项目','pm.pick':'切换主线 / 旁问','pm.sideTitle':'{name} · 旁问','pm.sideNote':'从 PM 主线分叉出来的只读线程，可以一直追问；不会写回主线，问答记在 ','pm.sideEmpty':'还没问过 {name}。第一问会从 PM 主线分叉。','pm.answering':'回答中…','pm.forkedAt':'{time} 从主线分叉','pm.refork':'重新分叉','pm.reforkTitle':'下一问从 PM 主线的最新状态重新分叉','pm.reforked':'下一问会从主线重新分叉','pm.askPh':'问 {name}（只读）…','pm.busy':'上一问还在回答','pm.noSession':'PM 还没有会话，先在主线跟它说句话','pm.askFailed':'没问出去：{err}','pm.start':'启动 PM','pm.notRunning':'PM 还没在跑','pm.notRunningSub':'它是一张常驻的卡片，只指挥别人做事。','pm.pinned':'PM','pm.worker':'PM 派出的卡片','pm.threads':'{n} 轮',
     'common.loading':'加载中…','common.back':'返回','common.retry':'重试',
     'common.collapse':'收起','common.expand':'展开','common.newTerm':'新终端','common.tokens':'{n} tokens',
@@ -1614,6 +1626,7 @@ const I18N={
     'trig.none':'没有触发器','trig.noneDetail':'这个终端的 agent 没有定时或后台任务，也没有 launchd 任务指向它。'
   },
   en:{
+    'cut.note':'Interrupted — this was not sent: ','cut.put':'Put back','cut.dismiss':'Discard','cut.busy':'The message box is not empty','term.native':'The terminal opened in its own window (closing it does not stop the PM)',
     'pm.main':'Main line','pm.side':'Side question','pm.sideHead':'Side questions · one thread per project','pm.general':'Any project','pm.pick':'Switch between the main line and side questions','pm.sideTitle':'{name} · side question','pm.sideNote':'A read-only thread forked from the PM\'s main line. Ask follow-ups for as long as you like; nothing is written back to the main line. Kept in ','pm.sideEmpty':'Nothing asked about {name} yet. The first question forks the PM\'s main line.','pm.answering':'Answering…','pm.forkedAt':'Forked from the main line at {time}','pm.refork':'Fork again','pm.reforkTitle':'The next question forks the PM\'s main line as it is now','pm.reforked':'The next question forks the main line again','pm.askPh':'Ask about {name} (read-only)…','pm.busy':'The last question is still being answered','pm.noSession':'The PM has no conversation yet — say something to it on the main line first','pm.askFailed':'Could not ask: {err}','pm.start':'Start the PM','pm.notRunning':'The PM is not running','pm.notRunningSub':'A card that stays on and only directs the others.','pm.pinned':'PM','pm.worker':'Started by the PM','pm.threads':'{n} turns',
     'common.loading':'Loading…','common.back':'Back','common.retry':'Retry',
     'common.collapse':'Collapse','common.expand':'Expand','common.newTerm':'New terminal','common.tokens':'{n} tokens',
@@ -2248,6 +2261,10 @@ function closeTerm(){
 /* Chat = structured transcript (native scrolling, works on touch).
    Terminal = the live ttyd mirror, loaded lazily so just reading costs nothing. */
 function setView(v){
+  /* In the Mac's PM column the terminal is the Mac's own window: native drawing, keyboard and IME, and
+     no WebGL inside a web view inside the app — where the mirror came up black (2026-11-11). */
+  if(v==='term'&&DOCK&&curId){ fetch('/action?id='+encodeURIComponent(curId)+'&do=show',{cache:'no-store'}).catch(()=>{});
+    toast(tr('term.native')); v='chat'; }
   curView=v;
   document.getElementById('term').classList.toggle('termview',v==='term');
   document.getElementById('tabChat').classList.toggle('on',v==='chat');
@@ -3734,6 +3751,7 @@ applyTaFont();
 })();
 async function sendText(){
   if(!curId)return;
+  if(document.getElementById('cutbar').classList.contains('on')) cutDone();
   if(pmSideOpen()){ pmAskSend(); return; }
   const ta=document.getElementById('inputtext');const t=ta.value;
   /* An empty box while the agent works means Stop; anything you typed is a message, always. The
@@ -5559,7 +5577,7 @@ async function tick(){
     applyScheme(state.dark);
     applySeed(state.seed);
     net.stateAt=Date.now();
-    if(termOpen()){watchTermAlive(state);pmTick();return;}
+    if(termOpen()){watchTermAlive(state);pmTick();cutCheck();return;}
     render(state,true);
     if(DOCK&&state.pm&&state.terminals.some(t=>t.id===state.pm.id)){ openTerm(state.pm.id,tr('pm.pinned')); return; }
     openPendingTerm(state);
@@ -5773,6 +5791,32 @@ async function pmRefork(){
   try{ await fetch('/manager/refork?key='+encodeURIComponent(pmKey),{cache:'no-store'}); toast(tr('pm.reforked')); }catch(e){}
   pmPoll();
 }
+
+/* ---------- a prompt an Escape cut off ----------
+   Claude gives a prompt it is interrupted on before answering back to its composer, word for word.
+   From here that composer is invisible, and the next message would be typed on the end of it — so
+   after a web Escape the Mac takes it back out (RemoteServer.reclaimComposer) and /state carries it
+   as the card's `cut` for ten minutes. Offered, not forced: put it back to edit and resend, or let it
+   go. Each one is offered once. */
+var cutSeen={};
+function cutCheck(){
+  const bar=document.getElementById('cutbar');
+  const t=state&&curId?(state.terminals||[]).find(x=>x.id===curId):null;
+  const txt=t&&t.cut;
+  if(!txt||cutSeen[curId]===txt||convArch){ bar.classList.remove('on'); return; }
+  const cn=bar.querySelector('.cn'), html=esc(tr('cut.note'))+'<b>'+esc(txt)+'</b>';
+  if(cn.innerHTML!==html) cn.innerHTML=html;
+  if(!bar.classList.contains('on')){ bar.classList.add('on'); paintIcons(bar); placeJump(); }
+}
+function cutDone(){ const t=(state&&state.terminals||[]).find(x=>x.id===curId); if(t&&t.cut) cutSeen[curId]=t.cut;
+  document.getElementById('cutbar').classList.remove('on'); placeJump(); }
+function cutPut(){
+  const t=(state&&state.terminals||[]).find(x=>x.id===curId), ta=document.getElementById('inputtext');
+  if(!t||!t.cut) return cutDone();
+  if(ta.value.trim()&&ta.value!==t.cut){ toast(tr('cut.busy')); return; }
+  ta.value=t.cut; autoGrow(ta); saveDraft(); ta.focus(); cutDone();
+}
+function cutDismiss(){ cutDone(); }
 poll(tick,DOCK?4000:1500);
 // A tab opened by the file browser's ↗, or one reloaded while it was open, lands on that folder or file.
 { const m=location.hash.match(/^#fb=(.+)$/); if(m){ try{ fbOpenPath(decodeURIComponent(m[1])); }catch(e){} } }

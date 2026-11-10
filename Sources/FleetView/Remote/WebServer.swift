@@ -33,6 +33,9 @@ struct WebSnapshot: Codable {
         let trigTimed: Int?
         /// Started by the PM (its `/new`), for the badge such a card wears. Left out otherwise.
         let pmw: Bool?
+        /// The prompt an Escape cut off, taken back out of the agent's composer — the web offers it
+        /// to its own composer. Left out otherwise.
+        let cut: String?
     }
     /// The PM card, which the board leaves out and pins on its own. nil when there is none.
     struct PMInfo: Codable {
