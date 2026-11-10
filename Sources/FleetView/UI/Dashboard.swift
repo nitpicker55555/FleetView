@@ -985,8 +985,8 @@ struct TopBar: View {
     }
 
     /// The settings the app menu holds — colours, sharing, updates — one click from the board, where
-    /// the colours are seen. A menu rather than a window: there are four of them, and each already
-    /// has its own dialog.
+    /// the colours are seen. A menu rather than a window: there are only a few, and each either has
+    /// its own dialog or is a single switch.
     private var settingsButton: some View {
         Menu {
             Button(L(.menuTheme)) { state.dialog = .theme }
@@ -996,6 +996,9 @@ struct TopBar: View {
                     UpdateUI.present(outcome, updates: state.updates)
                 }
             }
+            Divider()
+            Toggle(L(.menuAutoHideTerminals), isOn: Binding(get: { state.autoHideTerminals },
+                                                            set: { state.setAutoHideTerminals($0) }))
             Divider()
             Button(L(.menuRevealSupport)) {
                 FV.ensureSupportDir()

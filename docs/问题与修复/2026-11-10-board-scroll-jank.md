@@ -6,7 +6,7 @@
 | 状态 | 已修复 |
 | 影响 | 有几张卡在运行时，滑动看板不跟手，时不时整块停顿 60–100 ms；展开侧边栏后更明显 |
 | 对应代码版本 | 48c6cda（build 307；用户当时运行 build 305） |
-| 修复 | 分支 `perf/scroll-jank`：`TerminalCardView.swift`、`Dashboard.swift`、`NotesSection.swift`、`Components.swift`、新增 `UI/Ticker.swift`、`AppState.swift`、`AppDelegate.swift`；测量工具 `Support/SnapshotBench.swift` |
+| 修复 | 分支 `perf/scroll-jank`：`TerminalCardView.swift`、`Dashboard.swift`、`NotesSection.swift`、`Components.swift`、新增 `UI/Ticker.swift`、`AppState.swift`、`AppDelegate.swift`；测量工具 `Support/SnapshotBench.swift`。2026-11-10 部署为 build 309 |
 
 ## 现象
 
@@ -80,6 +80,6 @@
 ## 还没覆盖的
 
 - **一次写入仍要约 30 ms。** 剩下的开销分散在 DashboardView、TopBar、各 ProjectSection 等三十多个仍在观察 `AppState` 的视图上。要再降，得把这些也拆开，或者迁移到 Observation（`@Observable`）。
-- **终端窗口的绘制也在主线程上。** 屏幕上开着很多终端窗口时，SwiftTerm 的绘制会占主线程（录制时每秒 50–110 ms）。不用盯着看的窗口可以用"隐藏"收起来。
+- **终端窗口的绘制也在主线程上。** 屏幕上开着很多终端窗口时，SwiftTerm 的绘制会占主线程（录制时每秒 50–110 ms）。后来加了一个设置 `autoHideTerminals`，默认打开，可以在齿轮菜单里关掉：只保留前台的终端窗口，其他窗口一旦不在前台就自动隐藏（agent 照常运行，点卡片恢复），启动时终端也都以隐藏状态接回。打开它时这一项就不存在了；关掉的话，问题仍在。
 - **辅助功能树。** 有辅助功能类程序连着 FleetView 时，SwiftUI 要维护辅助功能树，约占主线程的 6%。
 - **悬停响应。** 每张卡和每一行的 `onHover` 在滚动时每帧都要更新，没有处理。

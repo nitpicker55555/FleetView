@@ -55,6 +55,10 @@ final class AppState: ObservableObject {
     /// outliving the app is what lets a long run keep going while FleetView is updated or relaunched
     /// (see `reconnectLiveTerminals`). Turning it on makes quitting mean "stop the fleet too".
     @Published var closeTerminalsOnQuit: Bool = false
+    /// Only the terminal window in front stays on screen; every other one is hidden as soon as
+    /// another window of this app comes to the front (see `hideTerminalWindows(except:)`). On by
+    /// default, off from the gear menu. Stored only when off.
+    @Published private(set) var autoHideTerminals: Bool = true
 
     /// Point size for terminal windows. One size for the fleet rather than one per window: cards are
     /// opened and closed constantly, so a size that lived on the window would have to be re-chosen
@@ -678,6 +682,7 @@ final class AppState: ObservableObject {
         var terminalNumbers: [String: Int]?
         var recentProjects: [RecentProject]?
         var sidebarHidden: Bool?
+        var autoHideTerminals: Bool?
 
         /// Every field decoded on its own, and a field that will not decode is dropped rather than
         /// taken as a corrupt file.
@@ -711,6 +716,7 @@ final class AppState: ObservableObject {
             terminalNumbers = get(.terminalNumbers, [String: Int].self)
             recentProjects = get(.recentProjects, [RecentProject].self)
             sidebarHidden = get(.sidebarHidden, Bool.self)
+            autoHideTerminals = get(.autoHideTerminals, Bool.self)
         }
 
         init(projects: [Project], terminals: [TerminalSession], clusters: [Cluster],
@@ -719,7 +725,7 @@ final class AppState: ObservableObject {
              showOnlyMarked: Bool?, closeTerminalsOnQuit: Bool?, collapsedProjects: [UUID]?,
              terminalFontSize: Double?, terminalArchive: [TerminalArchive]?,
              showRecentStrip: Bool?, terminalNumbers: [String: Int]?,
-             recentProjects: [RecentProject]?, sidebarHidden: Bool?) {
+             recentProjects: [RecentProject]?, sidebarHidden: Bool?, autoHideTerminals: Bool?) {
             self.projects = projects; self.terminals = terminals; self.clusters = clusters
             self.selectedProjectId = selectedProjectId; self.sidebarWidth = sidebarWidth
             self.notes = notes; self.tasksCollapsed = tasksCollapsed
@@ -730,6 +736,7 @@ final class AppState: ObservableObject {
             self.terminalNumbers = terminalNumbers
             self.recentProjects = recentProjects
             self.sidebarHidden = sidebarHidden
+            self.autoHideTerminals = autoHideTerminals
         }
 
         /// This with the soft fields blanked: what is left is what a crash must not lose. Soft is
@@ -809,6 +816,7 @@ final class AppState: ObservableObject {
         showOnlyMarked = p.showOnlyMarked ?? false
         showRecentStrip = p.showRecentStrip ?? true
         closeTerminalsOnQuit = p.closeTerminalsOnQuit ?? false
+        autoHideTerminals = p.autoHideTerminals ?? true
         terminalNumbers = p.terminalNumbers ?? [:]
         recentProjects = p.recentProjects ?? []
         sidebarHidden = p.sidebarHidden ?? false
@@ -897,7 +905,8 @@ final class AppState: ObservableObject {
                           showRecentStrip: showRecentStrip,
                           terminalNumbers: terminalNumbers.isEmpty ? nil : terminalNumbers,
                           recentProjects: recentProjects.isEmpty ? nil : recentProjects,
-                          sidebarHidden: sidebarHidden ? true : nil)
+                          sidebarHidden: sidebarHidden ? true : nil,
+                          autoHideTerminals: autoHideTerminals ? nil : false)
         if p == savedState {
             softSaveWork?.cancel()
             softSaveWork = nil
@@ -1426,11 +1435,14 @@ final class AppState: ObservableObject {
         for t in terminals where controllers[t.id] == nil
               && live.contains(RemoteServer.sessionName(for: t.id)) {
             // A terminal hidden when FleetView quit comes back hidden: putting every window back on
-            // screen at launch is exactly what hiding it was for.
-            if t.windowHidden == true, !Headless.active, let spec = remote.tmuxSpec(for: t.id),
+            // screen at launch is exactly what hiding it was for. With `autoHideTerminals` every
+            // one does — the board comes to the front at launch, which would hide them anyway, one
+            // window opened and closed at a time.
+            if t.windowHidden == true || autoHideTerminals, !Headless.active, let spec = remote.tmuxSpec(for: t.id),
                let stand = HeadlessTerminal(termId: t.id, cwd: t.cwd, autoRunClaude: false,
                                             port: hookPort, tmux: spec, remote: remote) {
                 adopt(stand, for: t.id)
+                if let i = terminals.firstIndex(where: { $0.id == t.id }) { terminals[i].windowHidden = true }
             } else {
                 openWindow(for: t)
             }
@@ -3169,6 +3181,66 @@ final class AppState: ObservableObject {
 
     func showTerminal(_ id: UUID) {
         audited(AuditIntent("terminal.show")) { revealHidden(id) }
+    }
+
+    // MARK: One terminal window at a time
+
+    /// Turn `autoHideTerminals` on or off. Turned on, it applies at once: the gear menu it is
+    /// turned on from is on the board, so every terminal window goes.
+    func setAutoHideTerminals(_ on: Bool) {
+        autoHideTerminals = on
+        save()
+        if on { scheduleAutoHide() }
+    }
+
+    private var mainWindowObserver: NSObjectProtocol?
+    private var autoHidePending = false
+
+    /// Start hiding terminal windows that are not in front (`autoHideTerminals`). Called once the
+    /// main window exists.
+    ///
+    /// Why: a terminal window draws on the main thread for every line its agent prints, looked at
+    /// or not — 50–110 ms a second with a dozen open behind the board (2026-11-10), on the thread
+    /// the board scrolls on. Hidden, the session and its agent run on unchanged (`hideTerminal`)
+    /// and a click on the card brings the window back where it was.
+    ///
+    /// Main, not key, is what "in front" means here: a sheet, an alert or a popover takes the
+    /// keyboard without the window it belongs to stopping being the one in use, and none of them
+    /// ever becomes main. Switching to another app changes nothing either — the terminal you left
+    /// is still the one in front when you come back.
+    func watchWindowFocus() {
+        guard mainWindowObserver == nil, !Headless.active else { return }
+        mainWindowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleAutoHide() }
+        }
+    }
+
+    /// On the next turn of the run loop, not inside the notification: the window coming to the front
+    /// is still being ordered in, and closing others in the middle of that is asking for trouble.
+    /// Whichever window is main by then is the one kept, so two fronts in a row settle on the second.
+    private func scheduleAutoHide() {
+        guard autoHideTerminals, !autoHidePending else { return }
+        autoHidePending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.autoHidePending = false
+            self.hideTerminalWindows(except: NSApp.mainWindow)
+        }
+    }
+
+    /// Hide every terminal window but `front`'s — all of them when `front` is the board or any
+    /// other window. Attributed to FleetView, not to the person at the Mac.
+    private func hideTerminalWindows(except front: NSWindow?) {
+        guard autoHideTerminals, !isQuitting, !Headless.active else { return }
+        let others = controllers.compactMap { id, c -> UUID? in
+            guard let w = c as? TerminalWindowController, w.window !== front else { return nil }
+            return id
+        }
+        guard !others.isEmpty else { return }
+        AuditContext.with(.system) {
+            for id in others { hideTerminal(id) }
+        }
     }
 
     private func hideUnaudited(_ id: UUID) {

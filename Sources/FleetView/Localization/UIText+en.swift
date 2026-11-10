@@ -29,6 +29,7 @@ extension UIText {
         case .menuClearBoard: return "Clear the Board and Close All Terminals…"
         case .menuUninstallHooks: return "Uninstall Status Hooks (Claude + Codex)"
         case .menuRevealSupport: return "Show Data Folder in Finder (~/.fleetview)"
+        case .menuAutoHideTerminals: return "Only Show the Terminal Window in Front (Hide the Rest)"
         case .menuQuit: return "Quit FleetView"
         case .menuEdit: return "Edit"
         case .menuCut: return "Cut"

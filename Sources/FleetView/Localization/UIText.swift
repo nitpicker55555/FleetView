@@ -37,6 +37,7 @@ enum UIText {
     case menuClearBoard
     case menuUninstallHooks
     case menuRevealSupport
+    case menuAutoHideTerminals
     case menuQuit
     case menuEdit
     case menuCut

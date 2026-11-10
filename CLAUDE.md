@@ -88,7 +88,9 @@ directory outside the repo when you have one.
   and showing a hidden window. **Hiding** (`AppState.hideTerminal`, the title bar's 隐藏 button) is
   the non-destructive way to get a window off screen: the window and its tmux client go, the
   session stays, a `HeadlessTerminal` stands in for the window, and the card is marked hidden
-  (`windowHidden`, which survives a relaunch) until a click on it brings the window back.
+  (`windowHidden`, which survives a relaunch) until a click on it brings the window back With
+  `autoHideTerminals` (on by default, gear menu) every terminal window but the one in front is hidden
+  this way as soon as another window of the app becomes main, and terminals reattach hidden at launch.
 - **Codex keeps its hook trust inside FleetView's block in `~/.codex/config.toml`.** It appends the
   `[hooks.state."…"] trusted_hash` tables after its siblings, which is inside our fence, so
   `CodexHookInstaller.stripFence` must only ever remove our own `[[hooks.*]]` tables. Stripping the
