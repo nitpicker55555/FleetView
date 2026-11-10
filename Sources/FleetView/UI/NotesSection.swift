@@ -57,11 +57,14 @@ struct NotesSection: View {
                     } else {
                         ScrollView {
                             VStack(spacing: 2) {
-                                ForEach(shown) { NoteRow(note: $0) }
+                                // Rows handed `state` to act on, not observing it, and compared
+                                // before they are redrawn: observing, all of them were redrawn on
+                                // every write to it anywhere (see TaskRow).
+                                ForEach(shown) { NoteRow(state: state, note: $0).equatable() }
                                 // Mirrored rows come after the local ones and carry their origin,
                                 // so the list never leaves you guessing whose note you are about
                                 // to edit — every one of these writes to another machine.
-                                ForEach(shownPeer) { PeerNoteRow(note: $0) }
+                                ForEach(shownPeer) { PeerNoteRow(state: state, note: $0).equatable() }
                             }
                             .padding(.horizontal, 4).padding(.top, 2).padding(.bottom, 4)
                         }
@@ -151,9 +154,11 @@ struct NotesSection: View {
 /// decoration: it is the only thing distinguishing a row that changes a file on this Mac from one
 /// that changes somebody else's. The write goes out and the list is re-read — what you end up
 /// looking at is what that machine actually holds, not what this one hoped it would.
-struct PeerNoteRow: View {
-    @EnvironmentObject var state: AppState
+struct PeerNoteRow: View, Equatable {
+    let state: AppState
     let note: MirroredNote
+
+    nonisolated static func == (a: PeerNoteRow, b: PeerNoteRow) -> Bool { a.note == b.note }
 
     @State private var editing = false
     @State private var draft = ""
@@ -240,9 +245,11 @@ struct PeerNoteRow: View {
 }
 
 /// A single note row. Single-click copies it, double-click edits it (also via right-click).
-struct NoteRow: View {
-    @EnvironmentObject var state: AppState
+struct NoteRow: View, Equatable {
+    let state: AppState
     let note: Note
+
+    nonisolated static func == (a: NoteRow, b: NoteRow) -> Bool { a.note == b.note }
 
     @State private var editing = false
     @State private var draft = ""

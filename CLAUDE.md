@@ -103,6 +103,13 @@ directory outside the repo when you have one.
   [`docs/design/2026-10-26-file-browser-editor.md`](docs/design/2026-10-26-file-browser-editor.md).
   The editor page is `Editor/` (CodeMirror); change it there and run `Editor/build.sh`. To look at
   the window without launching the app: `FV_SNAPSHOT_FILES=<folder> FleetView --snapshot <dir>`.
+- **Measure the board's main-thread cost without launching it, before and after any UI change that
+  could touch performance.** `FV_SNAPSHOT_BENCH=1 CFFIXED_USER_HOME=<scratch home> FleetView --snapshot <dir>`
+  draws the real board off screen and times idle clocks, a running card's writes and scrolling (see
+  `SnapshotBench`). Copy a real `state.json` into the scratch home to measure the real board. A card
+  is a fixed size (`CardBox`), the board's clocks run on `Ticker`, and cards and sidebar rows do not
+  observe `AppState` themselves — each of these was a whole-board cost per update; see
+  [`docs/问题与修复/2026-11-10-board-scroll-jank.md`](docs/问题与修复/2026-11-10-board-scroll-jank.md).
 - **Two kinds of trigger, and only one belongs to a card.** `AgentTrigger` (the per-card panel) is
   what an agent's own CLI scheduled; it lives in that process and dies with it. `FleetTrigger`
   (`FleetTriggerEngine`, the ⚡ toolbar list, `project-manager trigger`, the fleetview-trigger skill)

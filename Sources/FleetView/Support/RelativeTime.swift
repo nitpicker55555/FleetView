@@ -3,6 +3,15 @@ import Foundation
 /// Coarse "how long ago" formatting, à la Claude Code — never an exact clock, just a rough age.
 /// Same rules power the desktop card and the web page (which formats a seconds-ago integer).
 enum RelativeTime {
+    /// The one instant every clock on the board counts its ticks from (see `Ticker`).
+    ///
+    /// The board's clocks used to be anchored each on its own date — a run's start, a card's last
+    /// activity, the moment a view appeared — so with five cards running ~15 one-second clocks fired
+    /// at ~15 different instants a second, each an update pass of its own (measured 2026-11-10: 359
+    /// clock updates in 33 s while scrolling). From a shared epoch they fire on the same instant, in
+    /// one pass. What a clock shows is still computed from its own date; only when it redraws is shared.
+    static let tickEpoch = Date(timeIntervalSinceReferenceDate: 0)
+
     /// e.g. "just now", "42s ago", "5m ago", "3h ago", "2d ago". nil ⇒ show nothing.
     static func short(_ date: Date?, now: Date = Date()) -> String? {
         guard let date else { return nil }
