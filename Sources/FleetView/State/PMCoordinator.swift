@@ -110,7 +110,31 @@ final class PMCoordinator: ObservableObject {
         }
         terminalId = id
         guard let id else { return }
-        if !app.hasHost(id) { app.startWithoutWindow(id, freshCommand: Self.launchCommand) }
+        if !app.hasHost(id) {
+            app.startWithoutWindow(id, freshCommand: Self.launchCommand)
+            acceptTrust(id)
+        }
+    }
+
+    /// The PM's first start on a Mac is Claude's first run in ~/.fleetview/pm, which stops on
+    /// "trust this folder?" with the cursor on "No, exit" — a PM nobody can see until someone opens
+    /// its terminal. The folder is FleetView's own, so the menu is answered here. Looked for a few
+    /// times while Claude starts; nothing is pressed unless the menu is on screen.
+    private func acceptTrust(_ id: UUID, tries: Int = 10) {
+        guard tries > 0, let tmux = app?.remote.tmuxPath else { return }
+        let session = RemoteServer.sessionName(for: id)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+            let keys = Submit.trustKeys(RemoteServer.capturePane(tmux, session: session, lines: 40) ?? "")
+            Task { @MainActor [weak self] in
+                guard let self, let app = self.app else { return }
+                if let keys {
+                    for k in keys { app.remote.sendKey(id, k) }
+                    FV.log("pm: answered Claude's trust-this-folder menu for ~/.fleetview/pm")
+                } else {
+                    self.acceptTrust(id, tries: tries - 1)
+                }
+            }
+        }
     }
 
     func isPM(_ id: UUID) -> Bool { id == terminalId }

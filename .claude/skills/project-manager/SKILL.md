@@ -351,7 +351,7 @@ project-manager pm ask web-store "哪个模块最多？"     # …a follow-up: s
 project-manager pm thread web-store                 # that thread's questions and answers
 project-manager pm ask general "今天谁在跑？"          # `general`: about no project in particular
 project-manager pm refork web-store                 # next question forks the main line afresh
-project-manager -u http://100.64.153.108:8080 pm ask cad-ale-46 "进度？"   # another Mac's PM
+project-manager -u http://<other-mac>:8080 pm ask <project> "进度？"   # another Mac's PM
 ```
 
 - **Main line vs side thread.** `say` is the PM's real conversation: decisions, new projects, things

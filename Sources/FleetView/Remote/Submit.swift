@@ -195,6 +195,24 @@ enum Submit {
         return out.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// The keys that accept a first-run "trust this folder?" menu on `screen`, or nil when none is up.
+    /// Claude's opens on "No, exit" (an Enter meant for anything else quits it); Codex's on
+    /// "1. Trust and continue". The same reading as project-manager's `_trust_keys`.
+    static func trustKeys(_ screen: String) -> [String]? {
+        let tail = Array(screen.components(separatedBy: "\n").suffix(30))
+        let text = tail.joined(separator: "\n")
+        func cursorLine(_ mark: Character) -> String {
+            tail.first { $0.trimmingCharacters(in: .whitespaces).first == mark } ?? ""
+        }
+        if text.contains("Yes, I trust this folder"), text.contains("Enter to confirm") {
+            return cursorLine("❯").contains("Yes, I trust") ? ["Enter"] : ["Down", "Enter"]
+        }
+        if text.contains("Trust this folder?"), text.contains("Trust and continue") {
+            return cursorLine("›").contains("Trust and continue") ? ["Enter"] : ["Up", "Enter"]
+        }
+        return nil
+    }
+
     /// Claude's suggestion for an empty composer, drawn dim where a draft would be.
     static func isGhost(_ text: String) -> Bool {
         text.hasPrefix("Try \"") && text.hasSuffix("\"") && !text.contains("\n")
