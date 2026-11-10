@@ -14,7 +14,10 @@ description: >-
   to…", "wait until X has answered / tell me when it is done", "等 X 回复完再…", "approve/answer
   the prompt in Y", "what is the fleet doing", "where is agent Z's chat log" —
   and whenever the user refers to earlier work: "what was I doing lately", "我最近做了 X 项目",
-  "find the conversation where we…", "where is the session file for…".
+  "find the conversation where we…", "where is the session file for…". And the way to FleetView's
+  PM — the card in the right-hand column that directs the others — on this Mac or, with -u,
+  another: say something on its main line, read it, or ask a read-only follow-up-able side question
+  about one project ("问问 PM web-store 怎么样了", "让 PM 开个新项目", "ask the PM about X").
 ---
 
 # project-manager — control the FleetView agent fleet
@@ -82,6 +85,7 @@ project-manager ls        # or:  python3 ~/PycharmProjects/FleetView/scripts/pro
 | `project-manager memory [<project>]` | Notes earlier agents left about a project (Claude's per-project memory) — read these first |
 | `project-manager cat <path> [-n N] [--max BYTES]` | Print a file or list a folder. Locally just `cat`/`ls`; with `-u` it reads **that** machine's disk — how you open what history points at over there. Capped at 1 MB; binary files are described, not printed |
 | `project-manager put <file> [--to <path>] [--open] [-p <project>]` | Send a local file to the `-u` machine through the dashboard's upload (POST /upload, ≤ 25 MB). Alone it lands in FleetView's uploads folder and the path is printed; `--to` copies it into place there (a folder keeps the name, `~` works), `--open` opens it with its default app (default place `~/Downloads`, never over an existing file). The copy/open runs in a borrowed terminal that is removed again when it reports back — **use this instead of serving the file yourself and curling it from a terminal** |
+| `project-manager pm [say\|show\|tail\|ask\|thread\|threads\|refork\|start]` | **FleetView's PM** (the right-hand column): its status and side threads; `say` on its main line (`-w` waits for the answer); `ask <project> <q…>` in that project's read-only side thread, which keeps its context across questions. See "The PM" below. Works with `-u` |
 | `project-manager open <folder> [-t\|--claude\|--codex] [-n NAME]` | Put a folder from `~/PycharmProjects` on the board (the web's 📂), optionally with a terminal/agent in it. Needs a FleetView new enough to have `/workspace` — an older one says so |
 
 ## Knowing which project you are in
@@ -322,6 +326,37 @@ project-manager ask 7233abcc "which files have you changed so far?"
 It forks a throwaway copy of the agent's session, answers from the same context, and leaves the live
 session running untouched. Note: it re-processes the session context, so it costs tokens and takes a
 few seconds; use it for genuine questions, not routine polling (use `ls`/`show` for status).
+
+## The PM: its main line and each project's side thread
+
+FleetView keeps one **PM** card running in the column at the right of the board (and pinned at the top
+of the web board). It turns requests into projects and agent teams, keeps track of the cards it
+started, and does none of the work itself. Its home is `~/.fleetview/pm/` on the Mac it runs on.
+
+```bash
+project-manager pm                                  # status, the cards it started, its side threads
+project-manager pm say "给 ride-tracker 开个项目" -w   # its main line: like `send` + wait, aimed at the PM
+project-manager pm show -l 60                       # its main line's recent conversation
+project-manager pm ask web-store "checkout 还剩几个失败用例？"   # a side question about one project
+project-manager pm ask web-store "哪个模块最多？"     # …a follow-up: same thread, it remembers the first
+project-manager pm thread web-store                 # that thread's questions and answers
+project-manager pm ask general "今天谁在跑？"          # `general`: about no project in particular
+project-manager pm refork web-store                 # next question forks the main line afresh
+project-manager -u http://100.64.153.108:8080 pm ask cad-ale-46 "进度？"   # another Mac's PM
+```
+
+- **Main line vs side thread.** `say` is the PM's real conversation: decisions, new projects, things
+  to do. A side thread is read-only (its agent may read files and run `project-manager ls/show/…`,
+  nothing that changes anything), forked from the main line the first time and **resumed for every
+  follow-up**, so you can keep asking. The main line is never touched by it.
+- **The main line can read the side threads**: each is kept as `~/.fleetview/pm/asks/<project>.md`, and
+  the PM's next status digest mentions threads with new turns.
+- One question at a time per thread (`busy` otherwise); different projects' threads run in parallel.
+- `ask` waits for the answer (`--no-wait` doesn't, `-t SEC` caps it); a first question takes longer —
+  it forks the PM's whole context.
+- The PM's cards: anything it opens with `subagent`/`new` is recorded as its own, and FleetView tells it
+  (typing a `[FleetView 收件箱]` message when it is idle) when one finishes a turn, waits on someone,
+  or stops.
 
 ## Typical workflows
 

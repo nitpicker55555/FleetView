@@ -31,6 +31,14 @@ struct WebSnapshot: Codable {
         /// Left out when there are none, so a board without any is byte-for-byte what it was.
         let trig: Int?
         let trigTimed: Int?
+        /// Started by the PM (its `/new`), for the badge such a card wears. Left out otherwise.
+        let pmw: Bool?
+    }
+    /// The PM card, which the board leaves out and pins on its own. nil when there is none.
+    struct PMInfo: Codable {
+        let id: String
+        let projectId: String
+        let status: String
     }
     struct Proj: Codable {
         let id: String; let name: String; let path: String
@@ -63,6 +71,8 @@ struct WebSnapshot: Codable {
     /// Which Mac this board is, so a client that paired over one address can find the same board
     /// over another when that one stops answering. Optional so an older peer's /state still decodes.
     let machine: Machine?
+    /// The PM (see PMCoordinator). Optional so an older peer's /state still decodes.
+    let pm: PMInfo?
 
     /// A phone pairs by scanning the QR, which carries one address — usually the Tailscale one. The
     /// evening the tailnet is down at home, the same Mac is a room away on the Wi-Fi, but nothing

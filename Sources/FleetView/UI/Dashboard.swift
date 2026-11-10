@@ -63,6 +63,17 @@ struct DashboardView: View {
         return (sidebar, sidebarMax, min(state.treePanelWidth, treeMax), treeMax)
     }
 
+    /// The PM column, when it is on and the window has room for it beside a usable board. In a
+    /// narrow window it steps aside on its own rather than leave the board a sliver.
+    /// It also gives way to the tree and the triggers panel rather than leave the board squeezed
+    /// between two columns, and comes back when they close.
+    private var pmDockFits: Bool {
+        guard state.pmDockShown, PMCoordinator.enabled,
+              state.treePanelTerminalId == nil, state.triggersPanelTerminalId == nil else { return false }
+        guard windowWidth > 0 else { return true }
+        return windowWidth - columns.sidebar - PMDock.width >= 480
+    }
+
     var body: some View {
         let columns = columns
         HStack(spacing: 0) {
@@ -81,14 +92,24 @@ struct DashboardView: View {
                     // A peer's board replaces this Mac's rather than floating over it: the two look
                     // alike enough that anything less than taking the whole column would leave you
                     // unsure which fleet you are looking at — and these boards start terminals.
-                    if let peer = state.peerSelected {
-                        PeerWebBoard(peer: peer).id(peer.id)
-                    } else {
-                        MainArea()
-                            .background(GeometryReader { g in     // the tree-drag drop area ("fleet" space)
-                                Color.clear.preference(key: BoardFrameKey.self,
-                                                       value: g.frame(in: .named("fleet")))
-                            })
+                    // The PM's column sits under the top bar, not beside it: the bar keeps the whole
+                    // width its controls need, and the button that shows the column is right above it.
+                    HStack(spacing: 0) {
+                        if let peer = state.peerSelected {
+                            PeerWebBoard(peer: peer).id(peer.id)
+                        } else {
+                            MainArea()
+                                .background(GeometryReader { g in     // the tree-drag drop area ("fleet" space)
+                                    Color.clear.preference(key: BoardFrameKey.self,
+                                                           value: g.frame(in: .named("fleet")))
+                                })
+                        }
+                        if pmDockFits {
+                            Rectangle().fill(Theme.outlineVariant).frame(width: 1)
+                            PMDock(pm: state.pm)
+                                .frame(width: PMDock.width)
+                                .transition(.move(edge: .trailing))
+                        }
                     }
                 }
                 // Any width is acceptable here, so the row never overflows the window: when the
@@ -119,6 +140,7 @@ struct DashboardView: View {
         .animation(.easeOut(duration: 0.22), value: state.treePanelTerminalId != nil)
         .animation(.easeOut(duration: 0.22), value: state.triggersPanelTerminalId != nil)
         .animation(.easeOut(duration: 0.22), value: state.sidebarHidden)
+        .animation(.easeOut(duration: 0.22), value: pmDockFits)
         .background(Theme.bg)
         .frame(minWidth: Self.minimumSize.width, minHeight: Self.minimumSize.height)
         .overlay { treeInspector }     // interactive: text selection + scrolling
@@ -754,6 +776,7 @@ struct TopBar: View {
             markFilterButton
             recentStripButton
             webButton
+            if PMCoordinator.enabled { pmDockButton }
             settingsButton
             powerButton
         }
@@ -780,6 +803,14 @@ struct TopBar: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain).help(help)
+    }
+
+    /// The PM column at the right edge, shown or put away.
+    private var pmDockButton: some View {
+        barButton("sidebar.right", on: state.pmDockShown,
+                  help: L(state.pmDockShown ? .pmDockHide : .pmDockShow)) {
+            state.pmDockShown.toggle()
+        }
     }
 
     /// How many need you / are running, as the shapes the cards use, in their container colours.

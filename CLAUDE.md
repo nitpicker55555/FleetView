@@ -19,7 +19,7 @@ operational files from being swept into a commit by whoever runs `git add -A` ne
 | `docs/design/` | design notes, dated |
 | `docs/问题与修复/` | incident records, dated: symptom, root cause, fix, how it was verified (index in its README) |
 | `scripts/`, `examples/` | **ignored by default** — see below |
-| `~/.fleetview/` | all runtime state: `state.json`, `archive.json` (removed cards), `triggers.json` (agents' last-reported crons), `fleet-triggers.json` (triggers FleetView itself runs, logs in `logs/fleet-triggers/`), logs, `ui/panel.html`, `sessions/`, `search.db` |
+| `~/.fleetview/` | all runtime state: `state.json`, `archive.json` (removed cards), `triggers.json` (agents' last-reported crons), `fleet-triggers.json` (triggers FleetView itself runs, logs in `logs/fleet-triggers/`), logs, `ui/panel.html`, `sessions/`, `search.db`, `pm/` (the PM card's home: role, ledger, roster, inbox, side threads, transcript copies) |
 
 ### scripts/ and examples/ are whitelisted, not open
 
@@ -112,6 +112,13 @@ directory outside the repo when you have one.
   is a fixed size (`CardBox`), the board's clocks run on `Ticker`, and cards and sidebar rows do not
   observe `AppState` themselves — each of these was a whole-board cost per update; see
   [`docs/问题与修复/2026-11-10-board-scroll-jank.md`](docs/问题与修复/2026-11-10-board-scroll-jank.md).
+- **The PM is a card with no window, and FleetView keeps it.** `PMCoordinator` makes it at launch
+  (desktop; headless only with `FV_PM=1`), resumes it, leaves it and its folder (`~/.fleetview/pm`) off
+  the board, records the cards its `/new` calls start, and types their status changes into it — only
+  while it is idle. Its side questions are read-only forks (`dontAsk` + an allowlist) kept per project in
+  `~/.fleetview/pm/asks/`. The desktop column is the web page in dock mode (`/?dock=pm`), so PM UI is
+  written once, in `WebDashboardPage`. CLI: `project-manager pm`. See
+  [`docs/design/2026-11-11-pm-card.md`](docs/design/2026-11-11-pm-card.md).
 - **Two kinds of trigger, and only one belongs to a card.** `AgentTrigger` (the per-card panel) is
   what an agent's own CLI scheduled; it lives in that process and dies with it. `FleetTrigger`
   (`FleetTriggerEngine`, the ⚡ toolbar list, `project-manager trigger`, the fleetview-trigger skill)

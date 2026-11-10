@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.contentView = hosting
         self.window = win
         state.reconnectLiveTerminals()      // reattach terminals whose tmux sessions survived
+        state.pm.start(state)               // the PM card: made or resumed, never given a window
         state.watchWindowFocus()            // autoHideTerminals: only the terminal in front keeps a window
         win.makeKeyAndOrderFront(nil)        // keep the dashboard in front of the reattached windows
         NSApp.activate(ignoringOtherApps: true)

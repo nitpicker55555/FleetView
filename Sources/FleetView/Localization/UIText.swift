@@ -302,6 +302,10 @@ enum UIText {
     case topUpdateHelp(String)
     case topSkipVersion
     case topShowAll
+    case pmDockShow
+    case pmDockHide
+    case pmDockNoServer
+    case pmDockOff
     case topShowMarked
     case topPowerHelp
     case topPeersHelp
