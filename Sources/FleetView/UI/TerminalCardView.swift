@@ -35,13 +35,111 @@ private struct StatusHalo: View {
 /// whose it is (agent mark, tokens). No status word and no "claude"/"codex" label — the shape and the
 /// mark carry those, and the words are in the tooltips. The actions appear on hover, in a row whose
 /// height is reserved either way, so no two cards in a grid are ever different heights.
+///
+/// This is the half that watches `AppState`, and all it does is read off what the card needs into a
+/// `CardFacts` and hand that to the card itself, which is compared before it is redrawn. The card
+/// used to be the observer: every `@Published` write anywhere — a token count, an activity stamp,
+/// a drag moving one point — re-ran every card's body on the board (each running card twice), and
+/// the board's scroll view then measured all of them again. Measured 2026-11-10 on a copy of a real
+/// 19-card board: 50–65 ms of main thread per write, a running card making several a second — the
+/// sudden stalls while scrolling. Now a write redraws only the cards it changed.
 struct TerminalCardView: View {
     @EnvironmentObject var state: AppState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let terminal: TerminalSession
     /// False for the copy that follows the cursor during a drag: drawn only, no gestures, and it
     /// must not report a frame — it would claim to be the card it is a picture of.
     var interactive: Bool = true
+
+    var body: some View {
+        CardBox {
+            TerminalCard(state: state, terminal: terminal, interactive: interactive,
+                         facts: CardFacts(state, terminal, interactive: interactive))
+                .equatable()
+        }
+    }
+
+    /// Every card's height. Fixed by its rows' own frames — header 20, prompt 32, footer 28, 8
+    /// between them and 14 above and below — so that no two cards in a grid differ.
+    static let height: CGFloat = 20 + 8 + 32 + 8 + 28 + 2 * 14
+}
+
+/// A card's size, said without looking inside it: the width it is offered and `TerminalCardView.height`.
+///
+/// What made a clock tick cost the whole board. A card is the same size whatever it shows, but
+/// SwiftUI can only know that by measuring it, and measuring asks every row — the footer's
+/// `ViewThatFits` builds and sizes up to three versions of itself to choose one. `BoardFlow` sizes
+/// every card in a project to lay out its rows, the board's VStack sizes every project, and the
+/// scroll view sizes the lot, so one label changing anywhere had every card on the board measured
+/// again: ~60 ms each second with five cards running (SnapshotBench, 2026-11-10). Answered here, a
+/// change inside a card is laid out inside that card and goes no further.
+struct CardBox: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let w = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? BoardGrid.card
+        return CGSize(width: w, height: TerminalCardView.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for s in subviews { s.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size)) }
+    }
+
+    // No guides of its own. Left to the default, a layout answers an alignment question by laying
+    // out its subviews to collect theirs — and the stacks the card sits in (the strip's tag-over-card
+    // column) ask for `.leading` every time they are measured, which laid every card out again.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+}
+
+/// Everything a card shows that is not in its `TerminalSession`. Anything the card reads from
+/// `AppState` to draw itself has to come through here, or a change to it will not reach the card.
+struct CardFacts: Equatable {
+    var highlighted = false
+    var treeDropTarget = false
+    var runEndedAt: Date?
+    var pickedUp = false
+    /// A drag is under way, so the card reports where it is (see CardFramesKey). Only then: the
+    /// frames are read by nothing but a drag, and reported always they changed on every frame of a
+    /// scroll, for every card.
+    var reportsFrame = false
+    var triggerCount = 0
+    var timedTriggers = 0
+    var triggersOpen = false
+    var commits = 0
+    var uncommitted = 0
+    var treeOpen = false
+    var windowOpen = false
+
+    @MainActor init(_ state: AppState, _ terminal: TerminalSession, interactive: Bool) {
+        let id = terminal.id
+        highlighted = state.highlightedTerminalId == id
+        treeDropTarget = state.treeDropCardId == id
+        runEndedAt = state.runEndedAt[id]
+        pickedUp = interactive && state.draggingTerminalId == id
+        reportsFrame = interactive && state.boardDragActive
+        let triggers = state.triggers(for: terminal)
+        triggerCount = triggers.count
+        timedTriggers = triggers.filter(\.isTimed).count
+        triggersOpen = state.triggersPanelTerminalId == id
+        commits = state.cardCommitCounts[id] ?? 0
+        uncommitted = state.cardUncommittedCounts[id] ?? 0
+        treeOpen = state.treePanelTerminalId == id
+        windowOpen = state.windowState(id) == .open
+    }
+}
+
+/// The card itself. It holds `AppState` only to act on it — every value it draws is its
+/// `terminal` or its `facts` — so `==` over those two is the whole truth about whether it changed.
+private struct TerminalCard: View, Equatable {
+    let state: AppState
+    let terminal: TerminalSession
+    let interactive: Bool
+    let facts: CardFacts
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    nonisolated static func == (a: TerminalCard, b: TerminalCard) -> Bool {
+        a.terminal == b.terminal && a.interactive == b.interactive && a.facts == b.facts
+    }
 
     @State private var hovering = false
     @State private var renaming = false
@@ -51,8 +149,8 @@ struct TerminalCardView: View {
     @State private var freshTick = 0
 
     private var done: Bool { terminal.subtaskDone }
-    private var highlighted: Bool { state.highlightedTerminalId == terminal.id }
-    private var treeDropTarget: Bool { state.treeDropCardId == terminal.id }
+    private var highlighted: Bool { facts.highlighted }
+    private var treeDropTarget: Bool { facts.treeDropTarget }
     /// Exited or closed: still on the board, still clickable, but not live — Material's outlined
     /// card with its content at the disabled opacity.
     private var ended: Bool { terminal.status == .exited || terminal.status == .closed }
@@ -71,7 +169,7 @@ struct TerminalCardView: View {
     private var freshUntil: Date? {
         switch terminal.status {
         case .working: return terminal.runningSince?.addingTimeInterval(AppState.freshFor)
-        case .idle:    return state.runEndedAt[terminal.id]?.addingTimeInterval(AppState.freshFor)
+        case .idle:    return facts.runEndedAt?.addingTimeInterval(AppState.freshFor)
         default:       return nil
         }
     }
@@ -112,7 +210,7 @@ struct TerminalCardView: View {
 
     /// This card is the one being dragged: its place shows as an empty slot while the lifted copy
     /// follows the cursor.
-    private var pickedUp: Bool { interactive && state.draggingTerminalId == terminal.id }
+    private var pickedUp: Bool { facts.pickedUp }
 
     var body: some View {
         if interactive { live } else { face }
@@ -153,10 +251,14 @@ struct TerminalCardView: View {
             .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card)
                 .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
                 .foregroundColor(pickedUp ? Theme.outline : Color.clear))
-        .background(GeometryReader { g in            // drop target: tree node, or another card
-            Color.clear.preference(key: CardFramesKey.self,
-                                   value: [terminal.id: [g.frame(in: .named("fleet"))]])
-        })
+        .background {                                 // drop target: tree node, or another card
+            if facts.reportsFrame {
+                GeometryReader { g in
+                    Color.clear.preference(key: CardFramesKey.self,
+                                           value: [terminal.id: [g.frame(in: .named("fleet"))]])
+                }
+            }
+        }
         .onHover { hovering = $0 }
         .contentShape(Rectangle())
         .onTapGesture { if !renaming { state.raiseTerminal(terminal.id) } }
@@ -216,21 +318,22 @@ struct TerminalCardView: View {
 
     /// The run clock while it works; otherwise how long ago anything happened here.
     ///
-    /// The clock is anchored on the run's own start, not on `.now`: `.now` is re-evaluated on every
-    /// body pass, so each of the board's (many) re-renders handed the TimelineView a brand-new
-    /// schedule and restarted its tick.
+    /// Both run on the board's shared `Ticker`s, so every clock on the board redraws in the same
+    /// pass. The idle label, anchored on its own last activity, turned over exactly on the minute it
+    /// described; shared, it can be up to a tick late ("刚刚" until 89 s), which an age given in
+    /// whole minutes does not show.
     @ViewBuilder private var timeLabel: some View {
         if terminal.status == .working, let since = terminal.runningSince {
-            TimelineView(.periodic(from: since, by: 1)) { ctx in
-                Text(RelativeTime.clock(since: since, now: ctx.date))
+            Ticked(every: 1) { now in
+                TickingText(RelativeTime.clock(since: since, now: now))
                     .font(.fvLabel).monospacedDigit().lineLimit(1)
                     .foregroundColor(container?.fg ?? Theme.primary)
-                    .help(L(.cardRunningFor(RelativeTime.clock(since: since, now: ctx.date))))
+                    .help(L(.cardRunningFor(RelativeTime.clock(since: since, now: now))))
             }
             .fixedSize()
         } else if let last = terminal.lastActivity {
-            TimelineView(.periodic(from: last, by: 30)) { ctx in
-                Text(RelativeTime.compact(last, now: ctx.date))
+            Ticked(every: 30) { now in
+                TickingText(RelativeTime.compact(last, now: now))
                     .font(.fvLabel).monospacedDigit().lineLimit(1)
                     .foregroundColor(fgSecondary)
                     .help(lastRunHelp)
@@ -321,13 +424,13 @@ struct TerminalCardView: View {
     /// exactly what this is for. The alarm when anything is timed; an hourglass for work that ends
     /// on its own schedule. A click opens the panel (see TriggersPanel).
     @ViewBuilder private var triggerChip: some View {
-        let all = state.triggers(for: terminal)
-        if !all.isEmpty {
-            let timed = all.filter(\.isTimed).count
-            let open = state.triggersPanelTerminalId == terminal.id
+        let count = facts.triggerCount
+        if count > 0 {
+            let timed = facts.timedTriggers
+            let open = facts.triggersOpen
             HStack(spacing: 3) {
                 Image(systemName: timed > 0 ? "alarm" : "hourglass").font(.system(size: 10, weight: .semibold))
-                Text("\(all.count)").font(.fvLabelSmall).monospacedDigit()
+                Text("\(count)").font(.fvLabelSmall).monospacedDigit()
             }
             .foregroundColor(open ? (container?.bg ?? Theme.onPrimary) : (container?.fg ?? Theme.primary))
             .padding(.horizontal, 6).frame(height: 18)
@@ -338,7 +441,7 @@ struct TerminalCardView: View {
             // this click too.
             .highPriorityGesture(TapGesture().onEnded { state.toggleTriggers(terminal.id) })
             .fixedSize()
-            .help(L(.trigChipHelp(timed, all.count - timed)))
+            .help(L(.trigChipHelp(timed, count - timed)))
         }
     }
 
@@ -346,7 +449,7 @@ struct TerminalCardView: View {
     /// page gives uncommitted work — how many files it wrote that nobody has committed. A click lists
     /// both, in whatever repository they are. Absent until it has changed something.
     @ViewBuilder private var commitChip: some View {
-        let n = state.cardCommitCounts[terminal.id] ?? 0, u = state.cardUncommittedCounts[terminal.id] ?? 0
+        let n = facts.commits, u = facts.uncommitted
         if n > 0 || u > 0 {
             HStack(spacing: 3) {
                 Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .semibold))
@@ -404,7 +507,7 @@ struct TerminalCardView: View {
         Button(L(.cardRename)) {
             if inMenu { state.requestRename(terminal.id) } else { renaming = true }
         }
-        Button(state.treePanelTerminalId == terminal.id ? L(.cardCloseTree) : L(.cardOpenTree)) {
+        Button(facts.treeOpen ? L(.cardCloseTree) : L(.cardOpenTree)) {
             if state.treePanelTerminalId == terminal.id { state.closeSessionTree() }
             else { state.openSessionTree(terminal.id) }
         }
@@ -418,7 +521,7 @@ struct TerminalCardView: View {
         Button(done ? L(.cardUnmark) : L(.cardMark)) { state.toggleSubtaskDone(terminal.id) }
         if terminal.windowHidden == true {
             Button(L(.cardShowWindow)) { state.showTerminal(terminal.id) }
-        } else if state.windowState(terminal.id) == .open {
+        } else if facts.windowOpen {
             Button(L(.cardHideWindow)) { state.hideTerminal(terminal.id) }
         }
         if terminal.clusterId != nil {

@@ -6,11 +6,11 @@ import SwiftUI
 /// not persisted) and the persisted projects/terminals/clusters.
 @MainActor
 final class AppState: ObservableObject {
-    @Published var projects: [Project] = []
+    @Published var projects: [Project] = [] { didSet { archivedCounts.removeAll() } }
     @Published var terminals: [TerminalSession] = []
     /// Terminals that have been removed, newest first. The board forgets a card the moment it is
     /// removed; this is what remembers the name, uuid and session it had (see `TerminalArchive`).
-    @Published var terminalArchive: [TerminalArchive] = []
+    @Published var terminalArchive: [TerminalArchive] = [] { didSet { archivedCounts.removeAll() } }
     /// Every folder that has been a project here and when it was last used, kept after it leaves
     /// the board — what the toolbar's recent-projects menu lists (see `RecentProject`).
     @Published var recentProjects: [RecentProject] = []
@@ -55,6 +55,10 @@ final class AppState: ObservableObject {
     /// outliving the app is what lets a long run keep going while FleetView is updated or relaunched
     /// (see `reconnectLiveTerminals`). Turning it on makes quitting mean "stop the fleet too".
     @Published var closeTerminalsOnQuit: Bool = false
+    /// Only the terminal window in front stays on screen; every other one is hidden as soon as
+    /// another window of this app comes to the front (see `hideTerminalWindows(except:)`). On by
+    /// default, off from the gear menu. Stored only when off.
+    @Published private(set) var autoHideTerminals: Bool = true
 
     /// Point size for terminal windows. One size for the fleet rather than one per window: cards are
     /// opened and closed constantly, so a size that lived on the window would have to be re-chosen
@@ -69,7 +73,7 @@ final class AppState: ObservableObject {
     var isQuitting = false
 
     // Per-terminal cumulative new-token curve, rebuilt from transcripts (not persisted — recomputed).
-    @Published var tokenSeries: [UUID: [TokenSample]] = [:]
+    @Published var tokenSeries: [UUID: [TokenSample]] = [:] { didSet { tokenChartable.removeAll() } }
     private var lastParsedTranscriptSize: [UUID: Int] = [:]
     private var lastTokenRefreshAt: [UUID: Date] = [:]
 
@@ -267,6 +271,11 @@ final class AppState: ObservableObject {
     /// Where each project's section is on screen (see ProjectFramesKey). A card dropped anywhere
     /// inside another project's section moves house — see `moveTerminal(_:toProject:)`.
     var projectFrames: [UUID: [CGRect]] = [:]
+    /// A card, a tree node or a search hit is being dragged over the board. The three frame maps
+    /// above are reported only then: nothing else reads them, and reported all the time every card,
+    /// group and section sent a new frame on every frame of a scroll. The first move of a drag
+    /// therefore finds no targets; the next, a frame later, finds them all.
+    var boardDragActive: Bool { draggingTerminalId != nil || treeDrag != nil }
 
     /// Open the tree panel for a terminal's current session (project-dir scoped, treeflow-style).
     func openSessionTree(_ id: UUID) {
@@ -673,6 +682,7 @@ final class AppState: ObservableObject {
         var terminalNumbers: [String: Int]?
         var recentProjects: [RecentProject]?
         var sidebarHidden: Bool?
+        var autoHideTerminals: Bool?
 
         /// Every field decoded on its own, and a field that will not decode is dropped rather than
         /// taken as a corrupt file.
@@ -706,6 +716,7 @@ final class AppState: ObservableObject {
             terminalNumbers = get(.terminalNumbers, [String: Int].self)
             recentProjects = get(.recentProjects, [RecentProject].self)
             sidebarHidden = get(.sidebarHidden, Bool.self)
+            autoHideTerminals = get(.autoHideTerminals, Bool.self)
         }
 
         init(projects: [Project], terminals: [TerminalSession], clusters: [Cluster],
@@ -714,7 +725,7 @@ final class AppState: ObservableObject {
              showOnlyMarked: Bool?, closeTerminalsOnQuit: Bool?, collapsedProjects: [UUID]?,
              terminalFontSize: Double?, terminalArchive: [TerminalArchive]?,
              showRecentStrip: Bool?, terminalNumbers: [String: Int]?,
-             recentProjects: [RecentProject]?, sidebarHidden: Bool?) {
+             recentProjects: [RecentProject]?, sidebarHidden: Bool?, autoHideTerminals: Bool?) {
             self.projects = projects; self.terminals = terminals; self.clusters = clusters
             self.selectedProjectId = selectedProjectId; self.sidebarWidth = sidebarWidth
             self.notes = notes; self.tasksCollapsed = tasksCollapsed
@@ -725,6 +736,7 @@ final class AppState: ObservableObject {
             self.terminalNumbers = terminalNumbers
             self.recentProjects = recentProjects
             self.sidebarHidden = sidebarHidden
+            self.autoHideTerminals = autoHideTerminals
         }
 
         /// This with the soft fields blanked: what is left is what a crash must not lose. Soft is
@@ -804,6 +816,7 @@ final class AppState: ObservableObject {
         showOnlyMarked = p.showOnlyMarked ?? false
         showRecentStrip = p.showRecentStrip ?? true
         closeTerminalsOnQuit = p.closeTerminalsOnQuit ?? false
+        autoHideTerminals = p.autoHideTerminals ?? true
         terminalNumbers = p.terminalNumbers ?? [:]
         recentProjects = p.recentProjects ?? []
         sidebarHidden = p.sidebarHidden ?? false
@@ -842,7 +855,10 @@ final class AppState: ObservableObject {
     }
 
     /// Everything, now: for quitting, where nothing can be left for later.
-    func saveNow() { persist(deferSoft: false) }
+    func saveNow() {
+        flushLive()          // the live figures still waiting for their batch (see `liveBatch`)
+        persist(deferSoft: false)
+    }
 
     /// How long a change to nothing but soft fields (`Persisted.hard`) may wait to be written.
     private static let softSaveDelay: TimeInterval = 120
@@ -889,7 +905,8 @@ final class AppState: ObservableObject {
                           showRecentStrip: showRecentStrip,
                           terminalNumbers: terminalNumbers.isEmpty ? nil : terminalNumbers,
                           recentProjects: recentProjects.isEmpty ? nil : recentProjects,
-                          sidebarHidden: sidebarHidden ? true : nil)
+                          sidebarHidden: sidebarHidden ? true : nil,
+                          autoHideTerminals: autoHideTerminals ? nil : false)
         if p == savedState {
             softSaveWork?.cancel()
             softSaveWork = nil
@@ -1418,11 +1435,14 @@ final class AppState: ObservableObject {
         for t in terminals where controllers[t.id] == nil
               && live.contains(RemoteServer.sessionName(for: t.id)) {
             // A terminal hidden when FleetView quit comes back hidden: putting every window back on
-            // screen at launch is exactly what hiding it was for.
-            if t.windowHidden == true, !Headless.active, let spec = remote.tmuxSpec(for: t.id),
+            // screen at launch is exactly what hiding it was for. With `autoHideTerminals` every
+            // one does — the board comes to the front at launch, which would hide them anyway, one
+            // window opened and closed at a time.
+            if t.windowHidden == true || autoHideTerminals, !Headless.active, let spec = remote.tmuxSpec(for: t.id),
                let stand = HeadlessTerminal(termId: t.id, cwd: t.cwd, autoRunClaude: false,
                                             port: hookPort, tmux: spec, remote: remote) {
                 adopt(stand, for: t.id)
+                if let i = terminals.firstIndex(where: { $0.id == t.id }) { terminals[i].windowHidden = true }
             } else {
                 openWindow(for: t)
             }
@@ -1598,6 +1618,31 @@ final class AppState: ObservableObject {
             return n <= Self.archiveCap
         }
     }
+
+    /// `archived(inProject:).count`, remembered until the archive or the projects change. The
+    /// header's archive button asked for it — twice — on every redraw of every project section,
+    /// that is on every write anywhere in this object, and each answer sorted and filtered every
+    /// row ever archived (4% of a board update, 2026-11-10).
+    func archivedCount(inProject id: UUID) -> Int {
+        if let n = archivedCounts[id] { return n }
+        let n = archived(inProject: id).count
+        archivedCounts[id] = n
+        return n
+    }
+    private var archivedCounts: [UUID: Int] = [:]
+
+    /// Whether a project has a token chart to show (`projectTokenDeltas` has more than one bar), for
+    /// the header's chart button. Remembered per project and its member cards until the token
+    /// curves change, for the same reason as `archivedCount`. As bars age out of the hour it can be
+    /// late to notice there is nothing left; the chart itself is always drawn from the real figures.
+    func hasTokenChart(_ projectId: UUID) -> Bool {
+        let members = terminals.filter { $0.projectId == projectId }.map(\.id)
+        if let c = tokenChartable[projectId], c.members == members { return c.value }
+        let value = projectTokenDeltas(projectId).count > 1
+        tokenChartable[projectId] = (members, value)
+        return value
+    }
+    private var tokenChartable: [UUID: (members: [UUID], value: Bool)] = [:]
 
     /// The rows the drawer lists — which is also what the button should count. A row with no
     /// transcript cannot be reopened and is never shown, so counting it made the badge disagree
@@ -2207,12 +2252,67 @@ final class AppState: ObservableObject {
     /// because `terminals` is @Published and a fresh Date is never value-equal: writing it on
     /// every event re-rendered the WHOLE board, and PreToolUse/PostToolUse arrive in bursts many
     /// times a second (they are ~95% of the event log). Nothing displays it more finely than
-    /// that — it is rendered through RelativeTime.short inside a 15s TimelineView.
+    /// that — the card's age label is in whole minutes. And put on the board with the other live
+    /// figures (`queueLive`), not on its own.
     private func noteHookActivity(at idx: Int) {
         let now = Date()
-        if terminals[idx].lastActivity.map({ now.timeIntervalSince($0) >= 5 }) ?? true {
-            terminals[idx].lastActivity = now
+        let id = terminals[idx].id
+        if (pendingActivity[id] ?? terminals[idx].lastActivity).map({ now.timeIntervalSince($0) >= 5 }) ?? true {
+            pendingActivity[id] = now
+            queueLive()
         }
+    }
+
+    // MARK: Live figures, put on the board together
+
+    /// Token curves and activity stamps that have arrived and are not on the board yet.
+    private var pendingTokens: [UUID: (series: [TokenSample], total: Int)] = [:]
+    private var pendingActivity: [UUID: Date] = [:]
+    private var liveFlush: DispatchWorkItem?
+
+    /// How long a running card's token count and activity stamp may wait to be shown.
+    ///
+    /// Each write to `terminals` or `tokenSeries` is an update of every view that observes this
+    /// object. A running card wrote one each time its transcript grew (at most once a second) and
+    /// one every five seconds of activity, separately, so five running cards meant several board
+    /// updates a second — the sudden stalls while scrolling (2026-11-10). Held for this long, every
+    /// card's figures go on in one update. A turn's end does not wait (`queueLive(now:)`).
+    static let liveBatch: TimeInterval = 2
+
+    private func queueLive(now: Bool = false) {
+        if now {
+            liveFlush?.cancel()
+            liveFlush = nil
+            flushLive()
+            return
+        }
+        guard liveFlush == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.liveFlush = nil
+            self?.flushLive()
+        }
+        liveFlush = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.liveBatch, execute: work)
+    }
+
+    private func flushLive() {
+        let tokens = pendingTokens, activity = pendingActivity
+        pendingTokens.removeAll()
+        pendingActivity.removeAll()
+        // Only for cards still on the board: one removed meanwhile has had its curve dropped.
+        for (id, t) in tokens where terminals.contains(where: { $0.id == id }) {
+            applyTokenRefresh(id, series: t.series, total: t.total)
+        }
+        guard !activity.isEmpty else { return }
+        var ts = terminals                 // one write, not one per card
+        var changed = false
+        for (id, at) in activity {
+            // A later stamp may have been written directly meanwhile (the user acting on the card).
+            guard let i = ts.firstIndex(where: { $0.id == id }), at > (ts[i].lastActivity ?? .distantPast) else { continue }
+            ts[i].lastActivity = at
+            changed = true
+        }
+        if changed { terminals = ts }
     }
 
     /// A hook from one of the terminal's Codex workers: activity, and nothing else.
@@ -2377,11 +2477,19 @@ final class AppState: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if let size { self.lastParsedTranscriptSize[termId] = size }
-                self.tokenSeries[termId] = series
-                if let i = self.terminals.firstIndex(where: { $0.id == termId }), self.terminals[i].newTokens != total {
-                    self.terminals[i].newTokens = total   // persisted on the next save()
-                }
+                self.pendingTokens[termId] = (series, total)
+                self.queueLive(now: force)
             }
+        }
+    }
+
+    /// A re-read transcript's token curve and total, onto the board.
+    func applyTokenRefresh(_ termId: UUID, series: [TokenSample], total: Int) {
+        // Most re-reads find the curve as it was — the transcript grew by a tool result, not by a
+        // reply — and an equal write is still an update of the whole board.
+        if tokenSeries[termId] != series { tokenSeries[termId] = series }
+        if let i = terminals.firstIndex(where: { $0.id == termId }), terminals[i].newTokens != total {
+            terminals[i].newTokens = total   // persisted on the next save()
         }
     }
 
@@ -3073,6 +3181,66 @@ final class AppState: ObservableObject {
 
     func showTerminal(_ id: UUID) {
         audited(AuditIntent("terminal.show")) { revealHidden(id) }
+    }
+
+    // MARK: One terminal window at a time
+
+    /// Turn `autoHideTerminals` on or off. Turned on, it applies at once: the gear menu it is
+    /// turned on from is on the board, so every terminal window goes.
+    func setAutoHideTerminals(_ on: Bool) {
+        autoHideTerminals = on
+        save()
+        if on { scheduleAutoHide() }
+    }
+
+    private var mainWindowObserver: NSObjectProtocol?
+    private var autoHidePending = false
+
+    /// Start hiding terminal windows that are not in front (`autoHideTerminals`). Called once the
+    /// main window exists.
+    ///
+    /// Why: a terminal window draws on the main thread for every line its agent prints, looked at
+    /// or not — 50–110 ms a second with a dozen open behind the board (2026-11-10), on the thread
+    /// the board scrolls on. Hidden, the session and its agent run on unchanged (`hideTerminal`)
+    /// and a click on the card brings the window back where it was.
+    ///
+    /// Main, not key, is what "in front" means here: a sheet, an alert or a popover takes the
+    /// keyboard without the window it belongs to stopping being the one in use, and none of them
+    /// ever becomes main. Switching to another app changes nothing either — the terminal you left
+    /// is still the one in front when you come back.
+    func watchWindowFocus() {
+        guard mainWindowObserver == nil, !Headless.active else { return }
+        mainWindowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleAutoHide() }
+        }
+    }
+
+    /// On the next turn of the run loop, not inside the notification: the window coming to the front
+    /// is still being ordered in, and closing others in the middle of that is asking for trouble.
+    /// Whichever window is main by then is the one kept, so two fronts in a row settle on the second.
+    private func scheduleAutoHide() {
+        guard autoHideTerminals, !autoHidePending else { return }
+        autoHidePending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.autoHidePending = false
+            self.hideTerminalWindows(except: NSApp.mainWindow)
+        }
+    }
+
+    /// Hide every terminal window but `front`'s — all of them when `front` is the board or any
+    /// other window. Attributed to FleetView, not to the person at the Mac.
+    private func hideTerminalWindows(except front: NSWindow?) {
+        guard autoHideTerminals, !isQuitting, !Headless.active else { return }
+        let others = controllers.compactMap { id, c -> UUID? in
+            guard let w = c as? TerminalWindowController, w.window !== front else { return nil }
+            return id
+        }
+        guard !others.isEmpty else { return }
+        AuditContext.with(.system) {
+            for id in others { hideTerminal(id) }
+        }
     }
 
     private func hideUnaudited(_ id: UUID) {

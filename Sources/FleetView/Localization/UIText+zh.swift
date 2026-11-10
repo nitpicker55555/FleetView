@@ -29,6 +29,7 @@ extension UIText {
         case .menuClearBoard: return "清空所有项目并关闭所有终端…"
         case .menuUninstallHooks: return "卸载状态钩子（Claude + Codex）"
         case .menuRevealSupport: return "在 Finder 中显示数据目录（~/.fleetview）"
+        case .menuAutoHideTerminals: return "只显示前台的终端窗口（其余自动隐藏）"
         case .menuQuit: return "退出 FleetView"
         case .menuEdit: return "编辑"
         case .menuCut: return "剪切"

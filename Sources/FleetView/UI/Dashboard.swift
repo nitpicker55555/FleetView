@@ -5,6 +5,20 @@ import UniformTypeIdentifiers
 struct DashboardView: View {
     @EnvironmentObject var state: AppState
 
+    /// The view the main window shows, and the window's minimum size.
+    ///
+    /// The hosting view no longer works out the window's minimum and maximum from the board: by
+    /// default it recomputes them after every update, by measuring the whole board at the smallest
+    /// and largest sizes — a second full layout each time a clock ticked or a token count changed,
+    /// ~20% of the main thread spent on it (SnapshotBench, 2026-11-10). The minimum is the one the
+    /// view declares below (`.frame(minWidth:minHeight:)`), set on the window instead.
+    static let minimumSize = NSSize(width: 960, height: 580)
+    static func host(_ state: AppState) -> NSHostingView<some View> {
+        let host = NSHostingView(rootView: DashboardView().environmentObject(state))
+        host.sizingOptions = []
+        return host
+    }
+
     /// Is a level-1 surface up, so the dashboard should recede? (See LayerConfig for the depths.)
     ///
     /// A drag whose target IS the dashboard does not recede at all: dropping a tree node or a
@@ -106,7 +120,7 @@ struct DashboardView: View {
         .animation(.easeOut(duration: 0.22), value: state.triggersPanelTerminalId != nil)
         .animation(.easeOut(duration: 0.22), value: state.sidebarHidden)
         .background(Theme.bg)
-        .frame(minWidth: 960, minHeight: 580)
+        .frame(minWidth: Self.minimumSize.width, minHeight: Self.minimumSize.height)
         .overlay { treeInspector }     // interactive: text selection + scrolling
         .overlay { dragOverlay }
         .overlay { searchOverlay }
@@ -447,10 +461,10 @@ struct Sidebar: View {
 
     private var taskList: some View {
         ScrollView {
-            TimelineView(.periodic(from: .now, by: 60)) { ctx in
+            Ticked(every: 60) { now in
                 let groups = state.taskGroups
-                let active = groups.filter { !state.isDormant($0.project.id, now: ctx.date) }
-                let dormant = groups.filter { state.isDormant($0.project.id, now: ctx.date) }
+                let active = groups.filter { !state.isDormant($0.project.id, now: now) }
+                let dormant = groups.filter { state.isDormant($0.project.id, now: now) }
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(active) { group in groupView(group) }
                     // The projects the board has folded, folded here too: one line naming them,
@@ -603,39 +617,67 @@ struct SidebarGroupHeader: View {
     }
 }
 
+/// A sidebar row: a terminal, or a whole cluster.
+///
+/// Like `TerminalCardView`, the half that watches `AppState` only reads off what the row shows and
+/// hands it to the row, which is compared before it is redrawn. Each row used to observe the whole
+/// object, so every write anywhere — a token count, an activity stamp — redrew every row of the
+/// sidebar along with the board: with the sidebar open a board update cost three times what it
+/// did with it folded (SnapshotBench, 2026-11-10).
 struct TaskRow: View {
     @EnvironmentObject var state: AppState
     let task: TaskItem
+
+    var body: some View {
+        TaskRowFace(state: state, task: task, facts: TaskRowFacts(state, task)).equatable()
+    }
+}
+
+/// What a sidebar row shows.
+struct TaskRowFacts: Equatable {
+    var name = ""
+    var status: TermStatus = .closed
+    var done = false
+    var selected = false
+    var isCluster = false
+    var memberCount = 0
+    var runningSince: Date?
+
+    @MainActor init(_ state: AppState, _ task: TaskItem) {
+        switch task {
+        case .terminal(let id):
+            guard let t = state.terminals.first(where: { $0.id == id }) else { return }
+            name = t.name
+            status = t.status
+            done = t.subtaskDone
+            selected = state.highlightedTerminalId == id
+            runningSince = t.runningSince
+        case .cluster(let id):
+            guard let c = state.clusters.first(where: { $0.id == id }) else { return }
+            isCluster = true
+            name = c.name
+            status = state.clusterAggregateStatus(id)
+            done = state.clusterDone(id)
+            selected = state.highlightedClusterId == id
+            memberCount = state.members(ofCluster: id).count
+        }
+    }
+}
+
+/// The row itself: holds `AppState` only to act on it.
+private struct TaskRowFace: View, Equatable {
+    let state: AppState
+    let task: TaskItem
+    let facts: TaskRowFacts
     @State private var hover = false
 
-    private var terminal: TerminalSession? {
-        if case .terminal(let id) = task { return state.terminals.first { $0.id == id } }
-        return nil
-    }
-    private var cluster: Cluster? {
-        if case .cluster(let id) = task { return state.clusters.first { $0.id == id } }
-        return nil
-    }
-    private var isCluster: Bool { if case .cluster = task { return true }; return false }
-    private var isSelected: Bool {
-        if let t = terminal { return state.highlightedTerminalId == t.id }
-        if let c = cluster  { return state.highlightedClusterId == c.id }
-        return false
+    nonisolated static func == (a: TaskRowFace, b: TaskRowFace) -> Bool {
+        a.task.id == b.task.id && a.facts == b.facts
     }
 
-    private var name: String { terminal?.name ?? cluster?.name ?? "" }
-    private var status: TermStatus {
-        if let t = terminal { return t.status }
-        if let c = cluster { return state.clusterAggregateStatus(c.id) }
-        return .closed
-    }
-    private var done: Bool {
-        if let t = terminal { return t.subtaskDone }
-        if let c = cluster { return state.clusterDone(c.id) }
-        return false
-    }
+    private var name: String { facts.name }
+    private var status: TermStatus { facts.status }
     private var ended: Bool { status == .exited || status == .closed }
-    private var memberCount: Int { cluster.map { state.members(ofCluster: $0.id).count } ?? 0 }
 
     /// A Material navigation-drawer item: shape, name, and — only while it runs — the clock.
     var body: some View {
@@ -643,24 +685,24 @@ struct TaskRow: View {
             StatusGlyph(status: status)
             HStack(spacing: 6) {
                 NameText(name: name, font: .fvBody)
-                    .foregroundColor(isSelected ? Theme.onSecondaryContainer
+                    .foregroundColor(facts.selected ? Theme.onSecondaryContainer
                                      : (ended ? Theme.onSurfaceVariant : Theme.onSurface))
-                if isCluster {
+                if facts.isCluster {
                     HStack(spacing: 2) {
                         Image(systemName: "square.stack").font(.system(size: 11))
-                        Text("\(memberCount)").font(.fvLabelSmall).monospacedDigit()
+                        Text("\(facts.memberCount)").font(.fvLabelSmall).monospacedDigit()
                     }
                     .foregroundColor(Theme.onSurfaceVariant)
-                    .help(L(.nTerminals(memberCount)))
+                    .help(L(.nTerminals(facts.memberCount)))
                 }
-                if done {
+                if facts.done {
                     Image(systemName: "bookmark.fill").font(.system(size: 11)).foregroundColor(Theme.tertiary)
                 }
             }
             Spacer(minLength: 4)
-            if status == .working, let since = terminal?.runningSince {
-                TimelineView(.periodic(from: since, by: 1)) { ctx in
-                    Text(RelativeTime.clock(since: since, now: ctx.date))
+            if status == .working, let since = facts.runningSince {
+                Ticked(every: 1) { now in
+                    TickingText(RelativeTime.clock(since: since, now: now))
                         .font(.fvLabel).monospacedDigit().foregroundColor(Theme.primary)
                 }
                 .fixedSize()
@@ -668,7 +710,7 @@ struct TaskRow: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 32)
-        .background(isSelected ? Theme.secondaryContainer
+        .background(facts.selected ? Theme.secondaryContainer
                     : (hover ? Theme.surfaceContainerHigh : Color.clear))
         .clipShape(Capsule())
         .contentShape(Capsule())
@@ -943,8 +985,8 @@ struct TopBar: View {
     }
 
     /// The settings the app menu holds — colours, sharing, updates — one click from the board, where
-    /// the colours are seen. A menu rather than a window: there are four of them, and each already
-    /// has its own dialog.
+    /// the colours are seen. A menu rather than a window: there are only a few, and each either has
+    /// its own dialog or is a single switch.
     private var settingsButton: some View {
         Menu {
             Button(L(.menuTheme)) { state.dialog = .theme }
@@ -954,6 +996,9 @@ struct TopBar: View {
                     UpdateUI.present(outcome, updates: state.updates)
                 }
             }
+            Divider()
+            Toggle(L(.menuAutoHideTerminals), isOn: Binding(get: { state.autoHideTerminals },
+                                                            set: { state.setAutoHideTerminals($0) }))
             Divider()
             Button(L(.menuRevealSupport)) {
                 FV.ensureSupportDir()
@@ -1000,9 +1045,9 @@ struct MainArea: View {
                 ScrollView {
                     // Re-sorted once a minute as well as on every change: a project goes quiet by
                     // the clock, not by any event.
-                    TimelineView(.periodic(from: .now, by: 60)) { ctx in
-                        let active = state.visibleProjects.filter { !state.isDormant($0.id, now: ctx.date) }
-                        let dormant = state.visibleProjects.filter { state.isDormant($0.id, now: ctx.date) }
+                    Ticked(every: 60) { now in
+                        let active = state.visibleProjects.filter { !state.isDormant($0.id, now: now) }
+                        let dormant = state.visibleProjects.filter { state.isDormant($0.id, now: now) }
                         VStack(alignment: .leading, spacing: 24) {
                             RunningStrip()
                             RecentStrip()
@@ -1121,6 +1166,12 @@ struct BoardFlow: Layout {
             y += rowHeight + BoardGrid.spacing
         }
     }
+
+    // No guides of its own, as for `CardBox`: the default collects the cards' by laying them out.
+    func explicitAlignment(of guide: HorizontalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? { nil }
 }
 
 /// A zone's heading: an optional mark, a name, a count. Sentence case — the all-caps labels these
@@ -1315,9 +1366,6 @@ struct ProjectSection: View {
     @State private var showChart = false
     @State private var copied = false
     @State private var gripHot = false
-    /// A fixed point for the rate chip's 5s schedule. Held in @State so it survives the re-renders
-    /// it would otherwise be reset by; the actual instant is irrelevant, only that it stops moving.
-    @State private var rateEpoch = Date()
     // Scanned rather than observed: a skill is files on disk, with no event to subscribe to.
     //
     // Two levels, because they cost different amounts. `skillCount` is a directory listing and runs
@@ -1329,7 +1377,7 @@ struct ProjectSection: View {
     @State private var showSkills = false
     @State private var pickedSkill: SkillInfo?
 
-    private var archived: [TerminalArchive] { state.archived(inProject: project.id) }
+    private var archivedCount: Int { state.archivedCount(inProject: project.id) }
 
     /// A woken dormant project is shown open whatever its own fold state says — its chevron is the
     /// wake/sleep switch, not the persisted fold.
@@ -1371,10 +1419,15 @@ struct ProjectSection: View {
         .onDrop(of: [.text], delegate: ProjectReorderDrop(target: project.id, state: state))
         // And the same area answers a dragged *card* — released here, that terminal moves into this
         // project (see ProjectFramesKey).
-        .background(GeometryReader { g in
-            Color.clear.preference(key: ProjectFramesKey.self,
-                                   value: [project.id: [g.frame(in: .named("fleet"))]])
-        })
+        // Reported only while something is dragged, the one time anything reads it (CardFacts.reportsFrame).
+        .background {
+            if state.boardDragActive {
+                GeometryReader { g in
+                    Color.clear.preference(key: ProjectFramesKey.self,
+                                           value: [project.id: [g.frame(in: .named("fleet"))]])
+                }
+            }
+        }
         .onAppear { skillCount = ProjectSkills.count(projectPath: project.path) }
     }
 
@@ -1500,10 +1553,8 @@ struct ProjectSection: View {
                 if newTokens > 0 {
                     meta("sum", TokenUsage.short(newTokens),
                          help: L(.tokensHelp(newTokens)))
-                    // Anchored on a date this view keeps, never on `.now` — `.now` is re-evaluated
-                    // on every body pass, which handed the timeline a new schedule each render.
-                    TimelineView(.periodic(from: rateEpoch, by: 5)) { context in
-                        let recent = state.projectTokensRecent(project.id, now: context.date)
+                    Ticked(every: 5) { now in
+                        let recent = state.projectTokensRecent(project.id, now: now)
                         if recent > 0 {
                             meta("chart.line.uptrend.xyaxis", "\(TokenUsage.short(recent))/m",
                                  tint: Theme.primary, help: L(.projRateHelp))
@@ -1511,8 +1562,8 @@ struct ProjectSection: View {
                     }
                 }
                 if let lastActivity {
-                    TimelineView(.periodic(from: lastActivity, by: 30)) { ctx in
-                        Text(RelativeTime.compact(lastActivity, now: ctx.date))
+                    Ticked(every: 30) { now in
+                        TickingText(RelativeTime.compact(lastActivity, now: now))
                             .font(.fvLabel).monospacedDigit()
                             .foregroundColor(Theme.onSurfaceVariant)
                             .help(L(.projLastActivity))
@@ -1539,13 +1590,12 @@ struct ProjectSection: View {
                         }
                     }
                 }
-                if !archived.isEmpty {
-                    iconButton("archivebox", count: archived.count,
-                               help: L(.projArchived(archived.count))) {
+                if case let n = archivedCount, n > 0 {
+                    iconButton("archivebox", count: n, help: L(.projArchived(n))) {
                         state.openArchive(projectId: project.id)
                     }
                 }
-                if deltas.count > 1 {
+                if state.hasTokenChart(project.id) {
                     iconButton("chart.bar.xaxis", on: showChart,
                                help: showChart ? L(.projHideChart) : L(.projShowChart)) {
                         withAnimation(.easeOut(duration: 0.18)) { showChart.toggle() }
@@ -1576,7 +1626,8 @@ struct ProjectSection: View {
                       help: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: symbol).font(.system(size: 12))
-            Text(text).font(.fvLabel).monospacedDigit()
+            // The rate beside the token sum is redrawn by a clock (see TickingText).
+            TickingText(text).font(.fvLabel).monospacedDigit()
         }
         .foregroundColor(tint)
         .help(help)
@@ -1719,10 +1770,15 @@ struct ClusterContainer: View {
         .onHover { hovering = $0 }
         // The whole box is a drop target for a dragged card — the task is the thing you are aiming
         // at, not whichever member card happens to be under the cursor.
-        .background(GeometryReader { g in
-            Color.clear.preference(key: ClusterFramesKey.self,
-                                   value: [clusterId: [g.frame(in: .named("fleet"))]])
-        })
+        // Only while something is dragged (CardFacts.reportsFrame).
+        .background {
+            if state.boardDragActive {
+                GeometryReader { g in
+                    Color.clear.preference(key: ClusterFramesKey.self,
+                                           value: [clusterId: [g.frame(in: .named("fleet"))]])
+                }
+            }
+        }
         // Out into the margin by its padding, so its cards are the board's cards (BoardGrid.wrapInset).
         .padding(.horizontal, -BoardGrid.wrapInset)
     }

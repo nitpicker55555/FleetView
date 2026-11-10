@@ -1,5 +1,30 @@
 import SwiftUI
 
+/// Text that changes on a clock without the layout around it being measured again.
+///
+/// A clock's label redraws every second. As a plain `Text`, each new string was a new size to
+/// measure, and the measuring did not stop at the label: the card around it, its grid and the
+/// board's scroll view all asked again, through every card on the board. Five running cards (each
+/// drawn twice) cost ~60 ms of main thread on every tick — a stall a second, with or without
+/// scrolling (SnapshotBench, 2026-11-10). Here the label is sized by its *shape*, the same string
+/// with every digit made a 0, which with monospaced digits is exactly as wide and changes only when
+/// a digit is added ("9:59" → "10:00"); the characters themselves are drawn over it and take no
+/// part in layout. Give it `.monospacedDigit()` along with the font, as for any clock.
+struct TickingText: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(Self.shape(of: text))
+            .hidden()
+            .overlay(alignment: .trailing) { Text(text).fixedSize() }
+    }
+
+    static func shape(of s: String) -> String {
+        String(s.map { $0.isASCII && $0.isNumber ? "0" : $0 })
+    }
+}
+
 /// Inline-editable text. Double-click to edit, or drive `editing` externally (e.g. from a
 /// menu / pencil button). Commits on Return, cancels on Esc.
 struct EditableText: View {

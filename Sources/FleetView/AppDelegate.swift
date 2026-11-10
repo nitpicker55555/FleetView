@@ -11,11 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.watcher = AppStartup.start(state)
         setupMenu()
 
-        let root = DashboardView().environmentObject(state)
-        let hosting = NSHostingView(rootView: root)
+        let hosting = DashboardView.host(state)
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1140, height: 740),
                            styleMask: [.titled, .closable, .miniaturizable, .resizable],
                            backing: .buffered, defer: false)
+        win.contentMinSize = DashboardView.minimumSize
         win.title = "FleetView"
         win.center()
         win.isReleasedWhenClosed = false
@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.contentView = hosting
         self.window = win
         state.reconnectLiveTerminals()      // reattach terminals whose tmux sessions survived
+        state.watchWindowFocus()            // autoHideTerminals: only the terminal in front keeps a window
         win.makeKeyAndOrderFront(nil)        // keep the dashboard in front of the reattached windows
         NSApp.activate(ignoringOtherApps: true)
     }

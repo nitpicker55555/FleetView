@@ -31,8 +31,12 @@ enum Snapshot {
         if let root = ProcessInfo.processInfo.environment["FV_SNAPSHOT_FILES"] { FileSnapshot.run(root: root, into: dir) }
 
         let state = AppState()
-        fill(state)
         let size = NSSize(width: 1512, height: 949)
+        if SnapshotBench.requested {
+            SnapshotBench.run(state, size: size, into: dir, sample: { fill($0) })
+            exit(0)
+        }
+        fill(state)
         if ProcessInfo.processInfo.environment["FV_SNAPSHOT_ANIM"] != nil {
             recordSidebarFold(state, size: size, into: dir)
             exit(0)
