@@ -5792,6 +5792,17 @@ async function pmRefork(){
   pmPoll();
 }
 
+/* Text put into the composer at the cursor — the Mac's PM column types dropped files' paths in with
+   this (DockWebView), since a page is never told where a dropped file lives. A space keeps it off the
+   word before it. */
+function composerInsert(t){
+  const ta=document.getElementById('inputtext'); if(!ta||!t) return;
+  const s=ta.selectionStart??ta.value.length, e=ta.selectionEnd??s;
+  const pre=ta.value.slice(0,s), post=ta.value.slice(e), sep=pre&&!/\s$/.test(pre)?' ':'';
+  ta.value=pre+sep+t+(post&&!/^\s/.test(post)?' ':'')+post;
+  const at=(pre+sep+t).length; ta.focus(); ta.setSelectionRange(at,at);
+  autoGrow(ta); saveDraft();
+}
 /* ---------- a prompt an Escape cut off ----------
    Claude gives a prompt it is interrupted on before answering back to its composer, word for word.
    From here that composer is invisible, and the next message would be typed on the end of it — so
