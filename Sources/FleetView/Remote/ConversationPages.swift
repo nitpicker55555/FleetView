@@ -31,6 +31,11 @@ struct TranscriptLink {
     /// written as a `queued_command`. With its time.
     var asked: String? = nil
     var ts: String? = nil
+    /// A user line carrying nothing but tool results. When the agent calls tools in parallel,
+    /// Claude chains the calls (each `tool_use` line the child of the one before) and hangs each
+    /// result off its OWN call — so every result but the last is a sibling of the next call, a leaf
+    /// of nothing (see `activePath`).
+    var resultOnly = false
 
     /// A line with no tree to place it in (Codex, or one that is not JSON): its position only.
     init(at: Int, length: Int) {
@@ -54,6 +59,10 @@ struct TranscriptLink {
             asked = text.flatMap(PromptText.clean).map { String($0.prefix(400)) }
             ts = r["timestamp"] as? String
             return
+        }
+        if type == "user", let blocks = (r["message"] as? [String: Any])?["content"] as? [[String: Any]],
+           !blocks.isEmpty, blocks.allSatisfy({ ($0["type"] as? String) == "tool_result" }) {
+            resultOnly = true
         }
         if (r["subtype"] as? String) == "compact_boundary" {
             boundary = true
@@ -165,8 +174,18 @@ enum ConversationPages {
             }
         }
         guard !order.isEmpty else { return nil }
-        let leaves = order.filter { children[$0] == nil && !carried.contains($0) }
-        branches = children.values.filter { $0.count > 1 }.count
+        /// The result of one of several parallel calls, hung off its own call beside the next call
+        /// (TranscriptLink.resultOnly). Taken for a leaf it was a branch of its own: the chat counted
+        /// a branch per parallel batch, while a batch ran its newest result was taken for the tip
+        /// and the calls after it vanished, and once it ended the call it answered sat on the
+        /// abandoned side, spinning for ever — which held the web's `after=` anchor on it, so every
+        /// poll carried most of the window again (2026-11-15: 4 of 21 live sessions).
+        func dangling(_ u: String) -> Bool {
+            guard let i = index[u], recs[i].resultOnly, let p = parent[u] else { return false }
+            return children[p, default: []].contains { $0 != u && !(index[$0].map { recs[$0].resultOnly } ?? false) }
+        }
+        let leaves = order.filter { children[$0] == nil && !carried.contains($0) && !dangling($0) }
+        branches = children.values.filter { $0.filter { !dangling($0) }.count > 1 }.count
 
         /// The latest real prompt on the branch ending at `leaf` — raw parents only: the question is
         /// which branch is this terminal's, and that is decided after the last compaction.
@@ -187,9 +206,10 @@ enum ConversationPages {
             }
         }
         if tip == nil {
-            tip = leaf.flatMap { index[$0] != nil ? $0 : nil } ?? order.last
+            tip = leaf.flatMap { index[$0] != nil ? $0 : nil } ?? order.last(where: { !dangling($0) }) ?? order.last
             var visited = Set<String>()
-            while let u = tip, let kids = children[u], let next = kids.last, visited.insert(u).inserted {
+            while let u = tip, let kids = children[u], let next = kids.last(where: { !dangling($0) }) ?? kids.last,
+                  visited.insert(u).inserted {
                 tip = next
             }
         }

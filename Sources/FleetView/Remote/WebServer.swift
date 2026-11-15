@@ -268,11 +268,13 @@ final class WebServer {
         let params = request?.query ?? [:]
         let client = Self.clientAddress(conn)
         let scope = WebAudit.shared.begin(request: request, ip: client.ip, port: client.port)
+        HTTPGzip.note(conn, acceptEncoding: request?.headers["accept-encoding"])
 
         if path == "/ping" { handlePing(conn, client.ip, params, scope); return }  // never the main actor
         if path == "/ask" { handleAsk(conn, params, scope); return }   // long-running; off the main thread
         if path == "/pm" { handlePM(conn, params, scope); return }     // runs a script; off it too
         if path == "/type", params["wait"] == "1" { handleTypeAndWait(conn, params, scope); return }
+        if path == "/rewind" { handleRewind(conn, params, scope); return }   // drives the TUI; off it
         if path == "/upload" {                                         // writes a file; no app state
             handleUpload(conn, request, body, params, scope); return
         }
@@ -397,6 +399,7 @@ final class WebServer {
         }
         let limit = min(400, Int(query["limit"] ?? "") ?? 120)
         let before = query["before"].flatMap(Double.init)
+        let after = query["after"].flatMap(Double.init).map { (at: $0, session: query["sess"] ?? "") }
         DispatchQueue.main.async { [weak self] in
             guard let self, let app = self.app else {
                 self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
@@ -409,7 +412,7 @@ final class WebServer {
             }
             DispatchQueue.global(qos: .userInitiated).async {
                 answer("200 OK", spec.respond(limit: limit, whole: query["full"] == "1", before: before,
-                                              prompts: query["prompts"] == "1"))
+                                              prompts: query["prompts"] == "1", after: after))
             }
         }
     }
@@ -655,6 +658,43 @@ final class WebServer {
                                    ]) { own, _ in own })
             self?.send(conn, status: status, type: "application/json", body: body,
                        setCookie: scope.setCookie)
+        }
+    }
+
+    /// GET /rewind?id=&text=&nth= — take the card's conversation back to before the `nth`-latest
+    /// prompt (1 = the latest) whose text is `text`, through the agent's own Esc Esc (Rewind).
+    /// `{"ok":true}`, or `{"ok":false,"error":"busy"|"notIdle"|"draft"|"noComposer"|"noMenu"|
+    /// "notFound"|"unconfirmed"|"noRestore"|"noTerminal"}`. Answered when the agent has finished
+    /// rewinding — a few seconds, walking its list a row at a time.
+    private func handleRewind(_ conn: NWConnection, _ query: [String: String], _ scope: WebAudit.Scope) {
+        @Sendable func answer(_ outcome: Rewind.Outcome) {
+            let body: Data
+            switch outcome {
+            case .done: body = Data(#"{"ok":true}"#.utf8)
+            case .failed(let why): body = Data(#"{"ok":false,"error":"\#(why)"}"#.utf8)
+            }
+            let facts: [String: AuditValue] = ["rewind.outcome": .string({
+                if case .failed(let why) = outcome { return why } else { return "done" }
+            }())]
+            WebAudit.shared.finish(scope, status: "200 OK", bytes: body.count, query: query, facts: facts)
+            Self.write(conn, status: "200 OK", type: "application/json", body: body, setCookie: scope.setCookie)
+        }
+        guard let s = query["id"], let id = UUID(uuidString: s),
+              let text = query["text"], !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            WebAudit.shared.finish(scope, status: "400 Bad Request", bytes: 0, query: query)
+            send(conn, status: "400 Bad Request", type: "application/json", body: Data(#"{"error":"bad request"}"#.utf8))
+            return
+        }
+        let nth = max(1, Int(query["nth"] ?? "") ?? 1)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let app = self.app else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
+            }
+            MainActor.assumeIsolated {
+                AuditContext.with(scope.actor, trace: scope.trace) {
+                    app.webRewind(id, prompt: text, nth: nth, done: answer)
+                }
+            }
         }
     }
 
@@ -1232,6 +1272,14 @@ final class WebServer {
     private static func write(_ conn: NWConnection, status: String, type: String, body: Data,
                               setCookie: String? = nil, disposition: String? = nil,
                               headers: [(String, String)] = [], cache: String = "no-store") {
+        var body = body, headers = headers
+        if HTTPGzip.take(conn), status.hasPrefix("200"), HTTPGzip.compressible(type),
+           (HTTPGzip.minBytes...HTTPGzip.maxBytes).contains(body.count),
+           !headers.contains(where: { $0.0.lowercased() == "content-encoding" }),
+           let packed = HTTPGzip.gzip(body), packed.count < body.count {
+            body = packed
+            headers += [("Content-Encoding", "gzip"), ("Vary", "Accept-Encoding")]
+        }
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(type)\r\n"
         head += "Content-Length: \(body.count)\r\n"

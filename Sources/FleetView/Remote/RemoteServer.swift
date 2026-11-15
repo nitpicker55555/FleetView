@@ -208,6 +208,22 @@ final class RemoteServer {
         }
     }
 
+    /// Take the conversation back to before one of its prompts (see Rewind). On the terminal's write
+    /// queue like every other write to it, and it bumps the ledger, so a `/type` still checking its
+    /// Enter stops pressing keys into a list this has opened.
+    func rewind(_ id: UUID, agent: Rewind.Agent, prompt: String, nth: Int,
+                done: @escaping @Sendable (Rewind.Outcome) -> Void) {
+        guard let tmuxPath else { done(.failed("noTerminal")); return }
+        let session = RemoteServer.sessionName(for: id)
+        ledger.bump(session)
+        writeQueue(for: session).async {
+            done(Rewind.run(agent: agent, prompt: prompt, nth: nth, session: session,
+                            tmux: { args, capture in
+                                Self.spawnTmux(tmuxPath, args, timeout: Self.tmuxTimeout, capture: capture)
+                            }))
+        }
+    }
+
     /// After an Escape: if the agent gave the prompt it was interrupted on back into its composer,
     /// take it out again and report it. Left there, it is invisible from the web and the next
     /// message typed in is appended to it (2026-11-11, the PM: "帮我用threejs的ultra" sat in its

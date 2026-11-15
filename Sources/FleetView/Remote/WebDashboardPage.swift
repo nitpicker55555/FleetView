@@ -428,6 +428,20 @@ enum WebDashboardPage {
   /* Belt and braces for the fallback path, where the overlay can still be shorter than the screen. */
   body.locked{background:var(--bg)}
   #term.show{display:flex}
+  /* A held prompt's menu (see msgMenuOpen). On the body, not in #term: the overlay is transformed
+     while it is swiped, and a fixed child of a transformed box is fixed to that box. */
+  #msgmenu{position:fixed;z-index:60;width:max-content;max-width:min(320px,calc(100vw - 32px));padding:6px;
+    background:var(--panel);border:1px solid var(--outlineVariant);border-radius:14px;
+    box-shadow:0 8px 28px rgba(0,0,0,.35);display:none}
+  #msgmenu.on{display:block}
+  #msgmenu button{display:flex;align-items:flex-start;gap:10px;width:100%;border:0;background:none;color:var(--text);
+    font:inherit;font-size:14px;line-height:20px;text-align:left;padding:10px 12px;border-radius:10px;cursor:pointer}
+  #msgmenu button:active,#msgmenu button:hover{background:var(--cardHover)}
+  #msgmenu button[disabled]{opacity:.5;cursor:default;background:none}
+  #msgmenu small{display:block;color:var(--sub);font-size:12px;line-height:16px;margin-top:2px}
+  /* A hold on a prompt opens its menu; on a touch screen it would also start a text selection and the
+     browser's own callout under the finger. The menu has Copy for the whole prompt. */
+  @media (hover:none){ #chat .msg.user{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none} }
   /* inset:0 rather than width alone: a body left at its scrolled offset is another way the page
      underneath ends up visible at an edge. overscroll-behavior kills the rubber-band with it. */
   body.locked{overflow:hidden;position:fixed;inset:0;width:100%;overscroll-behavior:none}
@@ -1290,6 +1304,7 @@ enum WebDashboardPage {
 <div id="chip"></div>
 <div id="dock"></div>
 
+<div id="msgmenu" role="menu"></div>
 <div id="term">
   <!-- One bar, laid over the transcript rather than stacked above it, so it can slide away while you
        read and come back when you scroll up (see headBar). The status strip is its subtitle. -->
@@ -1468,9 +1483,21 @@ window.fetch=function(input,init){
 function abortAll(){ for(const c of inflight) c.abort(); inflight.clear(); }
 /* Run `fn` every `ms`, skipping a beat while the last run is still out — at most one request per
    poll on the wire, however slow the line. */
-function poll(fn,ms,now=true){
-  let busy=false;
-  const run=async()=>{ if(busy) return; busy=true; try{ await fn(); }catch(e){} finally{ busy=false; } };
+/* Each run is followed by a rest at least as long as it took, so no poll holds the line more than
+   half the time. `busy` alone let a slow link run each one back to back: /state is 27 KB every
+   1.5 s even while a card is open, more than the 11 KB/s a phone had over Tailscale from a hotspot
+   (2026-11-13), so the background polls filled the line and the conversation queued behind them.
+   On a fast link a run is a few ms of a 1.5 s interval and nothing changes. `rest=false` is for
+   /ping alone: 20 bytes, and the probe that says offline — resting after a timed-out one would only
+   slow down noticing the Mac is back. */
+function poll(fn,ms,now=true,rest=true){
+  let busy=false, next=0;
+  const run=async()=>{
+    if(busy||performance.now()<next) return;
+    busy=true; const t0=performance.now();
+    try{ await fn(); }catch(e){}
+    finally{ if(rest) next=2*performance.now()-t0; busy=false; }
+  };
   if(now) run();
   return setInterval(run,ms);
 }
@@ -1557,6 +1584,14 @@ const I18N={
     'info.branchesTitle':'这个会话因为回退或改写有 {n} 个分叉点 — 这里只显示当前分支','info.context':'上下文 {pct}% · {tok}',
     'perm.default':'等你决定',
     'chat.thinking':'思考','chat.input':'输入','chat.output':'输出','chat.failed':'失败','chat.copy':'复制',
+    'rw.menu':'从这里重新编辑','rw.menuSub':'退回到这条之前，原文放进输入框','rw.menuBusy':'agent 正在工作，停下后才能退回',
+    'rw.menuWait':'agent 在等你回应，处理后才能退回',
+    'rw.confirm':'把对话退回到这条消息之前？\n\n这条和它之后的对话会从 agent 的上下文里撤回，文件不动。原文会放进输入框，改好再发送。',
+    'rw.working':'正在退回…','rw.done':'已退回，改好后发送',
+    'rw.err.busy':'agent 正在工作，先停止再退回','rw.err.notIdle':'agent 在等你回应，处理后再退回',
+    'rw.err.draft':'终端的输入框里有没发出去的文字，先清空它再退回',
+    'rw.err.notFound':'agent 的列表里找不到这条（可能在压缩之前，或带图片、粘贴内容）',
+    'rw.err.other':'没能退回（{e}）',
     'chat.subagent':'子代理','chat.answerInTerm':'切到「终端」里回答','chat.empty':'还没有对话 — 发一条消息开始。',
     'diff.unchanged':'⋯ {n} 行未改动','diff.edit':'第 {n} 处修改',
     'toast.copied':'已复制','toast.pathCopied':'已复制路径','toast.copyFailed':'复制失败','toast.copyFailedLong':'复制失败 — 长按路径手动选择',
@@ -1707,6 +1742,14 @@ const I18N={
     'info.context':'Context {pct}% · {tok}',
     'perm.default':'Waiting for your decision',
     'chat.thinking':'Thinking','chat.input':'Input','chat.output':'Output','chat.failed':'Failed','chat.copy':'Copy',
+    'rw.menu':'Edit from here','rw.menuSub':'Rewind to before this message; its text goes in the box','rw.menuBusy':'The agent is working — stop it first',
+    'rw.menuWait':'The agent is waiting on you — answer it first',
+    'rw.confirm':'Rewind the conversation to before this message?\n\nThis message and everything after it are taken out of the agent\'s context; files are not touched. Its text goes into the box to edit and send.',
+    'rw.working':'Rewinding…','rw.done':'Rewound — edit and send',
+    'rw.err.busy':'The agent is working — stop it, then rewind','rw.err.notIdle':'The agent is waiting on you — answer it, then rewind',
+    'rw.err.draft':'The terminal\'s input box holds unsent text — clear it first',
+    'rw.err.notFound':'The agent\'s list has no such message (before a compaction, or with images or pasted text)',
+    'rw.err.other':'Could not rewind ({e})',
     'chat.subagent':'Subagent','chat.answerInTerm':'Answer it in the Terminal tab','chat.empty':'No conversation yet — send a message to start.',
     'diff.unchanged':{one:'⋯ 1 unchanged line',other:'⋯ {n} unchanged lines'},'diff.edit':'Edit {n}',
     'toast.copied':'Copied','toast.pathCopied':'Path copied','toast.copyFailed':'Copy failed','toast.copyFailedLong':'Copy failed — long-press the path to select it',
@@ -2018,9 +2061,25 @@ function cacheTouch(id){
 function cacheGet(id){
   try{ const s=localStorage.getItem(ckey(id)); return s?JSON.parse(s):null; }catch(e){ return null; }
 }
+/* What is kept is the list as it stands (convAll), not the answer: a poll now carries only what is
+   new. Its newest part, trimmed to the quota rather than dropped whole — a session of long messages
+   used to come out over the limit and was then never kept at all, so it opened on a skeleton each
+   time. Written only when the list changed, not on every 3 s poll. */
+let cacheSig='';
 function cachePut(id,j){
-  const body=JSON.stringify({t:Date.now(),messages:j.messages||[],info:j.info||{},note:j.note||''});
-  if(body.length>CACHE_BYTES) return;          // a huge transcript is not worth the quota
+  const last=convAll[convAll.length-1]||{};
+  const sig=id+':'+convAll.length+':'+last.at+':'+(last.text||'').length+':'+(last.output||'').length;
+  if(sig===cacheSig) return;
+  let msgs=convAll.slice(-150), body='';
+  for(;;){
+    // `more` as it is for what is kept: a trimmed copy has more before it, whatever the answer said.
+    const more=msgs.length<convAll.length?true:convMore===null?!!(j.info&&j.info.more):convMore;
+    body=JSON.stringify({t:Date.now(),messages:msgs,info:Object.assign({},j.info||{},{more,reset:false}),note:j.note||''});
+    if(body.length<=CACHE_BYTES||msgs.length<=10) break;
+    msgs=msgs.slice(Math.ceil(msgs.length/4));
+  }
+  if(body.length>CACHE_BYTES) return;          // ten messages over the quota: not worth it
+  cacheSig=sig;
   try{ localStorage.setItem(ckey(id),body); cacheTouch(id); }
   catch(e){                                    // out of quota: drop the coldest one and try once more
     const ix=cacheIndex();
@@ -2243,6 +2302,7 @@ swipeBack('term','chat','pre.code,.mbody,#presets,#keys,#inputbar,#drawer,#tabs'
 swipeBack('fb','fbbody','#fbpath,#fbcrumbs,pre,iframe,textarea,.fbtools,table',()=>fbClose());
 function closeTerm(){
   if(DOCK&&curId&&state&&state.pm&&curId===state.pm.id) return;
+  msgMenuClose();
   pmOnClose();
   saveDraft();
   closeDrawer(); showTermHead();
@@ -2371,8 +2431,39 @@ function convURL(id){
   return convArch?'/conversation?arch='+encodeURIComponent(convArch):'/conversation?id='+encodeURIComponent(id);
 }
 function convKey(id){ return convArch?'arch:'+id:id; }
+/* What the poll asks for. It used to be the last 150 messages every 3 s, whatever was already on
+   screen — ~300 KB for a busy session, which on a phone at 11 KB/s (Tailscale from a hotspot,
+   2026-11-13) took 26 s a poll, past the 12 s deadline: the link never emptied and a card with no
+   copy on the device never came up. Now each answer names where the next should start
+   (`info.anchor`, the first message that can still change — the server knows which those are) and
+   the poll sends it back (`after=`), getting that message and what follows. An anchor the server
+   no longer finds comes back `reset`: the latest few, to start over from (convMerge). A card
+   opened with nothing here asks for a short first page, readable in seconds; scrolling up fetches
+   the rest (loadOlder). */
+const CONV_FIRST=40;
+function convQuery(){
+  if(!convAll.length) return '&limit='+CONV_FIRST;
+  let a=curInfo&&typeof curInfo.anchor==='number'?curInfo.anchor:null;
+  if(a===null||!convAll.some(m=>m.at===a)) a=convAnchor();
+  return '&limit=150'+(a===null?'':'&after='+a+'&sess='+encodeURIComponent(convSrc));
+}
+/* The page's own guess at the anchor, for an answer that named none (an older FleetView): a tool
+   call still waiting for its result, or else the last message, which the next line of the same
+   reply can extend. */
+function convAnchor(){
+  if(!convSrc||!convAll.every(m=>typeof m.at==='number')) return null;
+  let last=null, firstPending=null;
+  for(let i=Math.max(0,convAll.length-150);i<convAll.length;i++){
+    const m=convAll[i];
+    if(m.pending&&firstPending===null) firstPending=m.at;
+    if(!m.queued) last=m.at;
+  }
+  if(last===null) return null;
+  return firstPending===null?last:Math.min(firstPending,last);
+}
 function convMerge(j){
   const msgs=j.messages||[];
+  if(j.info&&j.info.reset) convAll=[];              // the list no longer lines up: start over
   if(!msgs.length||!msgs.every(m=>typeof m.at==='number')){ convAll=msgs; convMore=null; return; }
   const src=(j.info&&j.info.session)||'';
   if(src!==convSrc){ convAll=[]; convSrc=src; olderFailed=false; }     // another conversation: start over
@@ -2609,6 +2700,7 @@ document.addEventListener('click',e=>{
     document.getElementById('tray').classList.remove('on'); closed=true; }
   if(document.getElementById('projs').classList.contains('on')&&!inside('projs','projbtn')){ closeProjects(); closed=true; }
   if(document.getElementById('pmmenu').classList.contains('on')&&!inside('pmmenu','pmsel')){ pmMenu(false); closed=true; }
+  if(msgMenuIsOpen()&&!inside('msgmenu')){ msgMenuClose(); closed=true; }
   if(closed){ e.preventDefault(); e.stopPropagation(); }
 },true);
 
@@ -2649,12 +2741,17 @@ function showChatError(msg){
   el.dataset.sig='';
   el.innerHTML='<div id="chatnote">'+esc(msg)+'<br><span style="opacity:.6">'+tr('chat.retrying')+'</span></div>';
 }
+/* One fetch per card at a time. Opening a card fetches at once and starts the 3 s poll, whose own
+   guard knows nothing of that first fetch — on a slow line the poll asked again before the first
+   answer came, for the same first page. */
+let chatInflight='';
 async function loadChat(){
-  if(!curId)return;
+  if(!curId||chatInflight===curId)return;
   const want=curId, seq=++syncSeq;
+  chatInflight=want;
   syncSent=performance.now();
   try{
-    const r=await fetch(convURL(want)+'&limit=150',{cache:'no-store'});
+    const r=await fetch(convURL(want)+convQuery(),{cache:'no-store'});
     if(!r.ok)throw new Error('HTTP '+r.status);
     const j=await r.json();
     if(want!==curId)return;           // you switched terminals while this was in flight
@@ -2685,6 +2782,7 @@ async function loadChat(){
     // about. Polling continues either way, so this clears itself the moment a request succeeds.
     if(++chatFails>=2) showChatError(tr('chat.loadFailed',{err:e.message||e}));
   }finally{
+    if(chatInflight===want) chatInflight='';
     if(seq===syncSeq){ syncSent=0; if(want===curId) paintSync(); }
   }
 }
@@ -3076,6 +3174,128 @@ document.getElementById('chat').addEventListener('click',e=>{
   const card=e.target.closest?e.target.closest('.msg.tool,.msg.think,.msg.compact'):null;
   if(card)card.classList.toggle('open');
 });
+/* ---------- a held prompt: Edit from here ----------
+   Holding one of your own prompts (right-click with a mouse) opens a menu; "Edit from here" takes
+   the conversation back to before it, through the agent's own Esc Esc (`/rewind`, see Rewind.swift),
+   and puts its text in the box to edit and send. Only an idle agent can be rewound: the Escapes that
+   open its list would interrupt a turn. */
+let mmMsg=null, mmHeldAt=0;
+function msgMenuIsOpen(){ return document.getElementById('msgmenu').classList.contains('on'); }
+function msgMenuClose(){ document.getElementById('msgmenu').classList.remove('on'); mmMsg=null; }
+function convMsgAt(node){
+  const at=node&&node.dataset.at!==undefined?+node.dataset.at:NaN;
+  return isNaN(at)?null:convAll.find(m=>m.at===at)||null;
+}
+function msgMenuOpen(node,x,y){
+  const m=convMsgAt(node);
+  if(!m||m.role!=='user'||m.kind!=='text'||m.queued||m.sub) return;
+  mmMsg=m;
+  const st=(curInfo||{}).status||'';
+  const can=!convArch&&!(curInfo||{}).shell&&st==='idle';
+  const why=st==='working'?tr('rw.menuBusy'):st==='needsYou'?tr('rw.menuWait'):tr('rw.menuSub');
+  const el=document.getElementById('msgmenu');
+  el.innerHTML=(convArch?'':'<button data-mm="rewind"'+(can?'':' disabled')+'>'+ic('undo-2','s16')+
+      '<span>'+esc(tr('rw.menu'))+'<small>'+esc(why)+'</small></span></button>')+
+    '<button data-mm="copy">'+ic('copy','s16')+'<span>'+esc(tr('chat.copy'))+'</span></button>';
+  el.classList.add('on');
+  // Beside the finger, inside the screen.
+  const w=el.offsetWidth, h=el.offsetHeight, vw=window.innerWidth, vh=window.innerHeight;
+  el.style.left=Math.max(16,Math.min(x-w/2,vw-w-16))+'px';
+  el.style.top=Math.max(16,Math.min(y+12,vh-h-16))+'px';
+}
+document.getElementById('msgmenu').addEventListener('click',e=>{
+  const b=e.target.closest&&e.target.closest('button[data-mm]');
+  if(!b||b.disabled||!mmMsg) return;
+  const m=mmMsg; msgMenuClose();
+  if(b.dataset.mm==='copy') copyText(m.text||'');
+  else rewindTo(m);
+});
+(function(){
+  const chat=document.getElementById('chat');
+  let timer=0, x0=0, y0=0, held=false;
+  const prompt=t=>{ const n=t&&t.closest?t.closest('.msg.user'):null;
+    return n&&!n.classList.contains('queued')&&!n.classList.contains('sub')?n:null; };
+  const stop=()=>{ clearTimeout(timer); timer=0; };
+  chat.addEventListener('touchstart',e=>{
+    stop();
+    if(picking||e.touches.length!==1) return;
+    const n=prompt(e.target); if(!n) return;
+    const p=e.touches[0]; x0=p.clientX; y0=p.clientY;
+    timer=setTimeout(()=>{ timer=0; held=true; mmHeldAt=performance.now(); msgMenuOpen(n,x0,y0); },HOLD_MS);
+  },{passive:true});
+  chat.addEventListener('touchmove',e=>{
+    const p=e.touches[0], moved=Math.abs(p.clientX-x0)>10||Math.abs(p.clientY-y0)>10;
+    if(!moved) return;
+    stop();                                               // a scroll, not a hold
+    if(msgMenuIsOpen()&&!held) msgMenuClose();
+  },{passive:true});
+  // The finger that held the prompt lifts on it: the click that may follow is the hold's, not a
+  // tap outside the menu that has just opened.
+  chat.addEventListener('touchend',e=>{ stop(); if(held){ held=false; e.preventDefault(); } },{passive:false});
+  chat.addEventListener('touchcancel',()=>{ stop(); held=false; },{passive:true});
+  // Only a scroll of yours closes it: the chat scrolls itself to the latest as a working card writes.
+  chat.addEventListener('wheel',()=>{ stop(); if(msgMenuIsOpen()) msgMenuClose(); },{passive:true});
+  // A mouse's right-click, and Android's own long-press, which arrives as the same event.
+  chat.addEventListener('contextmenu',e=>{
+    const n=prompt(e.target); if(!n||picking) return;
+    e.preventDefault();
+    if(performance.now()-mmHeldAt<800) return;           // Android's, for the hold that just opened it
+    msgMenuOpen(n,e.clientX,e.clientY);
+  });
+})();
+/* What a rewind took back stays in the transcript: Claude keeps the old branch in the same file
+   and goes on reading from its last line until the next prompt is sent, so the next polls still
+   bring it. It is the stretch of the file from the prompt to the end as it stood then — anything
+   written afterwards comes after it — so it is hidden by position, per session, and kept on the
+   device so a reload does not bring it back. Codex starts a new file for the thread, which is a new
+   session here; nothing of the old one is shown then. */
+const RW_KEY='fv_rewound';
+function rewoundRanges(){ try{ return JSON.parse(localStorage.getItem(RW_KEY)||'{}')||{}; }catch(e){ return {}; } }
+function hideRewound(msgs){
+  const r=convSrc&&rewoundRanges()[convSrc];
+  if(!r||!r.length) return msgs;
+  return msgs.filter(m=>typeof m.at!=='number'||!r.some(([a,b])=>m.at>=a&&m.at<=b));
+}
+function noteRewound(from,to){
+  if(!convSrc) return;
+  const all=rewoundRanges();
+  all[convSrc]=(all[convSrc]||[]).concat([[from,to]]).slice(-20);
+  const keys=Object.keys(all); if(keys.length>40) delete all[keys[0]];
+  try{ localStorage.setItem(RW_KEY,JSON.stringify(all)); }catch(e){}
+}
+const squeezeText=t=>String(t||'').replace(/[\s│]/g,'');
+async function rewindTo(m){
+  if(!curId||convArch||!confirm(tr('rw.confirm'))) return;
+  const want=curId, key=squeezeText(m.text);
+  // Which of the prompts with this text, counted back from the latest — the way Rewind counts.
+  let nth=0;
+  for(let i=convAll.length-1;i>=0;i--){
+    const x=convAll[i];
+    if(x.role==='user'&&x.kind==='text'&&!x.queued&&!x.sub&&squeezeText(x.text)===key) nth++;
+    if(x===m) break;
+  }
+  const last=convAll[convAll.length-1];
+  toast(tr('rw.working'),60000);
+  let j=null;
+  try{
+    const r=await fetch('/rewind?id='+encodeURIComponent(want)+'&text='+encodeURIComponent(m.text)+'&nth='+Math.max(1,nth),
+                        {cache:'no-store',timeout:120000});
+    j=await r.json();
+  }catch(e){ j={ok:false,error:(e&&e.message)||'network'}; }
+  if(want!==curId){ toast(j&&j.ok?tr('rw.done'):tr('rw.err.other',{e:(j&&j.error)||'?'}),2500); return; }
+  if(!j||!j.ok){
+    const k='rw.err.'+(j&&j.error);
+    toast(['busy','notIdle','draft','notFound'].includes(j&&j.error)?tr(k):tr('rw.err.other',{e:(j&&j.error)||'?'}),4000);
+    return;
+  }
+  noteRewound(m.at,Math.max(m.at,last?last.at:m.at));
+  const box=document.getElementById('inputtext');
+  box.value=m.text||''; autoGrow(box); syncSendBtn(); saveDraft();
+  document.getElementById('chat').dataset.sig='';         // redraw without what was taken back
+  stickBottom=true; renderChat(convAll);
+  box.focus();
+  toast(tr('rw.done'),2500);
+}
 /* Purpose-built views for the tools that carry a decision or a plan — these are exactly the
    moments the agent is waiting on you, and raw JSON is useless on a phone. */
 function toolView(m){
@@ -3176,6 +3396,7 @@ function runBarHTML(){
   return '';
 }
 function renderChat(msgs,note){
+  msgs=hideRewound(msgs);
   const el=document.getElementById('chat');
   if(!msgs.length){el.innerHTML='<div id="chatnote">'+esc(note||tr('chat.empty'))+'</div>';return;}
   const last=msgs[msgs.length-1]||{};
@@ -5569,6 +5790,11 @@ function pickSeedSoon(hex){ clearTimeout(seedTimer); seedTimer=setTimeout(()=>{
 const net={rtts:[],fails:0,via:null,stateAt:0};
 async function tick(){
   if(dragging)return;
+  /* Behind an open card the board is not drawn, and what is read off /state there — the theme, a
+     card closed meanwhile, a prompt taken back out of its composer — can wait ten seconds. It was
+     27 KB every 1.5 s, more than a phone on a hotspot had (2026-11-13). The PM column keeps its pace:
+     it is always open, and on the Mac itself. */
+  if(termOpen()&&!DOCK&&Date.now()-net.stateAt<10000) return;
   try{
     const r=await fetch('/state',{cache:'no-store'});state=await r.json();
     // The appearance is the one thing worth keeping current while a conversation is open — for a
@@ -5926,7 +6152,7 @@ document.addEventListener('visibilitychange',()=>{
   if(hiddenAt&&Date.now()-hiddenAt>5000) reconnect(false); else ping();
 });
 window.addEventListener('online',()=>reconnect(false));
-renderNet();poll(ping,2000);
+renderNet();poll(ping,2000,true,false);
 
 // ---------- agent-authored dynamic panel (top region) ----------
 let panelMtime=-1;

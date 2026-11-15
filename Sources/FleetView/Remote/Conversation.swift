@@ -71,6 +71,10 @@ struct ConvInfo: Codable {
     /// Whether anything comes before the first message — what the page asks for with `before=`.
     /// nil from an older FleetView, which has no paging.
     var more: Bool? = nil
+    /// Where the next poll should start (`after=`): the first message here that can still change.
+    var anchor: Double? = nil
+    /// The page's anchor was not in the window: this is a fresh start, not more of what it has.
+    var reset: Bool? = nil
 }
 
 struct ConvResult: Codable {
@@ -97,7 +101,10 @@ struct ConversationSpec: Sendable {
     /// - Parameter before: the page of messages before this position instead of the tail (see
     ///   ConversationPages) — what the chat asks for when it is scrolled up to its oldest message.
     /// - Parameter prompts: only the conversation's prompts, every one (ConversationPages.prompts).
-    func respond(limit: Int, whole: Bool = false, before: Double? = nil, prompts: Bool = false) -> Data {
+    /// - Parameter after: what the page already holds — the anchor it was last given
+    ///   (`info.anchor`), in the session it names. The answer then starts there (see `since`).
+    func respond(limit: Int, whole: Bool = false, before: Double? = nil, prompts: Bool = false,
+                 after: (at: Double, session: String)? = nil) -> Data {
         guard let path else {
             // The pane's own scrollback is the readable content then, and it scrolls natively on
             // a phone.
@@ -119,14 +126,20 @@ struct ConversationSpec: Sendable {
             page.info.session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
             return (try? JSONEncoder().encode(page)) ?? Data(#"{"messages":[]}"#.utf8)
         }
+        // One window per transcript however much of it is asked for: the page opens on 40 and polls
+        // 150, and `parseCached` keys on the limit, so two limits were two parses evicting each other.
         var result = whole
             ? Conversation.parse(path: path, cwd: cwd, limit: .max, ownPrompt: ownPrompt, whole: true)
-            : Conversation.parseCached(path: path, cwd: cwd, limit: limit, ownPrompt: ownPrompt)
+            : Conversation.parseCached(path: path, cwd: cwd, limit: max(limit, Self.window), ownPrompt: ownPrompt)
         result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
                                                               used: result.info.contextTokens)
         result.info.status = status
         result.info.session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         result.info.shared = shared
+        if !whole {
+            Self.since(after.flatMap { $0.session == result.info.session ? $0.at : nil },
+                       resetting: after != nil, limit: limit, into: &result)
+        }
         // Read the choices off the live screen so a prompt can be answered with real buttons.
         // Gated on the picker's cursor rather than on status, because trust/menu prompts don't
         // always raise "needs you" — the cursor is what actually means "waiting on you".
@@ -136,6 +149,40 @@ struct ConversationSpec: Sendable {
             result.info.question = parsed.question
         }
         return (try? JSONEncoder().encode(result)) ?? Data(#"{"messages":[]}"#.utf8)
+    }
+
+    /// What is parsed of a transcript's tail, whatever a request asks for (see `respond`).
+    static let window = 150
+    /// What a page gets when its list no longer lines up with the transcript (see `since`).
+    static let restart = 40
+
+    /// Cut the window down to what the page needs, and name the next anchor.
+    ///
+    /// Every 3 s poll used to carry the full window — 150 messages, ~300 KB for a busy session —
+    /// whether or not a line had been written; on a phone at 11 KB/s that was 26 s a poll, cut off
+    /// by the page's 12 s deadline every time, so a card the phone had no copy of never came up
+    /// (2026-11-13). Now the answer says where the next one should start (`info.anchor`, see
+    /// `Conversation.anchor`) and the page sends that back: from the anchor on is all that can
+    /// have changed, since nothing before it does once written. The page merges by position
+    /// (`convMerge` keeps what lies before the first message), so a short answer and a long one
+    /// read the same way.
+    ///
+    /// An anchor not in the window — the window slid past it, a rewind or a branch switch took it
+    /// off the path — means the page's list no longer lines up. It is answered `reset` with the
+    /// latest `restart` messages, and the page starts over from them, older ones fetched on scroll;
+    /// the whole window was 70–100 KB gzipped, close to what that 12 s allows on such a line.
+    static func since(_ anchor: Double?, resetting: Bool, limit: Int, into result: inout ConvResult) {
+        var msgs = result.messages
+        if let anchor, let i = msgs.firstIndex(where: { $0.at.map { abs($0 - anchor) < 1e-6 } ?? false }) {
+            msgs = Array(msgs[i...])
+            if i > 0 { result.info.more = true }
+        } else {
+            let keep = resetting ? min(limit, restart) : limit
+            if msgs.count > keep { msgs = Array(msgs.suffix(keep)); result.info.more = true }
+            if resetting { result.info.reset = true }
+        }
+        result.messages = msgs
+        result.info.anchor = Conversation.anchor(msgs)
     }
 }
 
@@ -339,6 +386,24 @@ enum Conversation {
         return out
     }
 
+    /// The first message in `msgs` that a later parse can still change — where the next poll starts.
+    /// A tool call with no result yet (its result, and any image in it, are still to come); a
+    /// prompt put back from the input history in the last quarter of an hour (a later parse can still
+    /// drop it as a draft of the next one, or as a repeat — see `queuedPrompts`, which looks ten
+    /// minutes ahead); or else the last message, which the next line of the same reply extends.
+    /// Everything before it is final.
+    static func anchor(_ msgs: [ConvMsg], now: Date = Date()) -> Double? {
+        let young = now.timeIntervalSince1970 * 1000 - 15 * 60 * 1000
+        let moving = msgs.first { m in
+            m.pending || (m.queued && (m.ts.flatMap(isoMillis) ?? .greatestFiniteMagnitude) > young)
+        }
+        // The earlier of the two: a prompt queued at the very end sits after the last message, which
+        // can still grow.
+        let last = (msgs.last(where: { !$0.queued }) ?? msgs.last)?.at
+        guard let m = moving?.at else { return last }
+        return last.map { min($0, m) } ?? m
+    }
+
     private static let isoParser: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -464,7 +529,14 @@ enum Conversation {
             if obj["payload"] != nil || (obj["type"] as? String) == "compacted" {
                 parseCodex(obj, into: &msgs, toolIndex: &toolIndex)
             } else {
-                if let active, !ConversationPages.onPath(obj, active) { continue }
+                if let active, !ConversationPages.onPath(obj, active) {
+                    // Off the branch, but it may answer a call on it: a parallel batch's results are
+                    // each hung off their own call, beside the next one (TranscriptLink.resultOnly).
+                    // `toolIndex` holds only calls on the branch, so an abandoned branch's results
+                    // attach to nothing.
+                    applyResult(obj, to: &msgs, toolIndex: toolIndex)
+                    continue
+                }
                 parseClaude(obj, into: &msgs, toolIndex: &toolIndex, cwd: cwd)
                 collectInfo(obj, into: &info)
             }

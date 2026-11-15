@@ -249,6 +249,18 @@ final class WebAudit: @unchecked Sendable {
             }
             return event("fleetview.web.input_sent", "sent \(text.count) characters to\(named)", data)
 
+        case "/rewind":
+            // What it rewound to is kept the way `/type` keeps what was typed: a count and a digest,
+            // the words themselves being in the transcript.
+            let text = query["text"] ?? ""
+            let outcome = facts["rewind.outcome"].flatMap { if case .string(let s) = $0 { return s } else { return nil } }
+            return event("fleetview.web.conversation_rewound",
+                         (outcome == "done" ? "rewound" : "could not rewind") + "\(named) to before a prompt",
+                         AuditValue.compact(["prompt.chars": .int(text.count),
+                                             "prompt.sha256": .string(AuditDigest.short(text)),
+                                             "nth": query["nth"].map { .string($0) }]).merging(facts) { own, _ in own },
+                         categories: ["session"])
+
         case "/capture":
             return event("fleetview.web.screen_read", "read the screen of\(named)",
                          AuditValue.compact(["lines": query["lines"].map { .string($0) }]), categories: ["session"])

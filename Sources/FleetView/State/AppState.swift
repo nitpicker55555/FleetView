@@ -3028,6 +3028,19 @@ final class AppState: ObservableObject {
         markActivity(id)
     }
 
+    /// The web's "edit from here": rewind the card's conversation to before the `nth`-latest prompt
+    /// whose text is `prompt` (see Rewind). Only while the agent is idle — the Escapes that open the
+    /// agent's list would interrupt a turn in progress, and answer a permission prompt "no".
+    func webRewind(_ id: UUID, prompt: String, nth: Int,
+                   done: @escaping @Sendable (Rewind.Outcome) -> Void) {
+        guard let t = terminals.first(where: { $0.id == id }) else { done(.failed("noTerminal")); return }
+        guard t.status == .idle else { done(.failed(t.status == .working ? "busy" : "notIdle")); return }
+        let codex = t.agentKind == .codex
+            || (t.agentKind == .unknown && transcriptPath(for: id).map(AgentHome.isCodex) == true)
+        remote.rewind(id, agent: codex ? .codex : .claude, prompt: prompt, nth: nth, done: done)
+        markActivity(id)
+    }
+
     /// Typing/keys from the web are real interaction — record it (drives "3m ago").
     private func markActivity(_ id: UUID) {
         guard let idx = terminals.firstIndex(where: { $0.id == id }) else { return }
