@@ -43,6 +43,10 @@ struct ConvMsg: Codable {
     var images: [ConvImage]? = nil
     var trigger: String? = nil    // kind == "compact": "auto" or "manual", when the transcript says
     var tokens: Int? = nil        // kind == "compact": how full the context was when it ran
+    /// A tool call sent without its input and output (`slim=1`): the page fetches them when the card
+    /// is opened. `stat` is the +added/−removed its collapsed card shows for an edit or a patch.
+    var lazy: Bool? = nil
+    var stat: [Int]? = nil
 }
 
 /// One tappable choice parsed off the agent's on-screen prompt (e.g. "1. Yes"), so a permission
@@ -71,6 +75,10 @@ struct ConvInfo: Codable {
     /// Whether anything comes before the first message — what the page asks for with `before=`.
     /// nil from an older FleetView, which has no paging.
     var more: Bool? = nil
+    /// Where the next poll should start (`after=`): the first message here that can still change.
+    var anchor: Double? = nil
+    /// The page's anchor was not in the window: this is a fresh start, not more of what it has.
+    var reset: Bool? = nil
 }
 
 struct ConvResult: Codable {
@@ -97,36 +105,48 @@ struct ConversationSpec: Sendable {
     /// - Parameter before: the page of messages before this position instead of the tail (see
     ///   ConversationPages) — what the chat asks for when it is scrolled up to its oldest message.
     /// - Parameter prompts: only the conversation's prompts, every one (ConversationPages.prompts).
-    func respond(limit: Int, whole: Bool = false, before: Double? = nil, prompts: Bool = false) -> Data {
+    /// - Parameter after: what the page already holds — the anchor it was last given
+    ///   (`info.anchor`), in the session it names. The answer then starts there (see `since`).
+    /// - Parameter slim: tool calls without their input and output (see `slimmed`).
+    func respond(limit: Int, whole: Bool = false, before: Double? = nil, prompts: Bool = false,
+                 after: (at: Double, session: String)? = nil, slim: Bool = false) -> Data {
         guard let path else {
             // The pane's own scrollback is the readable content then, and it scrolls natively on
             // a phone.
             var info = ConvInfo()
             info.status = status
             info.shell = true
-            return (try? JSONEncoder().encode(ConvResult(messages: [], info: info)))
+            return (try? Self.encoder.encode(ConvResult(messages: [], info: info)))
                 ?? Data(#"{"messages":[],"info":{"shell":true}}"#.utf8)
         }
         if prompts {
             let session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
             let list = ConversationPages.prompts(path: path, ownPrompt: ownPrompt)
             struct Out: Codable { let prompts: [ConvPrompt]; let session: String }
-            return (try? JSONEncoder().encode(Out(prompts: list, session: session))) ?? Data(#"{"prompts":[]}"#.utf8)
+            return (try? Self.encoder.encode(Out(prompts: list, session: session))) ?? Data(#"{"prompts":[]}"#.utf8)
         }
         if let before {
             var page = ConversationPages.page(path: path, before: before, limit: limit, cwd: cwd,
                                               ownPrompt: ownPrompt)
             page.info.session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-            return (try? JSONEncoder().encode(page)) ?? Data(#"{"messages":[]}"#.utf8)
+            if slim { page.messages = Self.slimmed(page.messages) }
+            return (try? Self.encoder.encode(page)) ?? Data(#"{"messages":[]}"#.utf8)
         }
+        // One window per transcript however much of it is asked for: the page opens on 40 and polls
+        // 150, and `parseCached` keys on the limit, so two limits were two parses evicting each other.
         var result = whole
             ? Conversation.parse(path: path, cwd: cwd, limit: .max, ownPrompt: ownPrompt, whole: true)
-            : Conversation.parseCached(path: path, cwd: cwd, limit: limit, ownPrompt: ownPrompt)
+            : Conversation.parseCached(path: path, cwd: cwd, limit: max(limit, Self.window), ownPrompt: ownPrompt)
         result.info.contextWindow = Conversation.contextWindow(model: result.info.model,
                                                               used: result.info.contextTokens)
         result.info.status = status
         result.info.session = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
         result.info.shared = shared
+        if !whole {
+            Self.since(after.flatMap { $0.session == result.info.session ? $0.at : nil },
+                       resetting: after != nil, limit: limit, into: &result)
+            if slim { result.messages = Self.slimmed(result.messages) }
+        }
         // Read the choices off the live screen so a prompt can be answered with real buttons.
         // Gated on the picker's cursor rather than on status, because trust/menu prompts don't
         // always raise "needs you" — the cursor is what actually means "waiting on you".
@@ -135,7 +155,103 @@ struct ConversationSpec: Sendable {
             result.info.options = parsed.options
             result.info.question = parsed.question
         }
-        return (try? JSONEncoder().encode(result)) ?? Data(#"{"messages":[]}"#.utf8)
+        return (try? Self.encoder.encode(result)) ?? Data(#"{"messages":[]}"#.utf8)
+    }
+
+    /// Keys in a fixed order: the answer is tagged by its bytes (HTTPReply.etag) for the chat's long
+    /// poll, and an encoder left to itself orders them differently from one call to the next — every
+    /// answer looked new, and the wait never waited.
+    /// A new one each time: answers are encoded on several queues at once.
+    static var encoder: JSONEncoder {
+        let e = JSONEncoder()
+        e.outputFormatting = [.sortedKeys]
+        return e
+    }
+
+    /// Tools whose input is what the card is for: a question waiting on you, a plan to approve, the
+    /// todo list. Kept whole; everything else finished is sent as its one-line summary.
+    static let keptWhole: Set<String> = ["AskUserQuestion", "ExitPlanMode", "TodoWrite"]
+
+    /// Tool calls without their input and output. Those were most of a window — 126 of 220 KB in one
+    /// measured 150 messages — for cards that open collapsed and are mostly never opened; on a phone
+    /// at 11 KB/s that was the difference between seconds and half a minute for a first page. A call
+    /// still running keeps its input (it is what you would be approving).
+    static func slimmed(_ msgs: [ConvMsg]) -> [ConvMsg] {
+        msgs.map { m in
+            guard m.kind == "tool", !m.pending, !keptWhole.contains(m.tool ?? ""),
+                  m.detail != nil || m.output != nil || m.edits != nil || m.patch != nil else { return m }
+            var s = m
+            if let e = m.edits { s.stat = editStat(e) } else if let p = m.patch { s.stat = patchStat(p) }
+            s.detail = nil; s.output = nil; s.edits = nil; s.patch = nil
+            s.lazy = true
+            return s
+        }
+    }
+
+    /// The page's own count (`diffHTML`): lines in neither's longest common subsequence, or every line
+    /// when the two sides are too big to compare.
+    static func editStat(_ edits: [ConvEdit]) -> [Int] {
+        var add = 0, del = 0
+        for e in edits {
+            let a = e.old.isEmpty ? [] : e.old.components(separatedBy: "\n")
+            let b = e.new.isEmpty ? [] : e.new.components(separatedBy: "\n")
+            guard a.count * b.count <= 200_000 else { del += a.count; add += b.count; continue }
+            var next = [Int](repeating: 0, count: b.count + 1)
+            for i in stride(from: a.count - 1, through: 0, by: -1) {
+                var row = [Int](repeating: 0, count: b.count + 1)
+                for j in stride(from: b.count - 1, through: 0, by: -1) {
+                    row[j] = a[i] == b[j] ? next[j + 1] + 1 : max(next[j], row[j + 1])
+                }
+                next = row
+            }
+            let common = next.first ?? 0
+            del += a.count - common
+            add += b.count - common
+        }
+        return [add, del]
+    }
+
+    /// The page's count for a Codex patch (`patchHTML`).
+    static func patchStat(_ patch: String) -> [Int] {
+        var add = 0, del = 0
+        for l in patch.components(separatedBy: "\n") where !(l.hasPrefix("***") || l.hasPrefix("@@")) {
+            if l.hasPrefix("+") { add += 1 } else if l.hasPrefix("-") { del += 1 }
+        }
+        return [add, del]
+    }
+
+    /// What is parsed of a transcript's tail, whatever a request asks for (see `respond`).
+    static let window = 150
+    /// What a page gets when its list no longer lines up with the transcript (see `since`).
+    static let restart = 40
+
+    /// Cut the window down to what the page needs, and name the next anchor.
+    ///
+    /// Every 3 s poll used to carry the full window — 150 messages, ~300 KB for a busy session —
+    /// whether or not a line had been written; on a phone at 11 KB/s that was 26 s a poll, cut off
+    /// by the page's 12 s deadline every time, so a card the phone had no copy of never came up
+    /// (2026-11-13). Now the answer says where the next one should start (`info.anchor`, see
+    /// `Conversation.anchor`) and the page sends that back: from the anchor on is all that can
+    /// have changed, since nothing before it does once written. The page merges by position
+    /// (`convMerge` keeps what lies before the first message), so a short answer and a long one
+    /// read the same way.
+    ///
+    /// An anchor not in the window — the window slid past it, a rewind or a branch switch took it
+    /// off the path — means the page's list no longer lines up. It is answered `reset` with the
+    /// latest `restart` messages, and the page starts over from them, older ones fetched on scroll;
+    /// the whole window was 70–100 KB gzipped, close to what that 12 s allows on such a line.
+    static func since(_ anchor: Double?, resetting: Bool, limit: Int, into result: inout ConvResult) {
+        var msgs = result.messages
+        if let anchor, let i = msgs.firstIndex(where: { $0.at.map { abs($0 - anchor) < 1e-6 } ?? false }) {
+            msgs = Array(msgs[i...])
+            if i > 0 { result.info.more = true }
+        } else {
+            let keep = resetting ? min(limit, restart) : limit
+            if msgs.count > keep { msgs = Array(msgs.suffix(keep)); result.info.more = true }
+            if resetting { result.info.reset = true }
+        }
+        result.messages = msgs
+        result.info.anchor = Conversation.anchor(msgs)
     }
 }
 
@@ -339,6 +455,24 @@ enum Conversation {
         return out
     }
 
+    /// The first message in `msgs` that a later parse can still change — where the next poll starts.
+    /// A tool call with no result yet (its result, and any image in it, are still to come); a
+    /// prompt put back from the input history in the last quarter of an hour (a later parse can still
+    /// drop it as a draft of the next one, or as a repeat — see `queuedPrompts`, which looks ten
+    /// minutes ahead); or else the last message, which the next line of the same reply extends.
+    /// Everything before it is final.
+    static func anchor(_ msgs: [ConvMsg], now: Date = Date()) -> Double? {
+        let young = now.timeIntervalSince1970 * 1000 - 15 * 60 * 1000
+        let moving = msgs.first { m in
+            m.pending || (m.queued && (m.ts.flatMap(isoMillis) ?? .greatestFiniteMagnitude) > young)
+        }
+        // The earlier of the two: a prompt queued at the very end sits after the last message, which
+        // can still grow.
+        let last = (msgs.last(where: { !$0.queued }) ?? msgs.last)?.at
+        guard let m = moving?.at else { return last }
+        return last.map { min($0, m) } ?? m
+    }
+
     private static let isoParser: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -464,7 +598,14 @@ enum Conversation {
             if obj["payload"] != nil || (obj["type"] as? String) == "compacted" {
                 parseCodex(obj, into: &msgs, toolIndex: &toolIndex)
             } else {
-                if let active, !ConversationPages.onPath(obj, active) { continue }
+                if let active, !ConversationPages.onPath(obj, active) {
+                    // Off the branch, but it may answer a call on it: a parallel batch's results are
+                    // each hung off their own call, beside the next one (TranscriptLink.resultOnly).
+                    // `toolIndex` holds only calls on the branch, so an abandoned branch's results
+                    // attach to nothing.
+                    applyResult(obj, to: &msgs, toolIndex: toolIndex)
+                    continue
+                }
                 parseClaude(obj, into: &msgs, toolIndex: &toolIndex, cwd: cwd)
                 collectInfo(obj, into: &info)
             }
