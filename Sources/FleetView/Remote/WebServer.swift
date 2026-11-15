@@ -20,10 +20,10 @@ struct WebSnapshot: Codable {
         let tokens: Int
         let canOpen: Bool         // is a live session attachable over the web right now?
         let done: Bool            // subtask marked done
-        let idle: Int             // seconds since last real interaction, -1 if never
-        let running: Int          // seconds the current run has been going, -1 if it isn't running
+        var idle: Int             // seconds since last real interaction, -1 if never
+        var running: Int          // seconds the current run has been going, -1 if it isn't running
         let lastRun: Int          // seconds the last finished run took, -1 if it has never run
-        let finished: Int         // seconds since a run last ended back at idle, -1 if it is not idle after one
+        var finished: Int         // seconds since a run last ended back at idle, -1 if it is not idle after one
         let cwd: String
         let transcript: String?   // agent conversation-history file (Claude/Codex), if a hook reported it
         let window: String        // its desktop window: "open", "hidden" (agent running unseen), "none"
@@ -53,7 +53,7 @@ struct WebSnapshot: Codable {
     struct NoteJ: Codable { let id: String; let text: String }   // doubles as the web quick-command list
 
     let projects: [Proj]
-    let terminals: [Term]
+    var terminals: [Term]
     let clusters: [Clust]
     let notes: [NoteJ]
     let working: Int
@@ -165,8 +165,12 @@ final class WebServer {
             return
         }
         l.newConnectionHandler = { [weak self] conn in
-            conn.start(queue: self?.queue ?? .global())
-            self?.receive(conn, buffer: Data())
+            guard let self else { conn.cancel(); return }
+            conn.start(queue: self.queue)
+            HTTPConnection.serve(conn, queue: self.queue, maxBody: Self.maxBody) { [weak self] conn, header, body in
+                guard let self else { conn.cancel(); return }
+                self.route(conn, header: header, body: body)
+            }
         }
         // Holds `l` until it fails or is stopped; a listener that is ready is the server from then on.
         l.stateUpdateHandler = { [weak self] state in
@@ -218,46 +222,6 @@ final class WebServer {
     /// full-resolution one without letting a bad request hold memory indefinitely.
     private static let maxBody = 25 * 1024 * 1024
 
-    private func receive(_ conn: NWConnection, buffer: Data) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
-            var buf = buffer
-            if let data { buf.append(data) }
-            if let end = buf.range(of: Data("\r\n\r\n".utf8)) {
-                self.receiveBody(conn, header: buf.subdata(in: buf.startIndex..<end.lowerBound),
-                                 body: buf.subdata(in: end.upperBound..<buf.endIndex))
-                return
-            }
-            if isComplete || error != nil || buf.count > 1_000_000 { conn.cancel(); return }
-            self.receive(conn, buffer: buf)
-        }
-    }
-
-    /// Headers are complete; keep reading until the declared body has arrived. Everything except an
-    /// upload has no body and routes on the first pass — this used to return at the end of the
-    /// headers and drop whatever followed them.
-    private func receiveBody(_ conn: NWConnection, header: Data, body: Data) {
-        let head = HTTPRequestHead(raw: String(data: header, encoding: .utf8) ?? "")
-        let expected = Int(head?.headers["content-length"] ?? "") ?? 0
-        if expected > Self.maxBody {
-            send(conn, status: "413 Payload Too Large", type: "text/plain", body: Data("too large".utf8))
-            return
-        }
-        if body.count >= expected {
-            route(conn, header: header, body: body)
-            return
-        }
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 262_144) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
-            var buf = body
-            if let data { buf.append(data) }
-            if buf.count >= expected { self.route(conn, header: header, body: buf); return }
-            // A client that hangs up mid-upload leaves a partial image; drop it rather than save it.
-            if isComplete || error != nil { conn.cancel(); return }
-            self.receiveBody(conn, header: header, body: buf)
-        }
-    }
-
     private func route(_ conn: NWConnection, header: Data, body: Data) {
         // The whole header block is parsed now, not just the request line: the client address,
         // User-Agent and session cookie are what make every downstream event attributable, and they
@@ -268,7 +232,6 @@ final class WebServer {
         let params = request?.query ?? [:]
         let client = Self.clientAddress(conn)
         let scope = WebAudit.shared.begin(request: request, ip: client.ip, port: client.port)
-        HTTPGzip.note(conn, acceptEncoding: request?.headers["accept-encoding"])
 
         if path == "/ping" { handlePing(conn, client.ip, params, scope); return }  // never the main actor
         if path == "/ask" { handleAsk(conn, params, scope); return }   // long-running; off the main thread
@@ -286,7 +249,8 @@ final class WebServer {
         if path == "/file" { handleFileGet(conn, params, scope); return }
         if path == "/browse" { handleBrowse(conn, params, scope); return }
         if path == "/read" { handleRead(conn, params, scope); return }
-        if path == "/conversation" { handleConversation(conn, params, scope); return }
+        if path == "/conversation" { handleConversation(conn, params, request, scope); return }
+        if path == "/state" { handleState(conn, params, request, scope); return }      // can wait; off it
         if path == "/conversation/image" { handleConversationImage(conn, params, scope); return }
         if path == "/share" { handleShare(conn, request, body, params, scope); return }  // network; off it
         if path == "/fleet-triggers" || path.hasPrefix("/fleet-triggers/") {          // has a body
@@ -310,8 +274,13 @@ final class WebServer {
                     app.webResponse(path: path, query: params)
                 }
                 WebAudit.shared.finish(scope, status: status, bytes: body.count, query: params)
+                // The page is 390 KB and changes only with a build or the Mac's colours: kept by the
+                // browser and checked on each load, so a reload costs one round trip, not the page.
+                let page = (path == "/" || path == "/index.html") && status.hasPrefix("200")
                 self.queue.async {
-                    self.send(conn, status: status, type: type, body: body, setCookie: scope.setCookie)
+                    self.send(conn, status: status, type: type, body: body, setCookie: scope.setCookie,
+                              headers: page ? [("ETag", HTTPReply.etag(body))] : [],
+                              cache: page ? "no-cache" : "no-store")
                 }
             }
         }
@@ -388,10 +357,11 @@ final class WebServer {
     /// `?arch=<id>` in place of `id` reads a removed card's conversation, from the project's drawer
     /// of them (`/archive`): read only, so there is no screen to look at.
     private func handleConversation(_ conn: NWConnection, _ query: [String: String],
-                                    _ scope: WebAudit.Scope) {
-        func answer(_ status: String, _ body: Data) {
+                                    _ request: HTTPRequestHead?, _ scope: WebAudit.Scope) {
+        func answer(_ status: String, _ body: Data, tag: String? = nil) {
             WebAudit.shared.finish(scope, status: status, bytes: body.count, query: query)
-            send(conn, status: status, type: "application/json", body: body, setCookie: scope.setCookie)
+            send(conn, status: status, type: "application/json", body: body, setCookie: scope.setCookie,
+                 headers: tag.map { [("ETag", $0)] } ?? [])
         }
         let archived = query["arch"].flatMap(UUID.init(uuidString:))
         guard let id = archived ?? query["id"].flatMap(UUID.init(uuidString:)) else {
@@ -400,21 +370,58 @@ final class WebServer {
         let limit = min(400, Int(query["limit"] ?? "") ?? 120)
         let before = query["before"].flatMap(Double.init)
         let after = query["after"].flatMap(Double.init).map { (at: $0, session: query["sess"] ?? "") }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let app = self.app else {
-                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
-            }
-            let spec = MainActor.assumeIsolated {
-                archived == nil ? app.conversationSpec(id) : app.archivedConversationSpec(id)
-            }
-            guard let spec else {
-                answer("404 Not Found", Data(#"{"error":"no such removed card"}"#.utf8)); return
-            }
-            DispatchQueue.global(qos: .userInitiated).async {
-                answer("200 OK", spec.respond(limit: limit, whole: query["full"] == "1", before: before,
-                                              prompts: query["prompts"] == "1", after: after))
+        // With `wait=` and the tag of what the page has, the answer waits until it would differ
+        // (LongPoll) — what the page's chat now does instead of asking every 3 s. Each look takes the
+        // spec again: the card's status is part of the answer.
+        let held = HTTPReply.etags(request?.headers["if-none-match"])
+        let wait = held.isEmpty ? 0 : (Double(query["wait"] ?? "") ?? 0)
+        func look(_ give: @escaping ((ConversationSpec?, Data, String)) -> Void) {
+            DispatchQueue.main.async { [weak self] in
+                guard let app = self?.app else { give((nil, Data(), "")); return }
+                let spec = MainActor.assumeIsolated {
+                    archived == nil ? app.conversationSpec(id) : app.archivedConversationSpec(id)
+                }
+                guard let spec else { give((nil, Data(), "")); return }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let body = spec.respond(limit: limit, whole: query["full"] == "1", before: before,
+                                            prompts: query["prompts"] == "1", after: after,
+                                            slim: query["slim"] == "1")
+                    give((spec, body, HTTPReply.etag(body)))
+                }
             }
         }
+        LongPoll.run(wait: wait, queue: queue, check: { give in
+            look { r in give(r, r.0 == nil || !held.contains(r.2)) }
+        }, answer: { r in
+            guard r.0 != nil else {
+                answer("404 Not Found", Data(#"{"error":"no such removed card"}"#.utf8)); return
+            }
+            answer("200 OK", r.1, tag: r.2)
+        })
+    }
+
+    /// GET /state — the board. With `wait=` and the tag of the board the page has, the answer waits
+    /// until the board differs (LongPoll); the tag leaves the running clocks out (AppState.webState).
+    private func handleState(_ conn: NWConnection, _ query: [String: String], _ request: HTTPRequestHead?,
+                             _ scope: WebAudit.Scope) {
+        let held = HTTPReply.etags(request?.headers["if-none-match"])
+        let wait = held.isEmpty ? 0 : (Double(query["wait"] ?? "") ?? 0)
+        LongPoll.run(wait: wait, queue: queue, check: { give in
+            DispatchQueue.main.async { [weak self] in
+                guard let app = self?.app else { give(nil, true); return }
+                let r = MainActor.assumeIsolated {
+                    AuditContext.with(scope.actor, trace: scope.trace) { app.webState() }
+                }
+                give(r, !held.contains(r.etag))
+            }
+        }, answer: { [weak self] (r: (body: Data, etag: String)?) in
+            guard let self, let r else {
+                self?.send(conn, status: "503 Service Unavailable", type: "text/plain", body: Data()); return
+            }
+            WebAudit.shared.finish(scope, status: "200 OK", bytes: r.body.count, query: query)
+            self.send(conn, status: "200 OK", type: "application/json", body: r.body,
+                      setCookie: scope.setCookie, headers: [("ETag", r.etag)], cache: "no-cache")
+        })
     }
 
     /// GET /conversation/image?id=|arch=&at=&n= — an image in a transcript (see ConvImage), decoded.
@@ -849,9 +856,12 @@ final class WebServer {
             out.append(meta)
         }
         out.sort { ($0["ts"] as? String ?? "") > ($1["ts"] as? String ?? "") }
-        let data = (try? JSONSerialization.data(withJSONObject: out)) ?? Data("[]".utf8)
+        // Sorted keys, or the same list comes out in another order and its tag never matches.
+        let data = (try? JSONSerialization.data(withJSONObject: out, options: [.sortedKeys])) ?? Data("[]".utf8)
         WebAudit.shared.finish(scope, status: "200 OK", bytes: data.count, query: query)
-        send(conn, status: "200 OK", type: "application/json", body: data, setCookie: scope.setCookie)
+        // Asked every 4 s and almost never different: the browser keeps it and gets a 304.
+        send(conn, status: "200 OK", type: "application/json", body: data, setCookie: scope.setCookie,
+             headers: [("ETag", HTTPReply.etag(data))], cache: "no-cache")
     }
 
     /// GET /file?id=<uuid> — the bytes of one offered file.
@@ -1272,24 +1282,8 @@ final class WebServer {
     private static func write(_ conn: NWConnection, status: String, type: String, body: Data,
                               setCookie: String? = nil, disposition: String? = nil,
                               headers: [(String, String)] = [], cache: String = "no-store") {
-        var body = body, headers = headers
-        if HTTPGzip.take(conn), status.hasPrefix("200"), HTTPGzip.compressible(type),
-           (HTTPGzip.minBytes...HTTPGzip.maxBytes).contains(body.count),
-           !headers.contains(where: { $0.0.lowercased() == "content-encoding" }),
-           let packed = HTTPGzip.gzip(body), packed.count < body.count {
-            body = packed
-            headers += [("Content-Encoding", "gzip"), ("Vary", "Accept-Encoding")]
-        }
-        var head = "HTTP/1.1 \(status)\r\n"
-        head += "Content-Type: \(type)\r\n"
-        head += "Content-Length: \(body.count)\r\n"
-        head += "Cache-Control: \(cache)\r\n"
-        if let disposition { head += "Content-Disposition: \(disposition)\r\n" }
-        if let setCookie { head += "Set-Cookie: \(setCookie)\r\n" }   // identifies this browser's visit
-        for (name, value) in headers { head += "\(name): \(value)\r\n" }
-        head += "Connection: close\r\n\r\n"
-        var out = Data(head.utf8); out.append(body)
-        conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+        HTTPReply.write(conn, status: status, type: type, body: body, setCookie: setCookie,
+                        disposition: disposition, headers: headers, cache: cache)
     }
 
     static func parsePath(_ raw: String) -> (String, [String: String]) {

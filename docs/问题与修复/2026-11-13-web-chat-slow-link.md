@@ -6,7 +6,7 @@
 | 状态 | 已修复（未部署） |
 | 影响 | 平板连 iPhone 热点时，点开本机没有缓存的卡片一直是骨架屏，切到终端也打不开；页面右上角的延迟显示正常 |
 | 对应代码版本 | 417d9dc |
-| 修复 | `Remote/HTTPGzip.swift`（新）、`Remote/WebServer.swift`（`write` 压缩、`/conversation` 的 `after=`）、`Remote/Conversation.swift`（`ConversationSpec.since`、`Conversation.anchor`、并行结果挂回调用）、`Remote/ConversationPages.swift`（`TranscriptLink.resultOnly`、`activePath` 的悬挂结果）、`Remote/WebDashboardPage.swift`（`convQuery`、`convMerge` 的 `reset`、`cachePut`、`poll` 的休息、`tick` 在卡片打开时放慢、`loadChat` 不重叠） |
+| 修复 | `Remote/HTTPReply.swift`、`Remote/HTTPConnection.swift`（新：304、gzip、连接复用、`LongPoll`）、`Remote/WebServer.swift`（`write` 压缩、`/conversation` 的 `after=`）、`Remote/Conversation.swift`（`ConversationSpec.since`、`Conversation.anchor`、并行结果挂回调用）、`Remote/ConversationPages.swift`（`TranscriptLink.resultOnly`、`activePath` 的悬挂结果）、`Remote/WebDashboardPage.swift`（`convQuery`、`convMerge` 的 `reset`、`cachePut`、`poll` 的休息、`tick` 在卡片打开时放慢、`loadChat` 不重叠） |
 
 ## 现象
 
@@ -32,6 +32,15 @@
 - **增量轮询。** 每个回答带 `info.anchor`，即第一条还可能变化的消息：没有结果的工具调用、15 分钟内从输入历史补回的排队提示（之后的解析可能把它去掉）、或者最后一条（同一回复的下一行会续写它），取最早的那条。页面下一次带 `after=<anchor>&sess=<session>`，只拿这条及以后的。找不到锚点（窗口滑过去了、回退或换分支）时回最新 40 条并标 `reset`，页面从这里重新开始，更早的上滑再取。截断时 `more` 一定为 true。服务端无论被要 40 条还是 150 条，都只解析一个 150 条的窗口。
 - **首屏 40 条。** 本机没有缓存时先取 40 条；缓存存的是合并后的列表，超出配额就截掉旧的部分，不再整份放弃。
 - **轮询退避。** 每次请求之后至少休息它自己用掉的那么久（ping 除外）；卡片打开时（PM 停靠栏除外）`/state` 至少隔 10 秒取一次；同一张卡的聊天请求不再重叠。
+- **第二轮（11-15）：**
+  - 请求的超时从 12 秒总时长改成 12 秒没有新数据：慢但一直在传的回答不会被掐断。
+  - `/state` 带 ETag。计时字段（`idle`、`running`、`finished`）按它们的起点算进 ETag，发出去的仍是相对秒数，`project-manager` 等读 `/state` 的地方不变。页面带着 ETag 长轮询（`wait=25`）：看板不变时 25 秒后回 304，变了在 0.75 秒内返回。收到 304 时页面把上一份的计时加上经过的秒数再画。
+  - 聊天同样长轮询，取代每 3 秒一次；离开聊天或换卡时中止等待，标签页隐藏时两个等待都中止，不占浏览器对同一主机的 6 个连接。
+  - 首页和 `/files` 带 ETag、`Cache-Control: no-cache`，浏览器自己带着 ETag 去问，没变就是 304。ETag 按字节算，所以这些 JSON 都按键排序输出（不排序时同样的内容每次字节不同）。
+  - 已结束的工具调用不带输入输出（`slim=1`），展开卡片时再取那一条；编辑卡片的 +N −M 由服务端按页面同样的 LCS 规则算好。
+  - 连接复用：HTTP/1.1 且没要求关闭的请求，回答后在同一连接上读下一个，空闲 30 秒关闭（`HTTPConnection`）。
+  - 终端标签：探测端口改用 ttyd 的 `/token`（13 字节，原来下整页 190 KB）；切到聊天 30 秒后卸掉终端 iframe，不再接收屏幕重绘。
+  - 延迟徽标：用 Resource Timing 算每个几 KB 以上回答的实际传输速度（从第一个字节到最后一个字节），低于 150 KB/s 时在延迟后面显示带宽，并降低信号格。
 - **悬挂的并行结果。** 一条只含工具结果的记录，如果它的父节点还有别的非结果子节点，就不算叶子、不算分支、往下找末端时跳过；`build` 对不在路径上的行也调用 `applyResult`，把这些结果挂回路径上的调用（`toolIndex` 只含路径上的调用，被放弃分支的结果挂不上去）。
 
 ## 验证
@@ -42,10 +51,18 @@
 - 解析器：在全部 21 个在用的 Claude 会话上对比新旧两版。永久“运行中”从 4 个会话共 26 个降到 0；b4cd3e07 的末端从 11:24 变成 17:22（核对文件末尾：17:22 是一次空闲压缩，新版正确）；其余会话最后一条消息不变。
 - gzip：输出用系统 gunzip 和 Python 解压，与原文逐字节一致（含 3 MB 随机数据，压不小时不压）；`Accept-Encoding` 的 8 种写法判断正确。
 
+- 第二轮的 HTTP 层（`HTTPReply`、`HTTPConnection`、`LongPoll`）和真实的 `ConversationSpec.respond` 编进一个独立的测试服务器（不启动 app），用原始 socket 和无头 Chrome 测：
+  - 连接复用、`Connection: close` 和 HTTP/1.0 关闭、一次写两个请求、带请求体后接着用同一连接、空闲 30 秒关闭；
+  - 304 不带正文和长度、过期 ETag 拿到正文、弱 ETag 和列表也能匹配、304 不带 `Content-Encoding`；
+  - 长轮询：内容不变时等满再回 304；会话文件追加一行后 0.25 秒内返回。
+  共 17 项，全部通过。
+- 限速 11 KB/s 打开卡片：1.1–3.4 秒出内容（958f 冷缓存 3.4 秒，第二次 1.5 秒）；看板 70 秒 116 个请求只用了 2 个连接，`/files` 18 次全是 304；卡片里 45 秒聊天只请求 3 次；304 期间卡片上的空闲时间照常走；工具卡展开能取到内容；徽标显示 `252ms · 8KB/s`；6 KB/s 下传 13.7 秒的回答完整收到。
+- 增量合并在新 HTTP 层上的第一轮校验，正在写入的那张卡有 2 次落后一步。时间线显示：每次 304 之后，下一次请求要等 25 秒，而且不带 ETag。原因是 Chrome 交给页面的 304 带着一个空的 body 流，超时包装器拿它构造 `Response` 时抛错，聊天把每个 304 都当成了失败。修复后重跑：4 张卡 90 次、正在写入的卡 34 次比对，0 次不一致。
+- 31 张编辑卡片的 +N −M，服务端和页面用完整内容算的一致。400 条窗口按需加载后 456 → 103 KB。
+
 ## 没覆盖到的
 
-- 12 秒仍是总时长，不是“多久没收到数据”。现在正常的回答都在 30 KB 以内，但链路再慢一半时，首屏 40 条仍可能被掐断。
-- 终端标签：检查端口时把 ttyd 的整页（约 190 KB gzip）下了一遍，iframe 又下一遍；切回聊天后 iframe 的 websocket 还在推屏幕重绘。没改。
-- 延迟显示只反映往返时间，不反映带宽。没改。
+- 卡片较多在工作时，`/state` 每隔几秒就真的变一次（token 数），长轮询会随之返回，所以看板上仍有流量（70 秒 17 次，原来约 47 次）。
+- 客户端中止一个长轮询后，服务端要到等待期满（最多 30 秒）才发现：等待期间不读这个连接，看不到对方已关闭。代价是这段时间里每 0.75 秒多查一次。
 - 被并行结果带着的截图（结果里的图片）在不在路径上的行里，仍不会挂到调用上。
-- 运营商限速的判断没有证实；可以用 iperf3 对比走 Tailscale 和强制走 DERP 中继（TCP 443）。
+- 11-15 在平板上做的 A/B（家里的 Air ↔ 办公室的移动宽带）：直连约 1.0 MB/s，强制走 DERP 中继 0.10–0.15 MB/s，这条宽带没有限 UDP。11-13 那天热点（蜂窝）上的慢直连原因仍未确认。同一天 Mac 和平板在同一个办公室网络里只能走香港中继（访客 Wi-Fi 客户端隔离加对称 NAT），只有 0.13 MB/s。

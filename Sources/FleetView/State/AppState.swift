@@ -2641,8 +2641,7 @@ final class AppState: ObservableObject {
             let body = try? JSONSerialization.data(withJSONObject: ["presets": presets])
             return ("200 OK", "application/json", body ?? Data("{}".utf8))
         case "/state":
-            let data = (try? JSONEncoder().encode(webSnapshot())) ?? Data("{}".utf8)
-            return ("200 OK", "application/json", data)
+            return ("200 OK", "application/json", webState().body)
         case "/update":
             func orNull(_ v: Any?) -> Any { v ?? NSNull() }
             // The self-update from afar — the only way a headless board can update, and the way to
@@ -3104,7 +3103,34 @@ final class AppState: ObservableObject {
     }
 
     /// Build the live snapshot the web page renders.
-    private func webSnapshot() -> WebSnapshot {
+    /// `/state`, and a tag that changes only when something in it does (see HTTPReply, LongPoll).
+    ///
+    /// Its clocks are elapsed seconds (`idle`, `running`, `finished`) — the phone's clock is its own,
+    /// so a start time sent across would be read against it — and they make every answer different
+    /// from the last, a second later. The tag is taken over the same snapshot with those clocks as the
+    /// moments they count from, which stand still until something happens: a quiet board answers 304
+    /// and the page goes on counting from what it has.
+    func webState() -> (body: Data, etag: String) {
+        var snap = webSnapshot(absoluteClocks: true)
+        // Sorted keys: the tag is of the bytes, and an encoder's own key order changes between calls.
+        let tag = HTTPReply.etag((try? ConversationSpec.encoder.encode(snap)) ?? Data())
+        let now = Int(Date().timeIntervalSince1970)
+        func elapsed(_ at: Int) -> Int { at < 0 ? at : max(0, now - at) }
+        for i in snap.terminals.indices {
+            snap.terminals[i].idle = elapsed(snap.terminals[i].idle)
+            snap.terminals[i].running = elapsed(snap.terminals[i].running)
+            snap.terminals[i].finished = elapsed(snap.terminals[i].finished)
+        }
+        return ((try? JSONEncoder().encode(snap)) ?? Data("{}".utf8), tag)
+    }
+
+    /// `absoluteClocks`: the clocks as the epoch second they count from, for `webState`'s tag.
+    private func webSnapshot(absoluteClocks: Bool = false) -> WebSnapshot {
+        let now = Date()
+        func since(_ d: Date?) -> Int {
+            guard let d else { return -1 }
+            return absoluteClocks ? Int(d.timeIntervalSince1970) : max(0, Int(now.timeIntervalSince(d)))
+        }
         // One cached list-sessions so a "closed" terminal whose tmux session is still alive stays
         // openable (reattach from the web) — not one has-session call per terminal.
         let live = remote.available ? remote.liveSessions() : []
@@ -3116,16 +3142,12 @@ final class AppState: ObservableObject {
                              prompt: t.lastPrompt, tokens: t.newTokens,
                              canOpen: live.contains(RemoteServer.sessionName(for: t.id)),  // authoritative: only if THIS instance has the session
                              done: t.subtaskDone,
-                             idle: t.lastActivity.map { max(0, Int(Date().timeIntervalSince($0))) } ?? -1,
+                             idle: since(t.lastActivity),
                              // Elapsed seconds, not a timestamp: the phone's clock is its own, and a
                              // start time sent across would be read against it.
-                             running: t.status == .working
-                                 ? (t.runningSince.map { max(0, Int(Date().timeIntervalSince($0))) } ?? -1)
-                                 : -1,
+                             running: t.status == .working ? since(t.runningSince) : -1,
                              lastRun: t.lastRunSeconds ?? -1,
-                             finished: t.status == .idle
-                                 ? (runEndedAt[t.id].map { max(0, Int(Date().timeIntervalSince($0))) } ?? -1)
-                                 : -1,
+                             finished: t.status == .idle ? since(runEndedAt[t.id]) : -1,
                              cwd: t.cwd,
                              transcript: t.transcriptPath,
                              window: windowState(t.id).rawValue,
