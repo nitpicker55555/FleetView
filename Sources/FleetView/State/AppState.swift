@@ -619,34 +619,59 @@ final class AppState: ObservableObject {
         }.map { t in
             (id: t.id, cwd: t.cwd, hook: hookSessionPath(for: t.id), stored: t.transcriptPath,
              home: t.subPool.map { AgentHome(kind: .codex, subPool: $0) },
-             started: agentStarted[t.id].map { ($0.at.addingTimeInterval(-2), $0.command) })
+             started: agentStarted[t.id].map { ($0.at.addingTimeInterval(-2), $0.command) },
+             session: RemoteServer.sessionName(for: t.id))
         }
         guard !targets.isEmpty else { return }
         let claimed = Set(terminals.compactMap { $0.transcriptPath })
+        let tmuxPath = remote.tmuxPath
         codexRefreshInFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            var verdicts: [(UUID, Bool)] = []
+            var verdicts: [(id: UUID, working: Bool, bind: String?)] = []
             for t in targets {
                 let fallback = [t.hook, t.stored].compactMap { $0 }
                     .first { p in t.started.map { Self.continues(p, since: $0.0, command: $0.1) } ?? true }
-                let path = CodexSession.currentRollout(cwd: t.cwd,
+                let live = CodexSession.currentRollout(cwd: t.cwd,
                                                        excluding: claimed.subtracting([t.stored].compactMap { $0 }),
                                                        home: t.home, since: t.started?.0)
-                    ?? fallback
-                guard let path, let working = CodexSession.isWorking(rollout: path) else { continue }
-                verdicts.append((t.id, working))
+                guard let path = live ?? fallback,
+                      let working = CodexSession.isWorking(rollout: path) else { continue }
+                // Bound to the card only when it is surely this card's: written since its Codex was
+                // seen starting, or held open by a process in its pane. Without either (a FleetView
+                // launched under an already-running Codex) the newest unclaimed rollout in the folder
+                // may be another conversation, and once bound, the commit ledger would credit that
+                // conversation's commits to this card for good.
+                let bind = live.flatMap { live -> String? in
+                    if t.started != nil || live == t.stored { return live }
+                    guard let tmuxPath else { return nil }
+                    return CodexSession.heldOpen(live, tmuxPath: tmuxPath, sessionName: t.session, card: t.id)
+                        ? live : nil
+                }
+                verdicts.append((t.id, working, bind))
             }
             Task { @MainActor in
                 guard let self else { return }
                 self.codexRefreshInFlight = false
-                for (id, working) in verdicts {
+                var bound = false
+                for (id, working, bind) in verdicts {
                     guard let i = self.terminals.firstIndex(where: { $0.id == id }) else { continue }
+                    // The rollout is written down as the card's conversation, as a hook would have.
+                    // `sp-codex` cards never had it otherwise — their hooks cannot be trusted, so
+                    // nothing ever reported a path — and everything that reads `transcriptPath`
+                    // (the commit ledger above all: an `sp-codex` card was credited with none of
+                    // its commits, 2026-11-17) took them for cards with no conversation at all.
+                    if let bind, self.terminals[i].transcriptPath != bind,
+                       !self.terminals.contains(where: { $0.id != id && $0.transcriptPath == bind }) {
+                        self.terminals[i].transcriptPath = bind
+                        bound = true
+                    }
                     // Re-check the guard: this is one poll behind now, and the terminal may have
                     // been closed or raised a prompt while the disk was being read.
                     guard self.terminals[i].status != .closed, self.terminals[i].status != .needsYou else { continue }
                     let next: TermStatus = working ? .working : .idle
                     if self.terminals[i].status != next { self.enterStatus(next, at: i) }
                 }
+                if bound { self.save() }
             }
         }
     }
