@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Works out what a Codex terminal is doing by reading its rollout, without depending on hooks.
 ///
@@ -207,5 +208,69 @@ enum CodexSession {
         }
         lock.lock(); workingCache[path] = (size, working); lock.unlock()
         return working
+    }
+
+    // MARK: - Whose rollout
+
+    /// Whether a process in tmux session `sessionName` holds `path` open. The Codex CLI keeps its
+    /// rollout open for as long as the conversation runs (fd 48 on the card that showed this), so
+    /// this says whose a rollout is outright — where "the newest unclaimed one in the folder" only
+    /// guesses, and is the only thing left after FleetView restarts under a Codex already running.
+    ///
+    /// Asked once per card and path (answers are kept): it spawns tmux and reads file tables, and it
+    /// is only needed for a rollout the card has not been bound to yet.
+    static func heldOpen(_ path: String, tmuxPath: String, sessionName: String, card: UUID) -> Bool {
+        let key = "\(card)|\(path)"
+        lock.lock()
+        if let known = heldCache[key] { lock.unlock(); return known }
+        lock.unlock()
+        let held = panePid(tmuxPath: tmuxPath, sessionName: sessionName).map { pane -> Bool in
+            let sid = getsid(pane)
+            guard sid > 0, sid != getsid(0) else { return false }
+            let target = (path as NSString).resolvingSymlinksInPath
+            return ProcTable.read().filter { $0.sid == sid }
+                .contains { openFiles($0.pid).contains { ($0 as NSString).resolvingSymlinksInPath == target } }
+        } ?? false
+        lock.lock(); heldCache[key] = held; lock.unlock()
+        return held
+    }
+    private static var heldCache: [String: Bool] = [:]
+
+    private static func panePid(tmuxPath: String, sessionName: String) -> pid_t? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tmuxPath)
+        p.arguments = ["-L", RemoteServer.socket, "list-panes", "-t", sessionName, "-F", "#{pane_pid}"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return nil }
+        return String(data: data, encoding: .utf8)?.split(whereSeparator: \.isNewline).first.flatMap { pid_t($0) }
+    }
+
+    /// The paths of the regular files `pid` has open (libproc; this user's processes only).
+    private static func openFiles(_ pid: pid_t) -> [String] {
+        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return [] }
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(size) / stride + 16)
+        let got = fds.withUnsafeMutableBytes {
+            proc_pidinfo(pid, PROC_PIDLISTFDS, 0, $0.baseAddress, Int32($0.count))
+        }
+        guard got > 0 else { return [] }
+        var out: [String] = []
+        for fd in fds.prefix(Int(got) / stride) where fd.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
+            var info = vnode_fdinfowithpath()
+            let n = proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &info,
+                                   Int32(MemoryLayout<vnode_fdinfowithpath>.size))
+            guard n == Int32(MemoryLayout<vnode_fdinfowithpath>.size) else { continue }
+            let path = withUnsafeBytes(of: info.pvip.vip_path) { raw in
+                String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+            }
+            if !path.isEmpty { out.append(path) }
+        }
+        return out
     }
 }
